@@ -34,9 +34,11 @@ config edits.
 
 ## 3. Log in
 
-The last lines of the installer list the logins it cannot do for you (each is skipped once done):
-`claude` (your Claude account), `gh auth login` (GitHub, needed for pull requests), `sudo tailscale up`
-(only if enabled) and `caam backup claude main` (saves the Claude login so you can switch accounts later).
+The last lines of the installer list the logins it cannot do for you (each is skipped once done). Log in as
+the new user first (`su - gc`, or `ssh gc@<server>`), then: `claude` (your Claude account), `gh auth login`
+(GitHub, needed for pull requests), `sudo tailscale up` (only if enabled), `caam backup claude main` (saves
+the Claude login so you can switch accounts later) and finally `gcs setup`. The city is created paused, so no
+agent sits on Claude's login screen; that last `gcs setup` notices you are logged in and starts it.
 
 ## 4. Add a project
 

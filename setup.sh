@@ -211,7 +211,18 @@ create_city() {
   [ -f "$CITY/pack.toml" ] || cp "$GCS_HOME/pack.toml" "$CITY/pack.toml"
   if [ "$first" = 1 ]; then
     log "creating the city in $CITY"
-    gc init --file "$GCS_HOME/city.toml" --preserve-existing --no-start --skip-provider-readiness "$CITY"
+    # The first bd/dolt init sometimes loses a schema-migration race (dirty-table errors, beads#4566) on a busy
+    # box. A brand-new city holds nothing yet, so reset its runtime and store and try again.
+    local fresh=0 attempt; [ -f "$CITY/city.toml" ] || fresh=1
+    for attempt in 1 2 3; do
+      gc init --file "$GCS_HOME/city.toml" --preserve-existing --no-start --skip-provider-readiness "$CITY" && break
+      [ "$fresh" = 1 ] && [ "$attempt" -lt 3 ] || die "gc init failed; see the messages above (gc doctor may help)"
+      warn "gc init failed (attempt $attempt of 3); resetting the new city and retrying"
+      ( cd "$CITY" && gc stop >/dev/null 2>&1 ) || true
+      pkill -f "$CITY/.gc/runtime/packs/dolt" 2>/dev/null || true
+      sleep 3
+      rm -rf "$CITY/.gc" "$CITY/.beads" "$CITY/city.toml"
+    done
   fi
   apply_config
   # claude asks "trust this folder?" per directory; an untrusted city dir stalls every agent on it
