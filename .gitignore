@@ -1,0 +1,4 @@
+.gc/
+.beads/
+__pycache__/
+scoreboard/out/
