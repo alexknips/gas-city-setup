@@ -74,8 +74,8 @@ A directory `<name>/` in this repo plugs in without editing `setup.sh`: `install
 ## Uninstall
 
 ```bash
-gc stop && gc unregister "$GC_CITY_DIR"     # stop the city
-gc supervisor uninstall                      # remove the systemd unit
+gc stop && gc unregister ~/gc      # stop the city (use your GC_CITY_DIR if you changed it)
+gc supervisor uninstall             # remove the systemd unit
 rm -rf ~/gc ~/.gcs ~/.config/gcs ~/.local/bin/{gc,gcs,bd,dolt,dcg,caam}   # city, this repo, config, tools
 ```
 

@@ -1,6 +1,7 @@
 # Generic Gas City: mayor + deacon + boot at city level, witness/refinery/polecat pool per rig.
-# No rigs yet: add one with `gcs rig-add <path|url>`. Lines ending in "# gcs:KEY" are kept in
-# sync with config.env by setup.sh; edit config.env, not these values.
+# No rigs yet: add one with `gcs rig-add <path|url>`. Models and pool sizes come from config.env:
+# setup.sh keeps the house model below in sync, and adds `include = ["gcs.toml"]` to the live copy
+# of this file for the generated gcs.toml (mayor and per-rig patches).
 
 [workspace]
 provider = "claude"
@@ -14,7 +15,7 @@ options_schema_merge = "by_key"
 ready_delay_ms = 0
 
 [providers.claude.option_defaults]
-model = "opus"  # gcs:MODEL_DEFAULT
+model = "opus"
 
 [[providers.claude.options_schema]]
 key = "model"
@@ -48,12 +49,6 @@ flag_aliases = [["-m", "claude-haiku-4-5"]]
 [defaults.rig.imports.gastown]
 source = "https://github.com/gastownhall/gascity-packs/tree/main/gastown"
 version = "sha:33d3a430a67d1782ad364556cb566bdb01d0afe3"
-
-[[patches.agent]]
-dir = ""
-name = "mayor"
-[patches.agent.option_defaults]
-model = "opus"  # gcs:MODEL_MAYOR
 
 [beads]
 provider = "bd"

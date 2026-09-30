@@ -3,6 +3,7 @@
 #   GCS_TEST_IMAGE=<24.04 base image> [GCS_BRANCH=main] [MODE=oneliner|local] test/proof.sh
 # oneliner (default) curls setup.sh from this repo's origin on GitHub, so the branch must be pushed;
 # local runs the working tree (mounted read-only) instead. Needs docker and a host that can run systemd in a container.
+# shellcheck disable=SC2016,SC2088  # the single-quoted strings are shell code for the container: $HOME and ~ expand there
 set -euo pipefail
 : "${GCS_TEST_IMAGE:?set GCS_TEST_IMAGE to a 24.04 base image}"
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -33,13 +34,18 @@ as_user 'systemctl --user list-units --no-legend "gascity-*" "gcs-*"'
 echo "### gcs rig-add (scratch repo)"
 as_user 'mkdir -p ~/projects/demo && cd ~/projects/demo && git init -q -b main && git commit -q --allow-empty -m init'
 as_user 'gcs rig-add ~/projects/demo'
-# shellcheck disable=SC2016  # $USER must expand inside the container
-as_user 'grep -A6 "name = \"demo\"" ~/gc/city.toml | head -12; jq ".projects[\"/home/$USER/projects/demo\"]" ~/.claude.json'
+as_user 'cat ~/gc/gcs.toml; head -2 ~/gc/city.toml; jq ".projects[\"$HOME/projects/demo\"], .projects[\"$HOME/gc\"]" ~/.claude.json; ls ~/gc/formulas'
+
+echo "### config change: direct merge mode, 2 polecats on haiku, then back"
+as_user 'cp ~/.config/gcs/config.env /tmp/config.bak; sed -i "s/^MERGE_MODE=.*/MERGE_MODE=direct/; s/^POLECAT_POOL=.*/POLECAT_POOL=2/; s/^MODEL_POLECAT=.*/MODEL_POLECAT=haiku/" ~/.config/gcs/config.env; gcs setup >/dev/null 2>&1; grep -A4 polecat ~/gc/gcs.toml; echo "formulas: $(ls ~/gc/formulas | tr "\n" " ")"'
+as_user 'cp /tmp/config.bak ~/.config/gcs/config.env; gcs setup >/dev/null 2>&1; grep -A4 polecat ~/gc/gcs.toml; head -1 ~/gc/formulas/mol-refinery-patrol.toml'
 
 echo "### run 2 (must be a no-op)"
-sum=$(as_user 'cksum ~/gc/city.toml ~/gc/pack.toml ~/.config/gcs/config.env ~/gc/formulas/*')
+files='~/gc/city.toml ~/gc/gcs.toml ~/gc/pack.toml ~/.config/gcs/config.env ~/gc/formulas/*'
+sum=$(as_user "cksum $files")
 out=$(as_user 'gcs setup' 2>&1) || { echo "$out"; echo "FAIL: second run failed"; exit 1; }
+echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E -v '^(Get:|Selecting|Preparing|Unpacking|Setting up|Processing)' | head -20
 echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -E '^(==> (installing|apt:|creating|merge mode|swap)|warn)' && { echo "FAIL: second run changed things"; exit 1; }
-[ "$sum" = "$(as_user 'cksum ~/gc/city.toml ~/gc/pack.toml ~/.config/gcs/config.env ~/gc/formulas/*')" ] || { echo "FAIL: files changed on re-run"; exit 1; }
+[ "$sum" = "$(as_user "cksum $files")" ] || { echo "FAIL: files changed on re-run"; exit 1; }
 echo "second run: clean no-op"
 echo "container $c left running: docker exec -it -u $u $c bash -l   (docker rm -f $c to clean up)"
