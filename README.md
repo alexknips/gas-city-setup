@@ -27,10 +27,10 @@ SSH into the new server and paste this one line (as root or as a sudo user):
 curl -fsSL https://raw.githubusercontent.com/alexknips/gas-city-setup/main/setup.sh | bash
 ```
 
-It takes roughly 10 to 20 minutes and prints its elapsed time at the end. Started as root, it first creates a
+It takes about 10 minutes and prints its elapsed time at the end. Started as root, it first creates a
 sudo user (`gc`; use another name with `GCS_USER=name` in front of `bash`) with your SSH keys and carries on
 as that user. Running it again is safe: it only changes what differs, so re-running is also how you apply
-config edits.
+config edits (`gcs setup` does the same from the new user's shell).
 
 ## 3. Log in
 
@@ -56,16 +56,17 @@ straight to the main branch set `MERGE_MODE=direct` (below).
 
 ## Dashboard
 
-`gc dashboard --no-open` prints the URL of the built-in dashboard. From your laptop:
-`ssh -L 8372:127.0.0.1:8372 <user>@<server>`, then open the printed URL with the host `127.0.0.1`.
-Generic Daily and Scoreboard pages ship in `dashboard/` and are installed by the same script once present.
+The built-in dashboard listens on the server's loopback (`gc dashboard --no-open` prints the URL). From your
+laptop: `ssh -L 8372:127.0.0.1:8372 <user>@<server>`, then open <http://127.0.0.1:8372>. The Daily and
+Scoreboard pages are a component (`dashboard/install.sh`), installed by the same script whenever it is present.
 
 ## Configuration
 
 One file, `~/.config/gcs/config.env`, written with its defaults on the first run and documented line by line.
-Edit it, then run `gcs setup`. Keys: `GC_CITY_DIR`, `GCS_REPOS_DIR`, `SWAP`, `TAILSCALE`, `GIT_NAME`,
-`GIT_EMAIL`, `MODEL_MAYOR`, `MODEL_DEFAULT`, `MODEL_POLECAT` (`opus`, `sonnet` or `haiku`), `POLECAT_POOL`,
-`MERGE_MODE` (`pr` or `direct`), plus the dashboard, review bot and backup sections.
+Edit it, then run `gcs setup`. Keys: `GCS_USER`, `GC_CITY_DIR`, `GCS_REPOS_DIR`, `SWAP`, `TAILSCALE`,
+`GIT_NAME`, `GIT_EMAIL`, `MODEL_MAYOR`, `MODEL_DEFAULT`, `MODEL_POLECAT` (`opus`, `sonnet` or `haiku`),
+`POLECAT_POOL`, `MERGE_MODE` (`pr` or `direct`), plus the dashboard, review bot and backup sections.
+Changing the pool, the models or the merge mode also updates the rigs you already added.
 
 ## Adding components
 
