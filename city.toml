@@ -1,0 +1,69 @@
+# Generic Gas City: mayor + deacon + boot at city level, witness/refinery/polecat pool per rig.
+# No rigs yet: add one with `gcs rig-add <path|url>`. Lines ending in "# gcs:KEY" are kept in
+# sync with config.env by setup.sh; edit config.env, not these values.
+
+[workspace]
+provider = "claude"
+
+[agent_defaults]
+append_fragments = ["command-glossary", "operational-awareness"]
+
+[providers.claude]
+base = "builtin:claude"
+options_schema_merge = "by_key"
+ready_delay_ms = 0
+
+[providers.claude.option_defaults]
+model = "opus"  # gcs:MODEL_DEFAULT
+
+[[providers.claude.options_schema]]
+key = "model"
+label = "Model"
+type = "select"
+default = "opus"
+
+[[providers.claude.options_schema.choices]]
+value = ""
+label = "Default"
+
+[[providers.claude.options_schema.choices]]
+value = "opus"
+label = "Opus 5.5"
+flag_args = ["--model", "claude-opus-5-5"]
+flag_aliases = [["-m", "claude-opus-5-5"]]
+
+[[providers.claude.options_schema.choices]]
+value = "sonnet"
+label = "Sonnet 5.5"
+flag_args = ["--model", "claude-sonnet-5-5"]
+flag_aliases = [["-m", "claude-sonnet-5-5"]]
+
+[[providers.claude.options_schema.choices]]
+value = "haiku"
+label = "Haiku 4.5"
+flag_args = ["--model", "claude-haiku-4-5"]
+flag_aliases = [["-m", "claude-haiku-4-5"]]
+
+# Rig agents (witness, refinery, polecat pool) come from the gastown pack for every rig.
+[defaults.rig.imports.gastown]
+source = "https://github.com/gastownhall/gascity-packs/tree/main/gastown"
+version = "sha:33d3a430a67d1782ad364556cb566bdb01d0afe3"
+
+[[patches.agent]]
+dir = ""
+name = "mayor"
+[patches.agent.option_defaults]
+model = "opus"  # gcs:MODEL_MAYOR
+
+[beads]
+provider = "bd"
+
+# Session start runs a few gc CLI calls first; the 10s default kills agents on a small or busy box.
+[session]
+setup_timeout = "60s"
+
+[daemon]
+patrol_interval = "60s"
+max_restarts = 5
+restart_window = "1h"
+shutdown_timeout = "5s"

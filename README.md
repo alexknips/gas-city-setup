@@ -1,7 +1,88 @@
 # gas-city-setup
 
-A small, generic [Gas City](https://github.com/gastownhall/gascity) setup you can bootstrap on your own machine:
-a minimal city (mayor, deacon, per-rig witness/refinery/polecats from the gastown pack) plus a small dashboard
-(Daily + Scoreboard: beads merged per rig, code landed, estimated token cost).
+A generic [Gas City](https://github.com/gastownhall/gascity) on your own server, from "no server" to a
+running city in well under an hour. One script installs and wires everything: Gas City (`gc`), beads + Dolt,
+the gastown agents (mayor, deacon, witness, refinery, polecats), Claude Code, GitHub CLI, tmux, plus two
+safety tools, [DCG](https://github.com/Dicklesworthstone/destructive_command_guard) (blocks destructive
+shell commands before they run) and [CAAM](https://github.com/Dicklesworthstone/coding_agent_account_manager)
+(switch Claude accounts when a subscription limit hits).
 
-Work in progress. See the open beads.
+## 1. Buy a VPS
+
+Ubuntu 24.04, x86-64 or ARM, with root or a sudo user over SSH.
+
+|          | vCPU | RAM   | Disk   | Notes |
+|----------|------|-------|--------|-------|
+| Comfortable | 8 or more | 32 GB or more | 400 GB or more | several polecats plus builds run side by side |
+| Minimum  | 4    | 8 GB  | 80 GB  | one polecat; setup adds a 4 GB swap file below 16 GB RAM |
+
+- **Contabo:** Cloud VPS 12 (12 vCPU, 48 GB RAM, 400 GB SSD), image Ubuntu 24.04.
+- **Hetzner Cloud:** a General Purpose (dedicated vCPU) plan with 8 vCPU and 32 GB, image Ubuntu 24.04. Attach a volume if the disk is under 400 GB.
+
+## 2. Run the installer
+
+SSH into the new server and paste this one line (as root or as a sudo user):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexknips/gas-city-setup/main/setup.sh | bash
+```
+
+It takes roughly 10 to 20 minutes and prints its elapsed time at the end. Started as root, it first creates a
+sudo user (`gc`; use another name with `GCS_USER=name` in front of `bash`) with your SSH keys and carries on
+as that user. Running it again is safe: it only changes what differs, so re-running is also how you apply
+config edits.
+
+## 3. Log in
+
+The last lines of the installer list the logins it cannot do for you (each is skipped once done):
+`claude` (your Claude account), `gh auth login` (GitHub, needed for pull requests), `sudo tailscale up`
+(only if enabled) and `caam backup claude main` (saves the Claude login so you can switch accounts later).
+
+## 4. Add a project
+
+```bash
+gcs rig-add https://github.com/<you>/<repo>
+```
+
+`gcs rig-add` takes a URL, `owner/repo` or a local path. It clones, tells Claude Code to trust the repo (an
+untrusted repo makes every worker die on the folder-trust dialog), runs `gc rig add`, works around the
+first-add beads migration failure (beads#4566), and gives the rig one polecat on Sonnet. Then create work:
+`bd create "..."` in the rig directory, or ask the mayor: `gc session attach mayor`.
+
+Agents open a **pull request** per finished task and stop; you (or a review bot) merge. For agents that merge
+straight to the main branch set `MERGE_MODE=direct` (below).
+
+## Dashboard
+
+`gc dashboard --no-open` prints the URL of the built-in dashboard. From your laptop:
+`ssh -L 8372:127.0.0.1:8372 <user>@<server>`, then open the printed URL with the host `127.0.0.1`.
+Generic Daily and Scoreboard pages ship in `dashboard/` and are installed by the same script once present.
+
+## Configuration
+
+One file, `~/.config/gcs/config.env`, written with its defaults on the first run and documented line by line.
+Edit it, then run `gcs setup`. Keys: `GC_CITY_DIR`, `GCS_REPOS_DIR`, `SWAP`, `TAILSCALE`, `GIT_NAME`,
+`GIT_EMAIL`, `MODEL_MAYOR`, `MODEL_DEFAULT`, `MODEL_POLECAT` (`opus`, `sonnet` or `haiku`), `POLECAT_POOL`,
+`MERGE_MODE` (`pr` or `direct`), plus the dashboard, review bot and backup sections.
+
+## Adding components
+
+A directory `<name>/` in this repo plugs in without editing `setup.sh`: `install.sh` runs after the city is up
+(every setup, so keep it idempotent), `restore.sh` runs before the city is created when setup was started with
+`--restore`, and `cmd.sh` runs as `gcs <name> ...`. All `config.env` keys are in the environment.
+
+## Uninstall
+
+```bash
+gc stop && gc unregister "$GC_CITY_DIR"     # stop the city
+gc supervisor uninstall                      # remove the systemd unit
+rm -rf ~/gc ~/.gcs ~/.config/gcs ~/.local/bin/{gc,gcs,bd,dolt,dcg,caam}   # city, this repo, config, tools
+```
+
+Rig repositories are left alone; each has a `.beads/` directory you can delete.
+
+## Credits
+
+Built on [Gas City](https://github.com/gastownhall/gascity) and [beads](https://github.com/gastownhall/beads),
+in the spirit of [agentic_coding_flywheel_setup](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup).
+DCG and CAAM are by Jeffrey Emanuel (Dicklesworthstone). Maintained by [alexknips](https://github.com/alexknips).

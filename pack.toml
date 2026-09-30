@@ -1,0 +1,19 @@
+# Pinned imports for the city. Bump the pins deliberately, together (see README).
+[pack]
+  name = "gcs"
+  version = ""
+  schema = 2
+
+[imports]
+  [imports.bd]
+    source = "https://github.com/gastownhall/gascity.git//examples/bd"
+    version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
+  [imports.core]
+    source = "https://github.com/gastownhall/gascity.git//internal/bootstrap/packs/core"
+    version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
+  [imports.gascity]
+    source = "https://github.com/gastownhall/gascity-packs.git//gascity"
+    version = "^0.3"
+  [imports.gastown]
+    source = "https://github.com/gastownhall/gascity-packs/tree/main/gastown"
+    version = "sha:33d3a430a67d1782ad364556cb566bdb01d0afe3"
