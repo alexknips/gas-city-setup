@@ -57,8 +57,6 @@ provider = "bd"
 [session]
 setup_timeout = "60s"
 
+# Every patrol is a full gc CLI start; twice a minute is plenty and easier on a small box.
 [daemon]
 patrol_interval = "60s"
-max_restarts = 5
-restart_window = "1h"
-shutdown_timeout = "5s"

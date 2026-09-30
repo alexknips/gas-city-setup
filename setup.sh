@@ -266,7 +266,7 @@ cmd_setup() {
   while [ $# -gt 0 ]; do
     case $1 in --restore) GCS_RESTORE=${2:?--restore needs an archive or url}; export GCS_RESTORE; shift 2 ;; *) die "unknown option: $1" ;; esac
   done
-  have apt-get || die "this script needs an apt-based Linux (Debian or Ubuntu family)"
+  have apt-get || die "this script needs an apt-based Linux (Debian family)"
   have sudo || die "sudo is required (or start this as root)"
   load_config
   log "config: $GCS_CONFIG"
@@ -321,7 +321,7 @@ cmd_rig_add() {
     db=$(jq -r '.dolt_database // empty' "$root/.beads/metadata.json" 2>/dev/null || true)
     [ -n "$db" ] || die "gc rig add failed (reason above); nothing was created in $root"
     warn "rig add round $i failed; committing the new database's working set and retrying"
-    gc --city "$CITY" dolt sql -q "USE \`$db\`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'gcs: initial rig schema', '--allow-empty');" || true
+    ( cd "$CITY" && gc dolt sql -q "USE \`$db\`; CALL DOLT_ADD('-A'); CALL DOLT_COMMIT('-m', 'gcs: initial rig schema', '--allow-empty');" ) || true
     adopt=(--adopt)
   done
   rig_listed "$name" || die "rig $name did not appear in $CITY/city.toml after $i rounds"
@@ -330,7 +330,7 @@ cmd_rig_add() {
   ok "rig $name added (polecats: $POLECAT_POOL x $MODEL_POLECAT, merge mode: $MERGE_MODE)"
 }
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
 
 main() {
   T0=${GCS_T0:-$(date +%s)}
@@ -351,9 +351,10 @@ main() {
     exec bash "$GCS_HOME/setup.sh" "$@"
   fi
   case "${1:-setup}" in
-    setup) shift || true; cmd_setup "$@" ;;
-    rig-add) shift; cmd_rig_add "$@" ;;
     -h|--help|help) usage ;;
+    setup) shift || true; cmd_setup "$@" ;;
+    -*) cmd_setup "$@" ;;  # e.g. --restore <archive>
+    rig-add) shift; cmd_rig_add "$@" ;;
     *) if [ -f "$GCS_HOME/$1/cmd.sh" ]; then load_config; sub=$1; shift; exec bash "$GCS_HOME/$sub/cmd.sh" "$@"; fi
        usage; exit 2 ;;
   esac
