@@ -38,7 +38,7 @@ formulas, no changes to `gc` or `bd`.
    QUALITY_SCORES_JSON = "/srv/dashboard/scores.json"
    ```
 
-3. `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
+3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
    runs it now. The first run is the backfill of the last 28 days; after that it runs daily at
    06:15 host time (`schedule` in an override moves it).
 
