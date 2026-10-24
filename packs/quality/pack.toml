@@ -1,0 +1,6 @@
+# quality: how good a Gas City's work is, per rig and per day (README.md).
+# One exec order (orders/quality-metrics.toml) writes per-day JSON history and a static page.
+# No agents, no formulas, no core changes; reads beads, GitHub (gh) and the city event log.
+[pack]
+name = "quality"
+schema = 2

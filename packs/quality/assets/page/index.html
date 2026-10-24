@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quality</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --past: #c3c2b7; --hover: rgba(11,11,11,0.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+      --accent: #3987e5; --past: #4a4a46; --hover: rgba(255,255,255,0.07);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5; --past: #4a4a46; --hover: rgba(255,255,255,0.07);
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+  h1 { font-size: 22px; margin: 0; font-weight: 650; }
+  h2 { font-size: 15px; font-weight: 650; margin: 0 0 8px; }
+  .meta { color: var(--ink-2); font-size: 13px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 0 0 16px; }
+  .filters label { font-size: 13px; color: var(--ink-2); display: inline-flex; gap: 6px; align-items: center; }
+  select { font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 4px 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+  .seg button { font: inherit; font-size: 13px; border: 0; background: var(--surface); color: var(--ink-2); padding: 5px 12px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--ring); }
+  .seg button[aria-pressed="true"] { color: var(--ink); font-weight: 650; box-shadow: inset 0 -2px 0 var(--accent); }
+  .seg button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px; min-width: 0; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 28px; font-weight: 650; margin-top: 2px; line-height: 1.2; }
+  .tile .value.nodata { font-size: 18px; color: var(--muted); font-weight: 600; padding: 6px 0 4px; }
+  .tile .sub { color: var(--muted); font-size: 12px; min-height: 2.9em; }
+  .spark { position: relative; margin-top: 6px; height: 64px; }
+  .spark svg { display: block; width: 100%; height: 64px; overflow: visible; }
+  .spark .axis { stroke: var(--grid); stroke-width: 1; }
+  .spark .cap { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .spark .hit { fill: transparent; cursor: default; }
+  .spark .hit:hover, .spark .hit.on { fill: var(--hover); }
+  .tip { position: fixed; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--ring);
+         border-radius: 8px; padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.14); display: none; z-index: 60; max-width: 260px; }
+  .tip b { font-size: 14px; display: block; }
+  .tip span { color: var(--ink-2); }
+  .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 16px; }
+  @media (min-width: 860px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th:first-child, td:first-child, td.l, th.l { text-align: left; }
+  th { color: var(--ink-2); font-weight: 600; white-space: normal; vertical-align: bottom; }
+  .bead-title { display: block; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+  tr.sel td { background: var(--hover); }
+  .nd { color: var(--muted); font-style: italic; }
+  .note { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  details { margin-top: 16px; }
+  summary { cursor: pointer; font-weight: 650; font-size: 15px; }
+  dl.defs { margin: 8px 0 0; }
+  dl.defs dt { font-weight: 650; margin-top: 12px; }
+  dl.defs dd { margin: 2px 0 0; color: var(--ink-2); font-size: 13px; }
+  dl.defs dd .k { color: var(--muted); }
+  a { color: var(--accent); }
+  .err { border-color: var(--axis); color: var(--ink-2); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Quality</h1>
+      <div class="meta">How good the city's work is, per rig and per day: does it land first time, does it hold after merge, how long does it take.</div>
+    </div>
+    <div class="meta" id="gen">loading…</div>
+  </header>
+
+  <div class="filters" role="group" aria-label="Filters">
+    <label>Rig <select id="rig"></select></label>
+    <span class="seg" role="group" aria-label="Window">
+      <button type="button" id="w7" aria-pressed="false">Last 7 days</button><button type="button" id="w28" aria-pressed="true">Last 28 days</button>
+    </span>
+  </div>
+
+  <section class="tiles" id="tiles" aria-label="Metrics for the selected rig and window"></section>
+
+  <section class="card">
+    <h2>Per rig, <span id="rigs-window"></span></h2>
+    <div class="scroll"><table id="rigs"></table></div>
+    <p class="note" id="rigs-note"></p>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2>Time to land, <span class="selname"></span></h2>
+      <div class="scroll"><table id="ttl"></table></div>
+      <p class="note">Hours. Claimed is the bead's first start; PR opened comes from GitHub; merged is the close by the refinery; verified is when the post-merge check label was added.</p>
+    </section>
+    <section class="card">
+      <h2>Machine friction, <span class="selname"></span></h2>
+      <div class="scroll"><table id="friction"></table></div>
+      <p class="note" id="friction-note"></p>
+    </section>
+  </div>
+
+  <section class="card" style="margin-top:16px">
+    <h2>Landed beads, <span class="selname"></span></h2>
+    <div class="scroll"><table id="beads"></table></div>
+    <p class="note">Each row is one bead as the order counted it. To check one by hand: <code>quality.py --bead &lt;id&gt;</code>.</p>
+  </section>
+
+  <details>
+    <summary>Daily values, <span class="selname"></span></summary>
+    <div class="card" style="margin-top:8px"><div class="scroll"><table id="daily"></table></div></div>
+  </details>
+
+  <details>
+    <summary>What each number means, and where it comes from</summary>
+    <div class="card" style="margin-top:8px">
+      <dl class="defs" id="defs"></dl>
+      <p class="note" id="sources"></p>
+    </div>
+  </details>
+</main>
+<div class="tip" id="tip" role="tooltip"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k === "text") e.textContent = v; else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+};
+const svgEl = (tag, attrs) => {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  return e;
+};
+const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
+
+let Q = null, rig = "all", win = "28";
+
+const DEFS = [
+  ["Bounce rate", "Share of landed beads the refinery sent back at least once before merging.",
+   "Beads events: an update that sets metadata.rejection_reason (the gastown refinery's bounce). Landed = closed with metadata.merge_result merged or pull_request, by the local day it closed.",
+   "Counts bounces only from refineries that record rejection_reason. A bounce whose reason says the problem was pre-existing is tagged as caused by the gate and also counted as friction."],
+  ["Post-merge failure rate", "Share of landed beads that the post-merge check marked failed, or that were reopened while landed within the follow-up window.",
+   "Labels (QUALITY_VERIFY_FAIL_LABELS, default verify:failed) and reopened events whose prior state was landed. Check coverage = share of landed beads with any verdict label.",
+   "Only as good as the post-merge check: with low coverage the rate mostly reflects reopens. Beads that landed less than the follow-up window ago can still fail."],
+  ["Fix-of-a-fix", "Share of landed beads that drew a bug within the follow-up window: a bug discovered-from the bead, or one whose text names the bead in a sentence that says it shipped, caused or left the problem.",
+   "Beads: issue_type bug created after the landing, discovered-from links, and the bug's title and description.",
+   "A text heuristic: bugs that say the problem is pre-existing are excluded, and a mention without a causal word is not counted, so it undercounts. Recent landings are still maturing."],
+  ["First-pass CI", "Share of merged PRs whose first pushed head passed every required check without a re-run.",
+   "GitHub (gh): merged PRs, the branch's required checks (rulesets, else branch protection, else all checks), the first pull_request workflow run per PR, and the check runs on that head.",
+   "Uses today's required checks for older PRs. A PR whose first head has no pull_request workflow run shows as unknown. Rigs without a GitHub remote have no data."],
+  ["Time to land", "Median and 90th percentile hours per stage: created to claimed, claimed to PR opened, claimed to merged, merged to verified, created to merged.",
+   "Beads: created_at, started_at (first claim; else the first claimed event), closed_at; GitHub PR createdAt; the label_added event of the verify label.",
+   "Created to claimed includes time a bead sat blocked or parked on purpose. A bead reopened and landed again is measured to its last landing."],
+  ["Human wait", "Human-gate beads open at the end of each day, how many of those are past their due time, and how long answered gates stayed open.",
+   "Beads whose title starts with QUALITY_HUMAN_PREFIXES or whose metadata has QUALITY_HUMAN_DUE_KEY (default human.due).",
+   "Work blocked behind a gate is not linked to it in the bead graph, so the time other beads wait on a person is not measured, only the gate's own open time."],
+  ["Cost per landed bead", "Dollars per merged bead, city-wide, read from the existing scores.json (not recomputed).",
+   "QUALITY_SCORES_JSON: days[].gc.usd and days[].gc.merged.",
+   "City-level only. A day counts only when the usage feed also has cost on the day before, so a day on which the feed restarted part-way is left out; a day on which it stopped part-way still reads too low."],
+  ["Machine friction", "Stalls the town already logs, per day: order failures, stalled-session resets, cold-start timeouts, dead-assignee reopens, skipped supervisor ticks and gate-caused bounces.",
+   "The city event log ($GC_CITY_PATH/.gc/events.jsonl and rotated archives), read incrementally.",
+   "Counts events, not their cost. Events without a rig (most order failures) are city-level and appear under All rigs. Wake orders (a nudge to an idle seat) are not counted: gc keeps no record of delivered nudges, and a fired order only means it ran."],
+];
+
+function fmtPct(v) { return v == null ? null : (Math.round(v * 10) / 10) + "%"; }
+function fmtH(v) {
+  if (v == null) return null;
+  if (v < 1) return Math.round(v * 60) + " min";
+  if (v < 48) return (Math.round(v * 10) / 10) + " h";
+  return (Math.round(v / 24 * 10) / 10) + " d";
+}
+function fmtUsd(v) { return v == null ? null : "$" + v.toFixed(2); }
+function nd(text) { return el("span", { class: "nd", text: text || "no data" }); }
+function cellVal(v, f) { const s = f(v); return s == null ? nd() : document.createTextNode(s); }
+
+function W() { return Q.windows[win][rig]; }
+function rigInfo(name) { return Q.rigs.find((r) => r.name === name) || {}; }
+function windowDays() { return Q.days.slice(-Number(win)); }
+
+function ghReason(name) {
+  if (name === "all") {
+    const withGh = Q.rigs.filter((r) => r.github && r.github.repo && !r.github.error && !r.github.note);
+    return withGh.length ? null : "no rig has GitHub data";
+  }
+  const g = rigInfo(name).github || {};
+  if (!g.repo) return "no GitHub remote";
+  if (g.error) return "GitHub error: " + g.error;
+  if (g.note) return g.note;
+  return null;
+}
+
+function tileDefs() {
+  const m = W(), days = Number(win), sel = rig === "all" ? "all rigs" : rig;
+  const maturing = "landings after " + Q.maturing_from + " are still maturing";
+  const t = [];
+  t.push({ key: "bounce_rate", label: "Bounce rate", value: fmtPct(m.bounce_rate),
+    nodata: m.landed ? null : "no landed beads",
+    sub: m.landed ? `${m.bounced} of ${m.landed} landed beads bounced (${m.bounces} bounce${m.bounces === 1 ? "" : "s"}${m.bounces_gate ? ", " + m.bounces_gate + " caused by a gate" : ""})` : "",
+    fmt: fmtPct });
+  t.push({ key: "post_merge_failure_rate", label: "Post-merge failure rate", value: fmtPct(m.post_merge_failure_rate),
+    nodata: m.landed ? null : "no landed beads",
+    sub: m.landed ? `${m.post_merge_failed} of ${m.landed} (${m.verify_failed} check failed, ${m.reopened} reopened); check coverage ${fmtPct(m.check_coverage)}${m.checked ? "" : ": only reopens count"}` : "",
+    fmt: fmtPct });
+  t.push({ key: "fix_of_a_fix_rate", label: "Fix-of-a-fix", value: fmtPct(m.fix_of_a_fix_rate),
+    nodata: m.landed ? null : "no landed beads",
+    sub: m.landed ? `${m.fof_beads} of ${m.landed} landed beads drew ${m.fof_bugs} follow-up bug${m.fof_bugs === 1 ? "" : "s"}; ${maturing}` : "",
+    fmt: fmtPct });
+  const gh = ghReason(rig);
+  t.push({ key: "first_pass_ci_rate", label: "First-pass CI", value: fmtPct(m.first_pass_ci_rate),
+    nodata: gh || (m.prs_known ? null : (m.prs_merged ? "first heads unknown" : "no merged PRs")),
+    sub: m.prs_merged ? `${m.prs_first_pass} of ${m.prs_known} merged PRs green on their first head${m.prs_known < m.prs_merged ? "; " + (m.prs_merged - m.prs_known) + " unknown" : ""}` : "",
+    fmt: fmtPct });
+  const cm = m.time_to_land.claimed_merged;
+  t.push({ key: "claimed_merged_median_h", label: "Claimed to merged (median)", value: fmtH(cm.median),
+    nodata: cm.n ? null : "no landed beads with a claim time",
+    sub: cm.n ? `p90 ${fmtH(cm.p90)}; created to merged median ${fmtH(m.time_to_land.created_merged.median) || "no data"}; n=${cm.n}` : "",
+    fmt: fmtH });
+  t.push({ key: "human_open_eod", label: "Human gates open", value: String(m.human.open_now),
+    nodata: null,
+    sub: `${m.human.past_due_now} past due at the latest day end; ${m.human.answered} answered in the window` + (m.human.answered ? `, median ${fmtH(m.human.answer_median_h)} open` : ""),
+    fmt: (v) => v == null ? null : String(v) });
+  if (rig === "all") {
+    t.push({ key: "cost_per_landed", label: "Cost per landed bead", value: fmtUsd(m.cost_per_landed),
+      nodata: m.cost_days ? null : (Q.sources.cost && Q.sources.cost.indexOf("not set") >= 0 ? "no cost source configured" : "no cost data in the window"),
+      sub: m.cost_days ? `$${m.cost_usd} over ${m.cost_merged} merged beads on ${m.cost_days} of ${days} days with a continuous usage feed (city-wide)` : "the usage feed behind scores.json has no complete days in this window",
+      fmt: fmtUsd });
+  } else {
+    t.push({ key: "cost_per_landed", label: "Cost per landed bead", value: null, nodata: "city-level only: choose All rigs",
+      sub: "scores.json prices tokens per day for the whole city, not per rig", fmt: fmtUsd, noSeries: true });
+  }
+  t.push({ key: "friction", label: "Machine friction", value: String(m.friction_total),
+    nodata: null, sub: `logged stalls in ${sel}` + (rig === "all" ? ", city-level ones included" : ", rig-attributed only"),
+    fmt: (v) => v == null ? null : String(v) });
+  return t;
+}
+
+const tip = $("tip");
+function showTip(evt, strong, rest) {
+  tip.replaceChildren(el("b", { text: strong }), el("span", { text: rest }));
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  let x = evt.clientX + 12, y = evt.clientY - r.height - 10;
+  if (x + r.width > window.innerWidth - 8) x = evt.clientX - r.width - 12;
+  if (y < 8) y = evt.clientY + 16;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+function hideTip() { tip.style.display = "none"; }
+
+function spark(container, values, fmt, label) {
+  const w = Math.max(container.clientWidth, 120), h = 64, top = 14, base = h - 14;
+  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, role: "img", "aria-label": `${label}, daily, last ${values.length} days` });
+  const n = values.length, slot = w / n, bw = Math.max(2, Math.min(24, slot - 2));
+  const nums = values.filter((v) => v != null);
+  const max = Math.max(...nums, 0) || 1;
+  const inWin = n - Number(win);
+  svg.append(svgEl("line", { class: "axis", x1: 0, x2: w, y1: base + 0.5, y2: base + 0.5 }));
+  values.forEach((v, i) => {
+    const x = i * slot + (slot - bw) / 2;
+    const color = i >= inWin ? "var(--accent)" : "var(--past)";
+    if (v != null) {
+      const bh = v === 0 ? 0 : Math.max(2, (v / max) * (base - top));
+      if (bh === 0) {
+        svg.append(svgEl("rect", { x, y: base - 2, width: bw, height: 2, fill: color, opacity: 0.6 }));
+      } else {
+        const r = Math.min(4, bw / 2, bh);
+        const y = base - bh;
+        svg.append(svgEl("path", { fill: color,
+          d: `M${x},${base} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${base} Z` }));
+      }
+    }
+    const hit = svgEl("rect", { class: "hit", x: i * slot, y: 0, width: slot, height: base });
+    const day = Q.days[i];
+    const text = v == null ? "no data" : fmt(v);
+    hit.addEventListener("pointermove", (e) => { hit.classList.add("on"); showTip(e, text, day + (i >= inWin ? "" : " (before the window)") + (day === Q.today ? ", today so far" : "")); });
+    hit.addEventListener("pointerleave", () => { hit.classList.remove("on"); hideTip(); });
+    svg.append(hit);
+  });
+  svg.append(Object.assign(svgEl("text", { class: "cap", x: 0, y: h - 2 }), { textContent: Q.days[0].slice(5) }));
+  const endCap = svgEl("text", { class: "cap", x: w, y: h - 2, "text-anchor": "end" });
+  endCap.textContent = Q.days[n - 1].slice(5);
+  svg.append(endCap);
+  const peak = svgEl("text", { class: "cap", x: w, y: 10, "text-anchor": "end" });
+  peak.textContent = nums.length ? "max " + fmt(Math.max(...nums)) : "no data in " + n + " days";
+  svg.append(peak);
+  container.replaceChildren(svg);
+}
+
+function renderTiles() {
+  const tiles = $("tiles");
+  tiles.replaceChildren();
+  for (const t of tileDefs()) {
+    const card = el("article", { class: "card tile" });
+    card.append(el("div", { class: "label", text: t.label }));
+    if (t.value == null || t.nodata) card.append(el("div", { class: "value nodata", text: t.nodata || "no data" }));
+    else card.append(el("div", { class: "value", text: t.value }));
+    card.append(el("div", { class: "sub", text: t.sub || "" }));
+    const sp = el("div", { class: "spark" });
+    card.append(sp);
+    tiles.append(card);
+    if (!t.noSeries) requestAnimationFrame(() => spark(sp, Q.series[rig][t.key], t.fmt, t.label));
+  }
+}
+
+function renderRigs() {
+  $("rigs-window").textContent = "last " + win + " days";
+  const tbl = $("rigs");
+  const head = ["Rig", "Landed", "Bounce", "Post-merge fail", "Check coverage", "Fix-of-a-fix", "First-pass CI", "Claimed→ merged", "p90", "Gates open", "Past due", "Friction"];
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { text: h })))));
+  const body = el("tbody");
+  const names = Q.rigs.filter((r) => r.active).map((r) => r.name).concat(["all"]);
+  for (const n of names) {
+    const m = Q.windows[win][n], cm = m.time_to_land.claimed_merged;
+    const gh = ghReason(n);
+    const tr = el("tr", n === rig ? { class: "sel" } : {});
+    tr.append(el("td", { text: n === "all" ? "All rigs" : n }), el("td", { text: String(m.landed) }),
+      el("td", {}, cellVal(m.bounce_rate, fmtPct)), el("td", {}, cellVal(m.post_merge_failure_rate, fmtPct)),
+      el("td", {}, cellVal(m.check_coverage, fmtPct)), el("td", {}, cellVal(m.fix_of_a_fix_rate, fmtPct)),
+      el("td", {}, gh && n !== "all" ? nd(gh) : cellVal(m.first_pass_ci_rate, fmtPct)),
+      el("td", {}, cellVal(cm.median, fmtH)), el("td", {}, cellVal(cm.p90, fmtH)),
+      el("td", { text: String(m.human.open_now) }), el("td", { text: String(m.human.past_due_now) }),
+      el("td", { text: String(m.friction_total) }));
+    body.append(tr);
+  }
+  tbl.append(body);
+  const idle = Q.rigs.filter((r) => !r.active).map((r) => r.name);
+  $("rigs-note").textContent = (idle.length ? "No activity in the last " + Q.days.length + " days: " + idle.join(", ") + ". " : "") +
+    "Rates are shares of the beads that landed in the window (first-pass CI: of the PRs merged in it).";
+}
+
+function renderTtl() {
+  const m = W().time_to_land;
+  const rows = [["created_claimed", "Created → claimed"], ["claimed_pr", "Claimed → PR opened"], ["claimed_merged", "Claimed → merged"],
+                ["merged_verified", "Merged → verified"], ["created_merged", "Created → merged"]];
+  const tbl = $("ttl");
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...["Stage", "n", "Median", "p90"].map((h) => el("th", { text: h })))));
+  const body = el("tbody");
+  for (const [k, name] of rows) {
+    const s = m[k];
+    body.append(el("tr", {}, el("td", { text: name }), el("td", { text: String(s.n) }), el("td", {}, cellVal(s.median, fmtH)), el("td", {}, cellVal(s.p90, fmtH))));
+  }
+  tbl.append(body);
+}
+
+const FRICTION_NAMES = {
+  "session.reset_stalled": "stalled session reset", "session.cold_start_timeout": "session cold start timed out",
+  "session.work_query_failed": "session work query failed", "bead.dead_assignee_reopened": "work reopened from a dead session",
+  "supervisor.fs_pressure.skipped_tick": "supervisor tick skipped (disk pressure)", "refinery.gate_bounce": "bounce caused by a gate",
+};
+function frictionName(k) {
+  if (k.startsWith("order.failed:")) return "order failed: " + k.slice(13);
+  return FRICTION_NAMES[k] || k;
+}
+function renderFriction() {
+  const f = W().friction, keys = Object.keys(f);
+  const tbl = $("friction");
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, el("th", { text: "What" }), el("th", { text: "Count" }))));
+  const body = el("tbody");
+  if (!keys.length) body.append(el("tr", {}, el("td", { colspan: "2" }, nd(Q.sources.event_log ? "nothing logged" : "no event log"))));
+  for (const k of keys.slice(0, 14)) body.append(el("tr", {}, el("td", { text: frictionName(k) }), el("td", { text: String(f[k]) })));
+  if (keys.length > 14) body.append(el("tr", {}, el("td", { class: "nd", text: (keys.length - 14) + " more kinds" }), el("td", { text: String(keys.slice(14).reduce((a, k) => a + f[k], 0)) })));
+  tbl.append(body);
+  $("friction-note").textContent = "Source: " + (Q.sources.event_log || "no event log") + ".";
+}
+
+function renderBeads() {
+  const days = new Set(windowDays());
+  const list = Q.beads.filter((b) => (rig === "all" || b.rig === rig) && days.has(b.day)).sort((a, b) => (a.landed < b.landed ? 1 : -1));
+  const tbl = $("beads");
+  const head = ["Landed", "Bead"].concat(rig === "all" ? ["Rig"] : [], ["Bounces", "Post-merge", "Fix-of-a-fix", "First-pass CI", "Claimed→ merged"]);
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { text: h, class: ["Bead", "Rig", "Post-merge", "Fix-of-a-fix", "First-pass CI"].includes(h) ? "l" : "" })))));
+  const body = el("tbody");
+  for (const b of list.slice(0, 80)) {
+    const pm = b.post_merge_failed ? (b.verdict === "failed" ? "check failed" : "reopened") : (b.verdict === "ok" ? "verified" : "not checked");
+    const fp = b.first_pass_ci == null ? (b.pr ? "unknown" : "no PR") : (b.first_pass_ci ? "yes" : "no");
+    const beadCell = el("td", { class: "l" }, document.createTextNode(b.id), el("span", { class: "bead-title", text: b.title, title: b.title }));
+    body.append(el("tr", {}, el("td", { text: b.landed.slice(5, 16).replace("T", " ") }), beadCell,
+      ...(rig === "all" ? [el("td", { class: "l", text: b.rig })] : []),
+      el("td", { text: String(b.bounces) }), el("td", { class: "l", text: pm }),
+      el("td", { class: "l", text: b.fix_of_a_fix.length ? b.fix_of_a_fix.map((f) => f.id).join(", ") : "–" }),
+      el("td", { class: "l", text: fp + (b.pr ? " (#" + b.pr + ")" : "") }), el("td", {}, cellVal(b.hours.claimed_merged, fmtH))));
+  }
+  if (!list.length) body.append(el("tr", {}, el("td", { colspan: String(head.length) }, nd("no landed beads in this window"))));
+  tbl.append(body);
+}
+
+function renderDaily() {
+  const s = Q.series[rig];
+  const cols = [["landed", "Landed", (v) => v == null ? null : String(v)], ["bounce_rate", "Bounce", fmtPct], ["post_merge_failure_rate", "Post-merge fail", fmtPct],
+    ["fix_of_a_fix_rate", "Fix-of-a-fix", fmtPct], ["first_pass_ci_rate", "First-pass CI", fmtPct], ["claimed_merged_median_h", "Claimed→merged", fmtH],
+    ["human_open_eod", "Gates open", (v) => v == null ? null : String(v)], ["human_past_due_eod", "Past due", (v) => v == null ? null : String(v)],
+    ["friction", "Friction", (v) => v == null ? null : String(v)]];
+  if (rig === "all") cols.push(["cost_per_landed", "$/landed", fmtUsd]);
+  const tbl = $("daily");
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, el("th", { text: "Day" }), ...cols.map((c) => el("th", { text: c[1] })))));
+  const body = el("tbody");
+  for (let i = Q.days.length - 1; i >= 0; i--) {
+    body.append(el("tr", {}, el("td", { text: Q.days[i] + (Q.days[i] === Q.today ? " (so far)" : "") }), ...cols.map((c) => el("td", {}, cellVal(s[c[0]][i], c[2])))));
+  }
+  tbl.append(body);
+}
+
+function renderDefs() {
+  const dl = $("defs");
+  dl.replaceChildren();
+  for (const [name, what, src, blind] of DEFS) {
+    dl.append(el("dt", { text: name }),
+      el("dd", {}, document.createTextNode(what)),
+      el("dd", {}, el("span", { class: "k", text: "Source: " }), document.createTextNode(src)),
+      el("dd", {}, el("span", { class: "k", text: "Blind spots: " }), document.createTextNode(blind)));
+  }
+  const s = Q.sources;
+  const gh = Q.rigs.map((r) => r.name + ": " + (r.github && r.github.repo ? r.github.repo + (r.github.required_source ? " (required checks: " + r.github.required_source + ")" : "") + (r.github.error ? " error" : "") : "no GitHub")).join("; ");
+  $("sources").textContent = `Beads read via ${s.beads}; event times read as ${s.events_tz}. GitHub: ${gh}. Event log: ${s.event_log || "none"}. Cost: ${s.cost}. ` +
+    `Follow-up window ${Q.follow_days} days. Run took ${s.runtime_s}s.` + (s.errors && s.errors.length ? " Errors: " + s.errors.join("; ") : "");
+}
+
+function render() {
+  if (!Q.windows[win][rig]) rig = "all";
+  $("w7").setAttribute("aria-pressed", String(win === "7"));
+  $("w28").setAttribute("aria-pressed", String(win !== "7"));
+  for (const s of document.querySelectorAll(".selname")) s.textContent = (rig === "all" ? "all rigs" : rig) + ", last " + win + " days";
+  renderTiles(); renderRigs(); renderTtl(); renderFriction(); renderBeads(); renderDaily();
+}
+
+function init(data) {
+  Q = data;
+  win = String(Number(win) === 7 ? 7 : Q.days.length);
+  if (!Q.windows[win]) win = Object.keys(Q.windows).sort((a, b) => b - a)[0];
+  $("w28").textContent = "Last " + Q.days.length + " days";
+  $("w28").onclick = () => { win = String(Q.days.length); store.set("quality.win", win); render(); };
+  $("w7").onclick = () => { win = "7"; store.set("quality.win", win); render(); };
+  const sel = $("rig");
+  sel.append(el("option", { value: "all", text: "All rigs" }));
+  for (const r of Q.rigs.filter((r) => r.active)) sel.append(el("option", { value: r.name, text: r.name }));
+  const savedRig = store.get("quality.rig");
+  if (savedRig && Q.windows[win][savedRig]) rig = savedRig;
+  sel.value = rig;
+  sel.onchange = () => { rig = sel.value; store.set("quality.rig", rig); render(); };
+  const gen = new Date(Q.generated_at);
+  $("gen").textContent = `${Q.days[0]} to ${Q.days[Q.days.length - 1]} (${Q.timezone}), today counts so far · updated ${gen.toLocaleString()}`;
+  renderDefs();
+  render();
+  let t = null;
+  window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(renderTiles, 150); });
+}
+
+const savedWin = store.get("quality.win");
+if (savedWin) win = savedWin;
+fetch("quality.json", { cache: "no-store" }).then((r) => {
+  if (!r.ok) throw new Error("quality.json: HTTP " + r.status);
+  return r.json();
+}).then(init).catch((e) => {
+  $("gen").textContent = "";
+  $("tiles").replaceChildren(el("div", { class: "card err", text: "No data yet: " + e.message + ". The quality-metrics order writes quality.json next to this page on its first run." }));
+});
+</script>
+</body>
+</html>
