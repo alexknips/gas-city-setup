@@ -42,7 +42,13 @@ load_ok() { awk -v l="$(load1)" -v m="$LOAD_MAX" 'BEGIN{exit !(l<=m)}'; }
 # Capture, then match: `cmd | grep -q` / `cmd | head -1` under pipefail lets the early-exiting reader SIGPIPE the producer
 # (rc 141), which kills a `set -e` script (install.sh did) or flips a `! cmd | grep -q` guard to "not running".
 city_dolt_running() { local p; p=$(pgrep -af 'dolt sql-server' || true); [[ $p == *"$CITY/"* ]]; }
-units_running() { local u; u=$(systemctl --user list-units --state=active,activating --plain --no-legend "$@" 2>/dev/null || true); [ -n "$u" ]; }
+# units_running <glob>...: is a matching unit active, not counting the unit this script runs in (GCU_UNIT, set by run-detached.sh:
+# without that, the precheck inside the apply unit finds "an apply unit already running" = itself and aborts every real apply).
+units_running() {
+  local u; u=$(systemctl --user list-units --state=active,activating --plain --no-legend "$@" 2>/dev/null || true)
+  if [ -n "${GCU_UNIT:-}" ]; then u=$(grep -v "^${GCU_UNIT}\.service " <<<"$u" || true); fi
+  [ -n "$u" ]
+}
 
 # Newest backup dir written by backup.sh (a path in $BACKUP_ROOT/latest), or the one passed in GCU_BACKUP.
 backup_dir() {
