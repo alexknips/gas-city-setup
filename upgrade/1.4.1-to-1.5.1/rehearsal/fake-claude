@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stand-in for the claude CLI in the rehearsal box: no login, no model calls. Agent sessions run this inside
+# tmux and just idle, so the city's lifecycle (start, adopt, stop) can be watched without spending tokens.
+case " $* " in *" --version "*) echo "2.1.288 (Claude Code)"; exit 0 ;; esac
+echo "fake-claude (rehearsal stub) pid $$ args: $*"
+exec sleep infinity
