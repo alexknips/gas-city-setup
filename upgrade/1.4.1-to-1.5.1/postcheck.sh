@@ -41,7 +41,7 @@ for k in beads-health gate-sweep order-tracking-sweep dolt-health cross-rig-deps
 done
 rm -f "$cfg"
 ol=$(mktemp "${TMPDIR:-/tmp}/gcu-orders.XXXXXX")
-gc order list >"$ol" 2>&1
+gc order list >"$ol" 2>/dev/null
 for o in orphan-sweep mayor-mail-wake alex-daily deacon-patrol-wake hivemind-deploy-nightly quality-metrics; do
   grep -q "^$o " "$ol" && pass "order $o listed" || fail "order $o missing from gc order list"
 done
@@ -70,15 +70,16 @@ e=$(tail -n 400 "$lg" | grep -ci -E 'panic|fatal|cannot|refus' ); [ "${e:-0}" -e
 if [ "$doctor" = 1 ]; then
   step "gc doctor (slow)"
   dj=$(mktemp "${TMPDIR:-/tmp}/gcu-doctor.XXXXXX")
-  timeout 1500 gc doctor --json >"$dj" 2>&1; rc=$?
+  # stdout only: 1.5.1 prints ~10 config warnings (wake_mode, setup_timeout) on stderr of every command, which break the JSON
+  timeout 1500 gc doctor --json >"$dj" 2>"$dj.err"; rc=$?
   if jq -e 'has("results")' "$dj" >/dev/null 2>&1; then
     jq -r '"      passed=\(.passed) warned=\(.warned) failed=\(.failed) blocking_failed=\(.blocking_failed) ok=\(.ok)"' "$dj"
     jq -r '.results[] | select(.status != "ok") | "      \(.status | ascii_upcase) [\(.severity)] \(.name): \(.message)"' "$dj"
     [ "$(jq -r '.blocking_failed' "$dj")" = 0 ] && pass "doctor: no blocking failures" || fail "doctor: blocking failures (listed above)"
     nb=$(jq '[.results[] | select(.status == "error" or .status == "failed")] | length' "$dj")
     [ "$nb" = 0 ] || warn "doctor: $nb non-blocking failed checks (listed above; compare with the baseline in the runbook)"
-  else fail "gc doctor --json did not print JSON (exit $rc): $(head -c 300 "$dj")"; fi
-  cp -f "$dj" "${GCU_DOCTOR_OUT:-/tmp/gcu-doctor-last.json}"; rm -f "$dj"
+  else fail "gc doctor --json did not print JSON (exit $rc): $(head -c 300 "$dj") $(tail -c 300 "$dj.err")"; fi
+  cp -f "$dj" "${GCU_DOCTOR_OUT:-/tmp/gcu-doctor-last.json}"; rm -f "$dj" "$dj.err"
 fi
 
 printf '\n%s fails=%s warns=%s\n' "$(ts)" "$fails" "$warns"
