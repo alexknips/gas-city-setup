@@ -95,5 +95,23 @@ wait_city_ready() {
   die "city not ready after ${t}s; last status: $(head -4 <<<"$st" | tr '\n' '|')"
 }
 
+# migrate_schema <gc>: bd 1.3.x will not migrate a shared Dolt database by itself (#5920): without this, `gc start` on 1.5.1
+# fails after ~80s with 'table "i" does not have column "storage_class"'. One `bd migrate schema` per scope (v53 -> v66,
+# idempotent and resumable), run with the supervisor STOPPED: its init retries every 10s and hammer Dolt meanwhile.
+# `gc bd` starts the city's managed Dolt itself. Rehearsal: 8 scopes took ~8 min on a quiet host (hivemind alone ~5).
+# Databases bound to no rig ('mp') are not touched and stay at v53; 1.5.x no longer maintains them.
+migrate_schema() {
+  local gc=$1 s out
+  while read -r s; do
+    log "bd migrate schema in $s"
+    out=$(cd "$s" && timeout 1800 "$gc" bd migrate schema 2>&1) \
+      || { printf '%s\n' "$out" | tail -5; die "bd migrate schema failed in $s: run it again (resumable) or rollback.sh"; }
+    log "  $(grep -E 'Schema|schema' <<<"$out" | tail -1)"
+  done < <(city_scopes)
+}
+
+# The bd scopes: the city itself plus every rig path in .gc/site.toml. They all share the city's one Dolt server.
+city_scopes() { { echo "$CITY"; sed -n 's/^path = "\(.*\)"/\1/p' "$CITY/.gc/site.toml"; } | sort -u; }
+
 # The databases of the city's managed Dolt server: one dir per database under .beads/dolt
 dolt_dbs() { find "$CITY/.beads/dolt" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort; }

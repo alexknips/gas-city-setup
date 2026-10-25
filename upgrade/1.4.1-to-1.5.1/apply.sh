@@ -10,7 +10,7 @@
 #   3  gc stop, stop the supervisor unit, stop the city's Dolt                      DOWN
 #   4  cold backup of Dolt data, config, ~/.gc, unit, wrappers
 #   5  repoint ~/.local/bin/{gc,bd} and the unit's ExecStart to the 1.5.1 / 1.3.2 installs
-#   6  start the supervisor, register + start the city on 1.5.1                     (bd migrates the schema 53 -> 66)
+#   6  bd migrate schema per scope (53 -> 66), start the supervisor, register + start the city on 1.5.1
 #   7  gc doctor --fix, wait for the city to be ready                               UP
 #   8  after-snapshot + postcheck.sh
 set -euo pipefail
@@ -79,7 +79,8 @@ log "wrappers: $(grep '^exec ' "$WRAP_GC") / $(grep -m1 '^exec /' "$WRAP_BD")"
 log "unit:     $(grep '^ExecStart=' "$UNIT_FILE")"
 [ "$("$WRAP_GC" version)" = "$GC_VER" ] || die "gc via the wrapper is not $GC_VER"
 
-step "6. start on gc $GC_VER"
+step "6. bd schema migration, then start on gc $GC_VER"
+migrate_schema "$GC_NEW"
 systemctl --user start "$UNIT_NAME"
 wait_supervisor "$GC_NEW"
 start_city "$GC_NEW"
