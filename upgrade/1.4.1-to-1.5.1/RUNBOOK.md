@@ -6,9 +6,10 @@ after a rehearsal. The rehearsal is in `rehearsal/REHEARSAL-LOG.md`. This runboo
 What changes: **gc 1.4.1 -> 1.5.1 and bd 1.2.2 -> 1.3.2.** Dolt (2.3.2) stays. The city stays on its gc-managed Dolt
 (1.5.0 changed Dolt ownership for new cities only: do NOT migrate it).
 
-**The town is down for about 25-30 minutes on a quiet host** (measured in the rehearsal box: stop 26 s, cold backup
-7 min, bd schema migration 8 min, start 5 min, `gc doctor --fix` 4 min). Everything is stopped, so nothing is dispatched
-meanwhile. Under host load 20+ expect double.
+**The town is down for about 15 minutes on a quiet host, allow 30** (full apply pass in the rehearsal box, stop to ready:
+stop 19 s, cold backup 2.5-7 min, bd schema migration + start 8 min, `gc doctor --fix` 3.5 min). The whole apply takes about
+40 minutes because the before-snapshot (7-15 min, town still up) and the postcheck (doctor, 5+ min) bracket the downtime.
+Everything is stopped meanwhile, so nothing is dispatched. Under host load 20+ expect double.
 
 ## Why it is shaped this way
 
@@ -171,7 +172,8 @@ All still load and behave; none becomes redundant.
 
 ## 6. Doctor after the upgrade
 
-Baseline on 1.4.1 in the box: 138 passed, 6 warned, 0 failed. On 1.5.1 right after `--fix`: 158 passed, 11 warned,
+Latest full pass (postcheck on the finished 1.5.1 city): **157 passed, 12 warned, 1 failed (advisory timeout), `blocking_failed` 0,
+`ok=true`**. Baseline on 1.4.1 in the box: 138 passed, 6 warned, 0 failed. On 1.5.1 right after `--fix`: 158 passed, 11 warned,
 1 failed (an advisory timeout), `blocking_failed` 0; a later capture on the busy box: 155 passed, 11 warned, 4 failed (all
 four are 1-minute advisory timeouts), `blocking_failed` 0. The remaining findings, and which are box artefacts:
 

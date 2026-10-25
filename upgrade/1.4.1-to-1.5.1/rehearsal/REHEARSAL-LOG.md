@@ -32,6 +32,7 @@ stop the box but not wall-clock timeouts; read the pause list before blaming a s
 | 6 | Pass #2 aborted in precheck after 25 s: it counted the apply's own `gcu-apply-*` unit as "another apply running" (only visible in a real detached run) | `units_running` ignores `$GCU_UNIT` |
 | 7 | Pass #2 died at step 6 in 2 s: `gc bd: not in a city directory` for a rig path. `gc stop` unregisters the city and 1.5.1 then cannot map a rig path to its city; the earlier piecewise migrations worked only because the city was still registered | rig-scope `gc bd` calls run with `GC_CITY=$CITY` (tested: beadline, 13 migrations applied, v66) |
 | 8 | The 1.4.1 rollback `start` printed "City started under supervisor" but the readiness test failed (failure 4) | same fix as 4 |
+| 9 | Pass #3's postcheck failed: `gc doctor --json 2>&1` mixed the 10 stderr config warnings of 1.5.1 into the JSON | stdout only (`postcheck.sh`); `gc order list` likewise. No other town script parses merged gc stderr (grep in RUNBOOK section 5) |
 
 Failure 7 is also the case the rollback was rehearsed on: pass #2 left the box with the backup taken, the wrappers and unit
 on 1.5.1, the data still v53 and the town down; `rollback.sh` brought it back to a healthy 1.4.1 in one run.
@@ -52,7 +53,39 @@ Downtime on a quiet host: stop 0.5 + backup 3-7 + migrate 8 + start 5 + doctor 4
 
 ## Final passes
 
-PASS3_PLACEHOLDER
+### Full `apply.sh` pass #3 (04:06-04:44Z): a real `systemd-run --user` unit in the box, via `run-detached.sh --foreground`
+
+The box was paused by the watchdog 04:32-04:35 and 04:42-04:43 (host load 20+). Every step ran:
+
+| Step | Time (UTC) |
+|---|---|
+| 0-1 install (idempotent) + precheck: fails 0, warns 0 | 04:06:06-04:06:22 |
+| 2 before-snapshot, town up | 04:06:22-04:13:27 (7 min) |
+| 3 stop the town | 19 s |
+| 4 cold backup, 7.4 GB | 04:13:46-04:16:20 (2 min 34 s) |
+| 5 repoint wrappers + unit | 1 s |
+| 6 migrate 8 scopes (all "Schema already at v66"), start, `is_blocked` repair in 1 scope | 04:16:21-04:24:20 (8 min) |
+| 7 `gc doctor --fix`, wait for ready | 04:24:20-04:27:55 (3.5 min) |
+| 8 postcheck | 04:27:55-04:44:07 (16 min with the two pauses; doctor ~5 min) |
+
+**Town down from the stop to ready: 04:13:27-04:27:55, about 15 minutes** on a quiet host (allow 30 under load).
+
+The unit ended `POSTCHECK FAILED` on one check only: **failure 9**, `postcheck.sh` read `gc doctor --json 2>&1`, and the
+10 config warnings 1.5.1 prints on stderr broke the JSON. Fixed (stdout only, 70b0b16). The fix was validated by running
+`postcheck.sh` alone on the resulting 1.5.1 city (04:49-04:55Z): **`POSTCHECK OK`, fails 0, warns 5**; doctor **157 passed,
+12 warned, 1 failed, `blocking_failed` 0, `ok=true`**; the one failure is the advisory 1-minute timeout of
+`pool-idle-routed-work`. Every order the town depends on is listed, mayor-mail-wake and deacon-patrol-wake `--dry-run` pass,
+`bd list` works in all 8 scopes. The 5 warns: `alex-daily --dry-run` exit 124 (needs the cell and network), 2 supervisor.log
+lines matching `panic|fatal|cannot|refus` (**not examined**: grep them on the live town), the doctor timeout, and the
+known box artefacts of RUNBOOK section 6.
+
+**Honest limit:** the apply unit itself therefore never printed `apply complete` with a green postcheck in ONE run; the
+postcheck fix was verified in a separate run of the same script on the same city. Re-run `apply.sh` end to end on a
+fresh box only if you want that one-run proof (about 45 min).
+
+### Rollback pass #2, from a running 1.5.1 city
+
+ROLLBACK2_PLACEHOLDER
 
 ## Not covered
 
