@@ -124,7 +124,8 @@ migrate_schema() {
   local gc=$1 s out
   while read -r s; do
     log "bd migrate schema in $s"
-    out=$(cd "$s" && timeout 1800 "$gc" bd migrate schema 2>&1) \
+    # GC_CITY: after `gc stop` the city is unregistered and 1.5.1 cannot map a rig path to its city ("not in a city directory")
+    out=$(cd "$s" && GC_CITY="$CITY" timeout 1800 "$gc" bd migrate schema 2>&1) \
       || { printf '%s\n' "$out" | tail -5; die "bd migrate schema failed in $s: run it again (resumable) or rollback.sh"; }
     log "  $(grep -E 'Schema|schema' <<<"$out" | tail -1)"
   done < <(city_scopes)
@@ -138,7 +139,7 @@ repair_blocked() {
   while read -r s; do
     n=$((n + 1))
     log "is_blocked repair did not run in $s: committing the pending changes, then bd recompute-blocked"
-    (cd "$s" && "$gc" bd dolt commit && timeout 900 "$gc" bd recompute-blocked) \
+    (cd "$s" && export GC_CITY="$CITY" && "$gc" bd dolt commit && timeout 900 "$gc" bd recompute-blocked) \
       || log "WARN: the repair in $s failed; by hand: cd $s && gc bd dolt commit && gc bd recompute-blocked"
   done < <(tail -n +"$((from + 1))" "$GCHOME/supervisor.log" 2>/dev/null \
             | sed -n 's/.*is_blocked repair for .* did not run.*bd recompute-blocked in \([^)]*\))$/\1/p' | sort -u)
