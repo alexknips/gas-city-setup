@@ -32,7 +32,7 @@ grep -q "^exec $BREW/bin/gc " "$WRAP_GC" && pass "$WRAP_GC execs $BREW/bin/gc" |
 grep -q "^exec $BREW/bin/bd " "$WRAP_BD" && pass "$WRAP_BD execs $BREW/bin/bd" || fail "$WRAP_BD is not the expected passthrough"
 grep -q "^ExecStart=$GC_OLD supervisor run\$" "$UNIT_FILE" && pass "unit ExecStart is $GC_OLD" || fail "unit ExecStart differs from $GC_OLD: $(grep ^ExecStart= "$UNIT_FILE")"
 systemctl --user is-active --quiet "$UNIT_NAME" && pass "supervisor unit active" || warn "supervisor unit is not active (a cold start; fine if intended)"
-systemctl --user list-units --state=active --plain --no-legend 'gcu-apply-*' 2>/dev/null | grep -q . && fail "an apply unit (gcu-apply-*) is already running"
+units_running 'gcu-apply-*' && fail "an apply unit (gcu-apply-*) is already running"
 
 step "city health"
 st=$(mktemp "${TMPDIR:-/tmp}/gcu-precheck-status.XXXXXX")

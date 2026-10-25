@@ -44,4 +44,5 @@ fetch_unpack bd "$BD_TGZ" "$BD_SHA" "$BD_URL" bd "$BD_NEW" checksums.txt
 
 step "installed versions"
 "$GC_NEW" version
-"$BD_NEW" version 2>&1 | head -1
+bd_version=$("$BD_NEW" version 2>&1) || die "$BD_NEW version failed: $bd_version"
+printf '%s\n' "${bd_version%%$'\n'*}"

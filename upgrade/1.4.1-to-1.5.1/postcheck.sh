@@ -30,7 +30,8 @@ grep -q 'Controller: *supervisor-managed' <<<"$st" && pass "controller superviso
 grep -q 'partial status' <<<"$st" && warn "gc status says 'partial status' for $(grep -c 'partial status' <<<"$st") agent lines (runtime probe timeouts; seen on a healthy city in the rehearsal box, so only a hint)"
 n=$(tmux -L gc ls 2>/dev/null | wc -l)
 [ "$n" -gt 0 ] && pass "$n tmux sessions on socket gc" || fail "no tmux sessions on socket gc"
-for s in mayor deacon; do tmux -L gc ls 2>/dev/null | grep -q "$s" && pass "session $s is up" || warn "no tmux session matching '$s' yet"; done
+tmux_ls=$(tmux -L gc ls 2>/dev/null || true)
+for s in mayor deacon; do [[ $tmux_ls == *"$s"* ]] && pass "session $s is up" || warn "no tmux session matching '$s' yet"; done
 
 step "config and the town's overrides still load"
 cfg=$(mktemp "${TMPDIR:-/tmp}/gcu-config.XXXXXX")

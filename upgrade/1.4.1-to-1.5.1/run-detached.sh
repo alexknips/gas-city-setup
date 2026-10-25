@@ -19,7 +19,7 @@ case $script in apply.sh|rollback.sh) ;; *) die "only apply.sh and rollback.sh a
 [ -x "$UPG/$script" ] || die "$UPG/$script is not executable"
 
 # one upgrade/rollback at a time
-if systemctl --user list-units --state=active,activating --plain --no-legend 'gcu-apply-*' 'gcu-rollback-*' | grep -q .; then
+if units_running 'gcu-apply-*' 'gcu-rollback-*'; then
   die "another gcu-apply/gcu-rollback unit is still running: systemctl --user list-units 'gcu-*'"
 fi
 

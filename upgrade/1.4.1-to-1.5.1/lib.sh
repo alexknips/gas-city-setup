@@ -39,6 +39,11 @@ die()  { printf '%s FAIL: %s\n' "$(ts)" "$*" >&2; exit 1; }
 load1() { cut -d' ' -f1 /proc/loadavg; }
 load_ok() { awk -v l="$(load1)" -v m="$LOAD_MAX" 'BEGIN{exit !(l<=m)}'; }
 
+# Capture, then match: `cmd | grep -q` / `cmd | head -1` under pipefail lets the early-exiting reader SIGPIPE the producer
+# (rc 141), which kills a `set -e` script (install.sh did) or flips a `! cmd | grep -q` guard to "not running".
+city_dolt_running() { local p; p=$(pgrep -af 'dolt sql-server' || true); [[ $p == *"$CITY/"* ]]; }
+units_running() { local u; u=$(systemctl --user list-units --state=active,activating --plain --no-legend "$@" 2>/dev/null || true); [ -n "$u" ]; }
+
 # Newest backup dir written by backup.sh (a path in $BACKUP_ROOT/latest), or the one passed in GCU_BACKUP.
 backup_dir() {
   if [ -n "${GCU_BACKUP:-}" ]; then printf '%s\n' "$GCU_BACKUP"; return; fi
@@ -50,11 +55,12 @@ backup_dir() {
 # so run this last, right before the cold backup. SIGTERM is a clean Dolt shutdown (<2s measured); its scope watchdog
 # exits with it. Only the process named in the city's own dolt.pid, and only if its command line is the city's config.
 stop_city_dolt() {
-  local pidf=$CITY/.gc/runtime/packs/dolt/dolt.pid pid i
+  local pidf=$CITY/.gc/runtime/packs/dolt/dolt.pid pid i cmdline
   [ -f "$pidf" ] || return 0
   pid=$(cat "$pidf")
   { [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; } || return 0
-  tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q "dolt sql-server --config $CITY/" \
+  cmdline=$(tr '\0' ' ' < "/proc/$pid/cmdline")
+  [[ $cmdline == *"dolt sql-server --config $CITY/"* ]] \
     || die "pid $pid from $pidf is not the city's dolt sql-server: not touching it"
   log "stopping the city's dolt (pid $pid)"
   kill -TERM "$pid"

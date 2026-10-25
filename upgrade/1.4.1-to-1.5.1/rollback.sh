@@ -28,7 +28,7 @@ if tmux -L gc ls >/dev/null 2>&1; then
   tmux -L gc kill-server || true
 fi
 systemctl --user is-active --quiet "$UNIT_NAME" && die "$UNIT_NAME still active"
-! pgrep -af 'dolt sql-server' | grep -q "$CITY/" || die "the city's dolt is still running"
+! city_dolt_running || die "the city's dolt is still running"
 ! tmux -L gc ls >/dev/null 2>&1 || die "tmux -L gc still has sessions"
 log "town is down"
 

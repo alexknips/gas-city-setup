@@ -18,7 +18,7 @@ set -euo pipefail
 
 step "refusing to back up a live town"
 systemctl --user is-active --quiet "$UNIT_NAME" && die "$UNIT_NAME is still active: stop the city and the supervisor first (apply.sh does)"
-if pgrep -af 'dolt sql-server' | grep -q "$CITY/"; then die "the city's dolt sql-server is still running"; fi
+if city_dolt_running; then die "the city's dolt sql-server is still running"; fi
 if pgrep -af 'gc supervisor run' >/dev/null; then die "a gc supervisor process is still running"; fi
 load_ok || die "load $(load1) > $LOAD_MAX"
 log "cold: no supervisor, no city dolt"
