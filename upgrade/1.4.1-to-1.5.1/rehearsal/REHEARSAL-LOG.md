@@ -85,7 +85,22 @@ fresh box only if you want that one-run proof (about 45 min).
 
 ### Rollback pass #2, from a running 1.5.1 city
 
-ROLLBACK2_PLACEHOLDER
+`rollback.sh` launched 04:55:46Z against the 1.5.1 city left by pass #3 (backup `20261025T041346Z-gc1.4.1`). It ended rc 1,
+`POSTCHECK FAILED`, with **one** failed check, so this pass is **not** a clean green run:
+
+- Steps 1-5 passed: stop, upgraded Dolt moved aside, backup copied in, offline heads equal MANIFEST for all 9 databases
+  (04:57:46-04:59:15), start on 1.4.1 (04:59:15-05:02:26), "city is up", wrappers and unit back on the brew 1.4.1 gc/bd,
+  `bd list` readable in every scope.
+- The one fail: doctor `order-firing-current` (blocking): `order history lookup timed out after 15s`; three advisory
+  checks also hit their 1-minute timeout (`v2-routed-to-namespace`, `work-option-metadata-migration`,
+  `hold-label-conventions:hivemind-company`). Doctor summary `passed=133 warned=7 failed=4 blocking_failed=1`. The box was
+  frozen and resumed four times by the load watchdog during the verify step (05:05-05:26, 05:31-05:34, 05:36-05:37,
+  05:38-05:43; host load 20-26), so these are load timeouts, not restore damage. **Not re-run alone for lack of time**: before
+  trusting it, run `postcheck.sh --expect-old` on the restored town (or `gc doctor --check order-firing-current
+  --check-timeout 5m`).
+- The earlier rollback from a half-upgraded box (above) passed `POSTCHECK OK` (fails 0) in one run at low load, so the
+  restore path is proven; what is unproven is only that doctor goes green on the restored 1.4.1 city under load.
+- Restore time here: stop + move + copy 04:55:46-04:57:40 (~2 min), small trees 6 s, verify heads 1.5 min, start 3 min.
 
 ## Not covered
 

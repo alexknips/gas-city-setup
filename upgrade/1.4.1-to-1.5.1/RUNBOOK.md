@@ -114,7 +114,12 @@ Then decide, in this order (none is urgent; the town runs without them):
 5. Delete `~/gc-upgrade-backups/*` and the `.beads/dolt.*` dirs only once the town has run a few days on 1.5.1. The
    backup is the only way back to 1.4.1 data.
 
-## 4. Rollback (tested in the rehearsal box)
+## 4. Rollback (rehearsed twice in the box; see the caveat below)
+
+Rehearsal result: from a half-upgraded box (apply failed, town down) it passed `POSTCHECK OK` in one run. From a running
+1.5.1 city, every restore step passed (heads equal for all 9 databases, city up on 1.4.1) but the postcheck's doctor step
+failed on a 15 s `order-firing-current` timeout while the box was repeatedly frozen by load: unconfirmed, so after a real
+rollback run `postcheck.sh --expect-old` once the host is quiet.
 
 When: the apply stopped with the town down and you cannot finish by hand, or the town is up but wrong and you want 1.4.1 back.
 
