@@ -65,11 +65,19 @@ absolute paths and a log in `/home/ubuntu/gc-upgrade-backups/`. It returns at on
 | 4 | `backup.sh`: cold copy of Dolt data, config, `~/.gc`, unit, wrappers; writes `~/gc-upgrade-backups/latest` | down |
 | 5 | repoint `~/.local/bin/{gc,bd}` and the unit's `ExecStart` to the 1.5.1 / 1.3.2 installs, `daemon-reload` | down |
 | 6 | `gc bd migrate schema` in every scope, start the unit, `gc start` on 1.5.1, repair `is_blocked` where the first start skipped it | starting |
-| 7 | `gc doctor --fix` once (non-interactive), wait until `gc status` has no `partial status` | UP |
+| 7 | `gc doctor --fix` once (non-interactive), wait until the controller is supervisor-managed and 3+ tmux sessions are up | UP |
 | 8 | after-snapshot and `postcheck.sh` | up |
 
 Anything that fails after step 3 stops with the town down and prints how to back out (section 4). The log's last line
 is `apply complete` on success.
+
+"Ready" in step 7 is deliberately weak: the controller is supervisor-managed and at least 3 tmux sessions exist
+(`GCU_READY_SESSIONS`, wait limit `GCU_READY_TIMEOUT`, default 900 s). Do not wait for a `gc status` without
+`partial status`: it marks every agent `unknown (partial status)` when its runtime probe times out, which happened on a healthy
+city in the rehearsal (40 such lines on the 1.4.1 baseline too). The seats start in waves over the next minutes, some
+retrying after `resuming session: context deadline exceeded`; `postcheck.sh` and doctor judge the result.
+If the log ends `city not ready`, the city may only be slow: look at `gc status`, `tmux -L gc ls` and
+`~/.gc/supervisor.log` and run `postcheck.sh` before you decide to roll back.
 
 ## 2. What the apply changes on disk (live files)
 
@@ -163,13 +171,14 @@ All still load and behave; none becomes redundant.
 
 ## 6. Doctor after the upgrade
 
-Baseline on 1.4.1 in the box: 138 passed, 6 warned, 0 failed. On 1.5.1 after `--fix`: 158 passed, 11 warned, 1 failed
-(advisory timeout), `blocking_failed` 0. The remaining findings, and which are box artefacts:
+Baseline on 1.4.1 in the box: 138 passed, 6 warned, 0 failed. On 1.5.1 right after `--fix`: 158 passed, 11 warned,
+1 failed (an advisory timeout), `blocking_failed` 0; a later capture on the busy box: 155 passed, 11 warned, 4 failed (all
+four are 1-minute advisory timeouts), `blocking_failed` 0. The remaining findings, and which are box artefacts:
 
 | Finding | Real or artefact |
 |---|---|
 | `dolt-noms-size` hq 6.99 GB, `jsonl-archive` local-only, `rig-pack-coverage` (1 named_session), `session-model` (14), `formula-requirements` (1 formula still `contract=graph.v2`) | Already present on 1.4.1 (baseline), same on 1.5.1. Advisory. |
-| `pool-idle-routed-work`, `builtin-pack-imports`, `custom-types:hivemind`, `v2-routed-to-namespace`: `timed out after 1m0s` | Load. Each is a 1-minute advisory check; they pass alone (`gc doctor --check <name> --check-timeout 5m`). |
+| `pool-idle-routed-work`, `builtin-pack-imports`, `custom-types:hivemind`, `v2-routed-to-namespace`: `timed out after 1m0s` | Load: each is a 1-minute advisory check and the box was busy. Not re-run alone, so unconfirmed: `gc doctor --check <name> --check-timeout 5m` on the live town. |
 | `order-outcome-healthy` (decisions-for-humans failing), `nudge-unconfirmed` (11 sessions) | Box artefacts: no Loomtracer cell, and the stub `claude` cannot confirm a nudge. Expect them clean on the live town; if not, they are real. |
 | `agent-sessions` (40 agents without sessions), `orphan-sessions` (1; fix skipped while the controller runs) | On-demand pool seats have no session until work arrives. Look at the orphan on the live town. |
 | `bd-backup-freshness` (registered but never synced), `order-firing-current` | The box had only just started and has no backup remotes. Re-check on the live town after a day. |
