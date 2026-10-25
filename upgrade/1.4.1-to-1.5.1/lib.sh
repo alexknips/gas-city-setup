@@ -110,6 +110,21 @@ migrate_schema() {
   done < <(city_scopes)
 }
 
+# repair_blocked <gc> <supervisor.log line count before the start>: on its first start 1.5.1 recomputes is_blocked per scope and
+# skips a scope with uncommitted Dolt changes: "is_blocked repair for rig/X did not run ... (to repair by hand: bd recompute-blocked
+# in <path>)". Rehearsal: neurofilament (a legacy rig). `gc bd dolt commit` is a no-op on a clean scope ("Nothing to commit.", rc 0).
+repair_blocked() {
+  local gc=$1 from=$2 s n=0
+  while read -r s; do
+    n=$((n + 1))
+    log "is_blocked repair did not run in $s: committing the pending changes, then bd recompute-blocked"
+    (cd "$s" && "$gc" bd dolt commit && timeout 900 "$gc" bd recompute-blocked) \
+      || log "WARN: the repair in $s failed; by hand: cd $s && gc bd dolt commit && gc bd recompute-blocked"
+  done < <(tail -n +"$((from + 1))" "$GCHOME/supervisor.log" 2>/dev/null \
+            | sed -n 's/.*is_blocked repair for .* did not run.*bd recompute-blocked in \([^)]*\))$/\1/p' | sort -u)
+  log "is_blocked repair: $n scope(s) needed it"
+}
+
 # The bd scopes: the city itself plus every rig path in .gc/site.toml. They all share the city's one Dolt server.
 city_scopes() { { echo "$CITY"; sed -n 's/^path = "\(.*\)"/\1/p' "$CITY/.gc/site.toml"; } | sort -u; }
 

@@ -83,7 +83,9 @@ step "6. bd schema migration, then start on gc $GC_VER"
 migrate_schema "$GC_NEW"
 systemctl --user start "$UNIT_NAME"
 wait_supervisor "$GC_NEW"
+SLOG_LINES=$(wc -l < "$GCHOME/supervisor.log" 2>/dev/null || echo 0)
 start_city "$GC_NEW"
+repair_blocked "$GC_NEW" "$SLOG_LINES"
 
 step "7. gc doctor --fix (once), then wait for the city"
 gcrun timeout 1800 "$GC_NEW" doctor --fix || log "gc doctor --fix exit $? (findings are in the output above; postcheck decides)"
