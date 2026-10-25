@@ -74,14 +74,15 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_SCORES_JSON` | unset | a `scores.json` with `days[].gc.usd` and `days[].gc.merged` |
 | `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
-| `QUALITY_EVENTS_TZ` | checked automatically | zone Dolt wrote `events.created_at` in (see the time trap below) |
+| `QUALITY_EVENTS_TZ` | read per event from a timeline | one zone for every `events.created_at`, skipping the timeline (see the time trap below) |
 | `QUALITY_DOLT_PORT`, `_HOST`, `_USER`, `_PASSWORD` | `GC_DOLT_PORT`, 127.0.0.1, root, empty | the city's Dolt server |
 
 ## What a run does and costs
 
 `quality-metrics.sh` checks the load gate, then runs `quality.py` under `nice -n 10` and `ionice -c 3`.
 `quality.py` makes one `gc rig list --json` call, then reads each rig's beads with plain SQL on the
-city's Dolt server (`pymysql`; without it, `bd sql --json` per query). It reads GitHub with `gh`, the
+city's Dolt server (`pymysql`; without it, `bd sql --json` per query), plus `dolt_log` around the
+few events whose zone the timeline leaves open (see the time trap). It reads GitHub with `gh`, the
 city event log incrementally from a byte offset, and the optional `scores.json`. Every run recomputes
 the whole window, so late signals (a reopen, a bug filed a week later) land on the right day.
 
@@ -208,9 +209,33 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
 
 ## Traps this pack handles
 
-- `events.created_at` is written by Dolt in the server's local time with no zone, while bd writes
-  `issues.*_at` in UTC. The pack checks the zone on the newest `created` events of each rig and says
-  which zone it used in `quality.json` → `sources.events_tz`.
+- `events.created_at` has no zone, and which zone it is in depends on the bd that wrote it. bd 1.2
+  and older left it to Dolt's `CURRENT_TIMESTAMP`, the server's local time; bd 1.3 writes UTC.
+  `issues.*_at` and Dolt commit dates are UTC throughout. So a city that upgraded bd has both zones
+  in its window, and a local-time city has one hour a year (the repeated DST hour) whose local
+  times mean two instants. The pack reads each event's zone from a timeline:
+  1. Anchors: every `created` event of an issue created in the window, read against that issue's
+     `created_at`, matches the local reading or the UTC reading (within 2 min). Consecutive anchors
+     of one zone make a run. The whole city shares one timeline, since every rig is written by the
+     same bd. One run means one zone, as before the upgrade.
+  2. An event's candidates are its local reading (both folds in the DST hour) and its UTC reading,
+     kept where the timeline allows that zone: inside a run its own zone, between two runs both.
+  3. Where more than one candidate is left (the gap around a switch, the DST hour), the bead's own
+     Dolt commits (`dolt_log`, a first line naming the bead id) pick the reading that has a commit
+     from 1 s before to 5 s after it. With commits near both, the nearer wins if it is at least 1 s
+     nearer. Otherwise the local reading is taken and the event counts as guessed.
+  4. Events are ordered by the resolved instant, not by the raw value.
+
+  `quality.json` → `sources.events_tz` names the timeline (for example `Europe/Berlin until
+  2026-10-25T07:26:04Z, UTC from 2026-10-25T08:34:27Z`) and how many events were read by timeline,
+  by Dolt commit, or guessed. `sources.events_clock` has the same as data. `quality.py --bead ID`
+  lists each of the bead's events with its raw value, its instant and how it was read, also for a
+  bead that has not landed.
+
+  Blind spots: a city whose rigs run different bd versions at the same time is misread, and so is
+  an event inside a run that a bd of the other zone wrote. A switch and a switch back between two
+  anchors of one zone go unseen. Where Dolt history was squashed, the gap around a switch has no
+  commits to match, and its events are guessed.
 - `metadata` is a JSON column: read it with `CAST(metadata AS CHAR)`; `LEFT()` on it fails in Dolt.
 - Every `gc` CLI call costs seconds of CPU, so the pack calls `gc` once and reads Dolt directly.
 
@@ -240,6 +265,11 @@ the city it was built in. The cases:
 | Time to land | hivemind-14zub | created 10-23 16:25:04Z, claimed 16:27:53Z, PR 16:43:18Z, merged 10-24 20:32:13Z, verified 21:14:44Z | 28.07 h claimed → merged |
 | Time to land | hivemind-cyccr, hivemind-r9cs1 | claimed → merged 48 min and 63 min; PRs #369, #370 opened 18:51:45Z, 20:45:30Z | same |
 | Time to land | hivemind-hqbd9 (reworked) | first PR #336 opened 03:36:59Z, second #340 | runs from #336 |
+| Event time | timeline, 10-25 | `created` events vs `issues.created_at` in all 8 rigs: +2 h before 01:00Z, +1 h until gcs-d9w 07:26:04Z, 0 h from hivemind-rzs8x 08:34:27Z; every event matched to its commit is local up to 07:42:17Z and UTC from 08:16:11Z | local until 07:26:04Z, UTC from 08:34:27Z (1706 anchors) |
+| Event time | gcs-d9w (both sides of the switch) | raw 08:16:36 and 08:25:58 = UTC (commits 08:16:36.7, 08:25:58.8); raw 08:41:46 = local 07:41:46Z (commit 07:41:46.4); `closed` raw 08:26:06 = UTC (`bd: close` 08:26:07.2, `closed_at` 08:26:07) | same, all by commit, in that order |
+| Event time | hivemind-0921o, hivemind-nf97m | `label_added` raw 08:32:20 = local 07:32:20Z (commit 07:32:20.6); `claimed` raw 08:39:31 = UTC (`started_at` 08:39:32) | same |
+| Event time | hivemind-j6tgw, hivemind-plehj (DST hour) | j6tgw `claimed` raw 02:54:19 = first fold 00:54:19Z, `closed` raw 02:33:55 = second fold 01:33:55Z (`closed_at`); plehj `claimed` raw 02:22:29 = second fold 01:22:29Z (`started_at`) | same, by commit |
+| Event time | hivemind-14zub (10-24, CEST) | events +2 h: bounce 20:14:50Z, merged 20:32:13Z, verified 21:14:44Z | same, by timeline |
 | Human wait | end of 10-23 | open gc-xroei (past due since 10-20) and gc-14ghu (due 10-25); gc-7ltuf answered after 13.7 h | 2 open, 1 past due, 13.7 h |
 | Human wait | end of 10-24, end of 10-20 | 1 open / 1 past due, gc-14ghu 27.8 h; 2 open / 1 past due, gc-c0z9g 25.0 h | same |
 | Cost | 09-28..10-03 | $335.69 / 82 merged = $4.09; 10-19 and 10-23 follow empty days (feed restarts) | $4.09, both left out |

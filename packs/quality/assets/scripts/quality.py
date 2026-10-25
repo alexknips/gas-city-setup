@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -284,44 +285,166 @@ def meta_of(value):
     return jload(m) if not isinstance(m, dict) else m
 
 
-def events_zone(beads, rigs):
-    """Zone of events.created_at. Dolt fills it with CURRENT_TIMESTAMP in the server's local time
-    while bd writes issues.created_at in UTC, so check the guess against 'created' events."""
-    forced = env("QUALITY_EVENTS_TZ")
-    if forced:
-        if forced.upper() == "UTC":
-            return UTC, "UTC (QUALITY_EVENTS_TZ)"
-        if ZoneInfo:
-            return ZoneInfo(forced), f"{forced} (QUALITY_EVENTS_TZ)"
-    pairs = []
-    for rig in rigs:
+class EventClock:
+    """Instant of each events.created_at. bd up to 1.2 left it to Dolt's CURRENT_TIMESTAMP (the
+    server's local time, no zone); bd 1.3 writes UTC. A city that upgraded has both in its window.
+    Each 'created' event read against its issue's created_at (true UTC) is an anchor for one zone,
+    and consecutive anchors of one zone make a run. An event is read in the zone its run allows;
+    where two readings stay possible (between two runs, the repeated DST hour) the bead's own Dolt
+    commits (true UTC) pick one, else the local reading is taken and counted as guessed."""
+
+    ANCHOR_S = 120          # a 'created' event within 2 min of issues.created_at
+    COMMIT_S = (-1.0, 5.0)  # a bead's commit lands 0-5 s after its event (event times are rounded)
+    COMMIT_MARGIN_S = 1.0   # with commits near both readings, the nearer must be this much nearer
+
+    def __init__(self, beads, rigs, since):
+        self.beads = beads
+        self.zones = {"local": LOCAL, "UTC": UTC}
+        self.names = {"local": LOCAL_NAME, "UTC": "UTC"}
+        self.runs, self.anchors, self.forced = [], 0, None
+        self.counts = defaultdict(int)
+        forced = env("QUALITY_EVENTS_TZ")
+        if forced and (forced.upper() == "UTC" or ZoneInfo):
+            self.zones = {"forced": UTC if forced.upper() == "UTC" else ZoneInfo(forced)}
+            self.forced = f"{forced} (QUALITY_EVENTS_TZ)"
+            return
+        anchors, off = [], []
+        for rig in rigs:
+            try:
+                rows = beads.rows(rig, "SELECT i.created_at AS iss, e.created_at AS ev FROM {T}events e "
+                                       "JOIN {T}issues i ON i.id = e.issue_id "
+                                       "WHERE e.event_type = 'created' AND i.created_at >= %s", (sqlts(since),))
+            except Exception as e:
+                log(f"events clock anchors on {rig.name}: {e}")
+                continue
+            for r in rows:
+                iss = as_utc(r["iss"])
+                hits = {z for z in self.zones if any(abs((t - iss).total_seconds()) <= self.ANCHOR_S
+                                                     for t in self.readings(r["ev"], z))}
+                if len(hits) == 1:
+                    anchors.append((iss, hits.pop()))
+                elif not hits:
+                    off.append((as_utc(r["ev"], UTC, True) - iss).total_seconds())
+        if not anchors and off:  # the server's zone is neither: one fixed offset, as measured
+            o = round(median(off) / 900) * 900
+            self.zones = {"fixed": timezone(timedelta(seconds=o))}
+            self.forced = f"fixed {o / 3600:+.2f}h (measured on {len(off)} beads)"
+            return
+        self.anchors = len(anchors)
+        for t, z in sorted(anchors):
+            if self.runs and self.runs[-1][0] == z:
+                self.runs[-1][2] = t
+            else:
+                self.runs.append([z, t, t])
+        if not self.runs:
+            self.runs = [["local", None, None]]
+
+    def readings(self, raw, zone):
+        """Instants a raw value can mean in one zone: two in a repeated local hour, else one."""
+        wall = as_utc(raw, UTC, True)
+        if wall is None:
+            return []
+        wall = wall.replace(tzinfo=None)
+        return sorted({wall.replace(tzinfo=self.zones[zone], fold=f).astimezone(UTC) for f in (0, 1)})
+
+    def allowed(self, t):
+        """Zones the timeline allows at instant t: a run's own zone, both zones between two runs."""
+        runs = self.runs
+        if len(runs) == 1 or t < runs[0][1]:
+            return {runs[0][0]}
+        for i, (z, first, last) in enumerate(runs):
+            if t <= last:
+                return {z} if t >= first else {z, runs[i - 1][0]}
+        return {runs[-1][0]}
+
+    def resolve(self, rig, evs):
+        """Set e['at'] (aware UTC, None if unreadable) and e['how'] on events of one rig."""
+        if self.forced:
+            for e in evs:
+                e["at"] = as_utc(e["created_at"], next(iter(self.zones.values())), True)
+                e["how"] = "forced"
+            return
+        pending = []
+        for e in evs:
+            cands = [(z, t) for z in self.zones for t in self.readings(e["created_at"], z)]
+            ok = [(z, t) for z, t in cands if z in self.allowed(t)] or cands
+            if len({t for _, t in ok}) <= 1:
+                e["at"], e["zone"], e["how"] = (ok[0][1], ok[0][0], "timeline") if ok else (None, None, "unreadable")
+                self.counts[e["how"]] += 1
+            else:
+                e["_cands"] = ok
+                pending.append(e)
+        if not pending:
+            return
+        commits = self.commits(rig, pending)
+        lo, hi = self.COMMIT_S
+        for e in pending:
+            cands, dates, hits = e.pop("_cands"), commits.get(e["issue_id"], []), []
+            for z, t in cands:
+                near = [abs((d - t).total_seconds()) for d in dates[bisect_left(dates, t + timedelta(seconds=lo)):
+                                                                   bisect_right(dates, t + timedelta(seconds=hi))]]
+                if near:
+                    hits.append((min(near), z, t))
+            hits.sort()
+            if hits:  # several hits: the nearest, a guess unless it is clearly nearer than the next
+                _, e["zone"], e["at"] = hits[0]
+            else:
+                e["zone"], e["at"] = next((c for c in cands if c[0] == "local"), cands[0])
+            e["how"] = "commit" if hits and (len(hits) == 1 or hits[1][0] - hits[0][0] >= self.COMMIT_MARGIN_S) \
+                else "guessed"
+            self.counts[e["how"]] += 1
+
+    def commits(self, rig, pending):
+        """Commit dates (UTC) per bead id named in a commit's first line, near the pending events."""
+        ts = sorted(t for e in pending for _, t in e["_cands"])
+        spans = []
+        for t in ts:
+            if spans and (t - spans[-1][1]).total_seconds() <= 600:
+                spans[-1][1] = t
+            else:
+                spans.append([t, t])
+        ids = {e["issue_id"] for e in pending}
+        where = " OR ".join(["(date BETWEEN %s AND %s)"] * len(spans))
+        args = [sqlts(x) for a, b in spans for x in (a - timedelta(seconds=10), b + timedelta(seconds=10))]
+        out = defaultdict(list)
         try:
-            recent = beads.rows(rig, "SELECT id, created_at FROM {T}issues ORDER BY created_at DESC LIMIT 20")
-            iss = {r["id"]: r["created_at"] for r in recent}
-            if iss:
-                for r in beads.rows(rig, f"SELECT issue_id, created_at FROM {{T}}events WHERE event_type = 'created' "
-                                         f"AND issue_id IN ({placeholders(len(iss))})", tuple(iss)):
-                    pairs.append({"ev": r["created_at"], "iss": iss[r["issue_id"]]})
+            rows = self.beads.rows(rig, f"SELECT date, message FROM {{T}}dolt_log WHERE {where}", tuple(args))
         except Exception as e:
-            log(f"events zone probe on {rig.name}: {e}")
-        if len(pairs) >= 40:
-            break
-    if not pairs:
-        return LOCAL, f"{LOCAL_NAME} (unchecked: no events)"
-    for tz, name in ((LOCAL, LOCAL_NAME), (UTC, "UTC")):
-        diffs = sorted(abs((as_utc(p["ev"], tz, True) - as_utc(p["iss"])).total_seconds()) for p in pairs)
-        if diffs[len(diffs) // 2] <= 120:
-            return tz, f"{name} (checked on {len(pairs)} beads)"
-    off = median((as_utc(p["ev"], UTC, True) - as_utc(p["iss"])).total_seconds() for p in pairs)
-    off = round(off / 900) * 900
-    return timezone(timedelta(seconds=off)), f"fixed {off / 3600:+.2f}h (measured on {len(pairs)} beads)"
+            log(f"events clock: dolt_log on {rig.name}: {e}")
+            return out
+        for r in rows:
+            d = as_utc(r["date"])
+            for tok in set(re.findall(r"[\w.-]+", str(r["message"]).split("\n", 1)[0])) & ids:
+                out[tok].append(d)
+        for v in out.values():
+            v.sort()
+        return out
+
+    def note(self):
+        if self.forced:
+            return self.forced
+        if self.runs[0][1] is None:
+            return f"{LOCAL_NAME} (unchecked: no events)"
+        c = self.counts
+        tail = f"{c['timeline']} event(s) by timeline, {c['commit']} by Dolt commit, {c['guessed']} guessed"
+        if len(self.runs) == 1:
+            return f"{self.names[self.runs[0][0]]} (checked on {self.anchors} beads; {tail})"
+        parts = []
+        for i, (z, first, last) in enumerate(self.runs):
+            span = ([f"from {iso(first)}"] if i else []) + ([f"until {iso(last)}"] if i < len(self.runs) - 1 else [])
+            parts.append(f"{self.names[z]} {' '.join(span)}")
+        return f"{', '.join(parts)} ({self.anchors} anchor beads; {tail})"
+
+    def detail(self):
+        return {"runs": [{"zone": self.names.get(z, z), "first": iso(a), "last": iso(b)} for z, a, b in self.runs],
+                "anchors": self.anchors, "forced": self.forced, "events": dict(self.counts)}
 
 
 def is_landed(meta):
     return str(meta.get("merge_result") or "") in LANDED_RESULTS
 
 
-def collect_rig(beads, rig, start, now, etz):
+def collect_rig(beads, rig, start, now, clock):
     """Landed beads of one rig since `start`, with everything the bead-level metrics need."""
     landed = {}
     for r in beads.rows(rig, "SELECT id, title, issue_type, created_at, started_at, closed_at, "
@@ -342,38 +465,40 @@ def collect_rig(beads, rig, start, now, etz):
         }
     ids = list(landed)
     rr_like, labels = "%rejection_reason%", VERIFY_OK + VERIFY_FAIL
+    evs = []
     for part in chunks(ids):
-        evs = beads.rows(rig, "SELECT issue_id, event_type, actor, created_at, comment, "
-                              "CASE WHEN new_value LIKE %s THEN new_value END AS nv, "
-                              "CASE WHEN event_type = 'reopened' OR old_value LIKE %s THEN old_value END AS ov "
-                              f"FROM {{T}}events WHERE issue_id IN ({placeholders(len(part))}) AND "
-                              "(event_type IN ('claimed', 'closed', 'reopened', 'label_added') OR new_value LIKE %s)",
-                         (rr_like, rr_like, *part, rr_like))
-        for e in sorted(evs, key=lambda e: str(e["created_at"])):
-            b, at, et = landed[e["issue_id"]], as_utc(e["created_at"], etz, True), e["event_type"]
-            new_rr = str(meta_of(e["nv"]).get("rejection_reason") or "").strip() if e["nv"] else ""
-            old_rr = str(meta_of(e["ov"]).get("rejection_reason") or "").strip() if e["ov"] else ""
-            if new_rr and new_rr != old_rr:
-                b["bounces"].append({"at": iso(at), "actor": e["actor"], "reason": new_rr[:160],
-                                     "cause": "gate" if GATE_BOUNCE.search(new_rr) else "change"})
-            if et == "claimed" and b["first_claim_event"] is None:
-                b["first_claim_event"] = at
-            elif et == "closed":
-                b["closes"].append(at)
-            elif et == "reopened":
-                prev = b["closes"][-1] if b["closes"] else None
-                if is_landed(meta_of(e["ov"])) and prev and at - prev <= timedelta(days=FOLLOW_DAYS):
-                    b["reopens"].append({"at": iso(at), "actor": e["actor"],
-                                         "after_hours": hours(prev, at)})
-            elif et == "label_added":
-                lab = (e["comment"] or "").replace("Added label:", "").strip()
-                if lab in VERIFY_OK and b["verified_at"] is None:
-                    b["verified_at"] = at
+        evs += beads.rows(rig, "SELECT issue_id, event_type, actor, created_at, comment, "
+                               "CASE WHEN new_value LIKE %s THEN new_value END AS nv, "
+                               "CASE WHEN event_type = 'reopened' OR old_value LIKE %s THEN old_value END AS ov "
+                               f"FROM {{T}}events WHERE issue_id IN ({placeholders(len(part))}) AND "
+                               "(event_type IN ('claimed', 'closed', 'reopened', 'label_added') OR new_value LIKE %s)",
+                          (rr_like, rr_like, *part, rr_like))
         lab_rows = beads.rows(rig, f"SELECT issue_id, label FROM {{T}}labels WHERE issue_id IN "
                                    f"({placeholders(len(part))}) AND label IN ({placeholders(len(labels))})",
                               (*part, *labels))
         for r in lab_rows:
             landed[r["issue_id"]]["labels"].append(r["label"])
+    clock.resolve(rig, evs)
+    for e in sorted((e for e in evs if e["at"]), key=lambda e: e["at"]):
+        b, at, et = landed[e["issue_id"]], e["at"], e["event_type"]
+        new_rr = str(meta_of(e["nv"]).get("rejection_reason") or "").strip() if e["nv"] else ""
+        old_rr = str(meta_of(e["ov"]).get("rejection_reason") or "").strip() if e["ov"] else ""
+        if new_rr and new_rr != old_rr:
+            b["bounces"].append({"at": iso(at), "actor": e["actor"], "reason": new_rr[:160],
+                                 "cause": "gate" if GATE_BOUNCE.search(new_rr) else "change"})
+        if et == "claimed" and b["first_claim_event"] is None:
+            b["first_claim_event"] = at
+        elif et == "closed":
+            b["closes"].append(at)
+        elif et == "reopened":
+            prev = b["closes"][-1] if b["closes"] else None
+            if is_landed(meta_of(e["ov"])) and prev and at - prev <= timedelta(days=FOLLOW_DAYS):
+                b["reopens"].append({"at": iso(at), "actor": e["actor"],
+                                     "after_hours": hours(prev, at)})
+        elif et == "label_added":
+            lab = (e["comment"] or "").replace("Added label:", "").strip()
+            if lab in VERIFY_OK and b["verified_at"] is None:
+                b["verified_at"] = at
     for b in landed.values():
         if any(l in VERIFY_FAIL for l in b["labels"]):
             b["verdict"] = "failed"
@@ -983,18 +1108,30 @@ def print_summary(q):
         print(f"source {k}: {json.dumps(v, default=str)[:300]}")
 
 
-def explain(bead_id, landed_all, prs_by_rig):
+def explain(bead_id, landed_all, beads, clock, rigs):
+    """How one bead was counted, with each of its events' resolved instant; events only for a
+    bead that did not land in the window."""
     b = landed_all.get(bead_id)
-    if not b:
+    if b:
+        rig = next(r for r in rigs if r.name == b["rig"])
+        r = bead_record(b)
+        r["labels"] = b["labels"]
+        r["pr_detail"] = b.get("prs")
+        r["landed_day"] = b["day"]
+    else:
         print(f"{bead_id}: not a bead that landed in the window (status closed with merge_result in "
-              f"{LANDED_RESULTS}, closed in the last {DAYS} days)")
-        return 1
-    r = bead_record(b)
-    r["labels"] = b["labels"]
-    r["pr_detail"] = b.get("prs")
-    r["landed_day"] = b["day"]
+              f"{LANDED_RESULTS}, closed in the last {DAYS} days)", file=sys.stderr)
+        rig = max((r for r in rigs if bead_id.startswith(r.prefix + "-")), key=lambda r: len(r.prefix), default=None)
+        if not rig:
+            return 1
+        r = {"id": bead_id, "landed": False}
+    evs = beads.rows(rig, "SELECT issue_id, event_type, actor, created_at FROM {T}events WHERE issue_id = %s", (bead_id,))
+    clock.resolve(rig, evs)
+    r["events"] = [{"type": e["event_type"], "raw": str(e["created_at"]), "at": iso(e["at"]),
+                    "zone": clock.names.get(e.get("zone"), e.get("zone")), "how": e["how"], "actor": e["actor"]}
+                   for e in sorted(evs, key=lambda e: e["at"] or datetime.min.replace(tzinfo=UTC))]
     print(json.dumps(r, indent=1, default=str))
-    return 0
+    return 0 if b else 1
 
 
 def main():
@@ -1016,13 +1153,13 @@ def main():
     rigs = discover_rigs()
     log(f"{len(rigs)} rig(s): {', '.join(r.name for r in rigs)}")
     beads = Beads()
-    etz, etz_note = events_zone(beads, rigs)
-    log(f"beads via {beads.mode}; events.created_at read as {etz_note}")
+    clock = EventClock(beads, rigs, start)
+    log(f"beads via {beads.mode}; events.created_at timeline: {clock.note()}")
 
     landed_all, followups, gates, errors = {}, [], [], []
     for rig in rigs:
         try:
-            landed_all.update(collect_rig(beads, rig, start, now, etz))
+            landed_all.update(collect_rig(beads, rig, start, now, clock))
             followups += collect_followups(beads, rig, start)
             gates += collect_human(beads, rig, start, now)
         except Exception as e:
@@ -1053,13 +1190,13 @@ def main():
     attach_prs(landed_all, prs_by_rig)
 
     if args.bead:
-        return explain(args.bead, landed_all, prs_by_rig)
+        return explain(args.bead, landed_all, beads, clock, rigs)
 
     friction, friction_src = collect_friction(state, rigs, start)
     cost, cost_src = collect_cost()
     days = build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, now)
-    sources = {"beads": beads.mode, "events_tz": etz_note, "github": gh_sources, "event_log": friction_src,
-               "cost": cost_src, "errors": errors, "runtime_s": None}
+    sources = {"beads": beads.mode, "events_tz": clock.note(), "events_clock": clock.detail(), "github": gh_sources,
+               "event_log": friction_src, "cost": cost_src, "errors": errors, "runtime_s": None}
     q = build_quality(days, day_list, rigs, sources, now)
     q["sources"]["runtime_s"] = round(time.monotonic() - T0, 1)
     if dry:
