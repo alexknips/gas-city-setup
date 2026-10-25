@@ -45,8 +45,10 @@ mapfile -t scopes < <({ echo "$CITY"; sed -n 's/^path = "\(.*\)"/\1/p' "$CITY/.g
 inflight=0
 for s in "${scopes[@]}"; do
   [ -d "$s/.beads" ] || { warn "no .beads in $s"; continue; }
-  rows=$(cd "$s" && timeout 120 "$BD_OLD" list --status in_progress --json --limit 0 2>/dev/null \
-         | jq -r '.[] | [.id, (.assignee // "-"), (.title // "")[0:60]] | @tsv' 2>/dev/null) || { warn "could not list in_progress beads in $s"; continue; }
+  # two steps, not a pipe: a failing bd must not look like "nothing in flight"
+  json=$(cd "$s" && timeout 120 "$BD_OLD" list --status in_progress --json --limit 0 2>/dev/null) \
+    && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$json" || { fail "could not list in_progress beads in $s (bd failed or printed no JSON array)"; continue; }
+  rows=$(jq -r '.[] | [.id, (.assignee // "-"), (.title // "")[0:60]] | @tsv' <<<"$json")
   [ -n "$rows" ] || continue
   while IFS=$'\t' read -r id who title; do
     inflight=$((inflight+1))
@@ -68,12 +70,17 @@ else fail "free $((free_kb/1048576)) GiB < $((need_kb/1048576)) GiB needed (2.5 
 
 step "network (only needed if doctor or a pack fetch has to reach GitHub)"
 curl -fsS -m 10 -o /dev/null -I https://github.com && pass "github reachable" || warn "github not reachable: gc 1.5.1 serves the core/bd packs from the binary, but a missing pack cache would block start"
-for p in gascity gastown; do
-  find "$HOME/.gc/cache/repos" -maxdepth 1 -type d -iname "*$p*" | grep -q . && pass "pack cache has $p" || warn "no cached repo matching '$p' in ~/.gc/cache/repos"
+# cache dirs are named by hash: match on each clone's origin URL instead
+origins=$(for d in "$HOME"/.gc/cache/repos/*/; do git -C "$d" remote get-url origin 2>/dev/null; done)
+for p in gastownhall/gascity-packs.git alexknips/gas-city-setup.git; do
+  grep -q "$p" <<<"$origins" && pass "pack cache has a clone of $p" || warn "no cached clone of $p in ~/.gc/cache/repos (doctor --fix / start would have to fetch it)"
 done
 
 step "city repo state (informational; backup.sh copies the files, not git)"
-( cd "$CITY" && git status --short -- city.toml pack.toml packs.lock formulas orders assets commands agents 2>/dev/null | sed 's/^/      /' ; git rev-parse --short HEAD | sed 's/^/      HEAD /' )
+if git -C "$CITY" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$CITY" status --short -- city.toml pack.toml packs.lock formulas orders assets commands agents | sed 's/^/      /'
+  git -C "$CITY" rev-parse --short HEAD | sed 's/^/      HEAD /'
+else echo "      $CITY is not a git repo (expected only in the rehearsal box)"; fi
 
 printf '\n%s fails=%s warns=%s\n' "$(ts)" "$fails" "$warns"
 [ "$fails" -eq 0 ] && echo "PRECHECK OK" || { echo "PRECHECK FAILED"; exit 1; }
