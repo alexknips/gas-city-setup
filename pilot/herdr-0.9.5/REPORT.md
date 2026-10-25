@@ -1,8 +1,8 @@
 # herdr 0.9.5 pilot on gc 1.5.1 (gcs-78y)
 
-Status: DRAFT, in progress. Measurements 1, 3 (acted-on half), 4 need a Claude login in the box (decision gc-lvkjm, default B = no login). Measurement 5 (24 h) has not run: the box was killed 8 times, the last two (rule f, host load 72 and 83) while idle (see Kill log). Measurement 6 is next. This file is rewritten as they land.
+Status: DRAFT, in progress. Measurements 1, 3 (acted-on half), 4 need a Claude login in the box (decision gc-lvkjm, default B = no login). Measurement 5 (24 h) has not run: the box was killed 8 times, the last two (rule f, host load 72 and 83) while idle (see Kill log). Measurement 6 ran without the city (partial). This file is final after the login cutoff.
 
-## Recommendation (draft; final after the login cutoff, Mon 2026-10-26 ~09:30Z)
+## Recommendation (draft; final after the login cutoff, Mon 2026-10-26 09:40Z)
 **Do not switch the town to herdr on this evidence.** Nothing observed argues against herdr itself: gc 1.5.1 drives herdr 0.9.5, the one stop I checked (kill 8) left no process behind, and no sample ever showed more than 2 herdr processes or any zombie. But the pilot did not test the thing the switch risks (a supervisor driving a pool through herdr for hours, the Sept 2026 crash-loop), so "no failure seen" is weak.
 
 | # | Measurement | Result |
@@ -101,7 +101,8 @@ That is 23 samples. It says a herdr server with one agent and the web UI is smal
 
 ## Decisions
 1. Kill-switch attribution: mayor ruling 2026-10-25 09:15Z (rules a-f above). Applied as written.
-2. Claude auth inside the box: Alex's call, bead gc-lvkjm, still open. Default B (no login) applies Mon 2026-10-26 ~09:30Z. The host credentials were not copied or mounted (a refresh-token rotation could sign out the live town). Until then 1, 3 (acted-on half) and 4 stay "not measured: no login in the box".
+2. Claude auth inside the box: Alex's call, bead gc-lvkjm, still open. Default B (no login) applies Mon 2026-10-26 09:40Z, 24 h after the decision was posted to Slack. The host credentials were not copied or mounted (a refresh-token rotation could sign out the live town). Until then 1, 3 (acted-on half) and 4 stay "not measured: no login in the box".
+3. City runs: mayor ruling 2026-10-25 10:55Z accepts the stop rule as it stands (no city restart, no `--cpus 1`, no quiet window). Items 1, 3, 4 and 5 on a city are therefore reported "not measured", with the kill-log samples as the reason, and the recommendation does not claim that herdr fails them.
 
 ## Measurement 6: phone/web access over the tailnet only (partial: reachable and gated, not driven from a device)
 Run 2026-10-25 10:10-10:16Z (the box was then stopped by rule f at 10:17:10Z, kill 7), steps in `item6-box.sh`, raw output in `data/ovis-install-3.log`, `data/ovis-ws-probe.txt`, `data/probe-bypass-dialog-blocked.txt`. This ran WITHOUT the city: the box held a bare `herdr server`, Ovis and one Claude pane, so it cost 0.05 to 0.4 cores and rule e could not fire. Nothing here depends on a Claude login.
