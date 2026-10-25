@@ -1,0 +1,4 @@
+probe wB:p1 start 2026-10-25T09:39:24Z (status before: idle)
+typed /theme + Enter at +1s
++2s	09:39:26	idle	Claude Code
+probe end 2026-10-25T09:40:25Z

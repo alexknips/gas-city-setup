@@ -1,0 +1,2 @@
+watchdog: gcs78y-pilot cgroup /sys/fs/cgroup/system.slice/docker-b2031564059ca16d37782d2beefdcc8cb14d721dbea0af73f9fe919c148ab489.scope, every 30s -> /home/ubuntu/gc/.gc/worktrees/gas-city-setup/polecats/gastown.furiosa/pilot/herdr-0.9.5/data/samples-item6.tsv
+watchdog: KILL f:load1>60 <- 2026-10-25T10:17:10Z	1	0	1	8	0.12	0.06	71.97	20.47	f

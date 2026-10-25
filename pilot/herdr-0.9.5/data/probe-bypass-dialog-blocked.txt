@@ -1,0 +1,12 @@
+after Enter (No, exit):
+{"id":"cli:agent:list","result":{"agents":[],"type":"agent_list"}}
+
+{"error":{"code":"agent_not_ready","message":"agent probe is blocked during startup and is not ready for prompts"},"id":"cli:agent:start"}
+
+agent start returned after 3.5 s
++1s [('probe', 'blocked')]
++2s [('probe', 'blocked')]
++3s [('probe', 'blocked')]
++4s [('probe', 'blocked')]
++5s [('probe', 'blocked')]
++6s [('probe', 'blocked')]

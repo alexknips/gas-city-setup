@@ -1,0 +1,36 @@
+Plugin install preview:
+  id: devswha.herdr-web-ui
+  name: herdr web ui
+  version: 0.4.6
+  source: devswha/ovis
+  ref: 7e12a892273b5d7a2f61c181c95a2bb0ad178309
+  commit: 7e12a892273b5d7a2f61c181c95a2bb0ad178309
+  actions: 8
+  startup commands: 2
+  events: 0
+  panes: 2
+  link handlers: 0
+  build commands: 6
+    build: sh scripts/preflight.sh
+    build (skipped on linux): powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/preflight.ps1
+    build: sh scripts/with-bun.sh install
+    build (skipped on linux): bun install
+    build: sh scripts/with-bun.sh run build
+    build (skipped on linux): bun run build
+    startup: sh scripts/with-bun.sh scripts/plugin.ts start
+    startup: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/plugin.ps1 start
+    action phone: herdr plugin pane open --plugin devswha.herdr-web-ui --entrypoint phone --placement zoomed --focus
+    action phone-windows: herdr plugin pane open --plugin devswha.herdr-web-ui --entrypoint phone-windows --placement zoomed --focus
+    action start: sh scripts/with-bun.sh scripts/plugin.ts start
+    action start-windows: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/plugin.ps1 start
+    action status: sh scripts/with-bun.sh scripts/plugin.ts status
+    action status-windows: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/plugin.ps1 status
+    action stop: sh scripts/with-bun.sh scripts/plugin.ts stop
+    action stop-windows: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/plugin.ps1 stop
+    pane phone: sh scripts/with-bun.sh scripts/plugin.ts phone-setup
+    pane phone-windows: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/plugin.ps1 phone-setup
+Installed devswha.herdr-web-ui from devswha/ovis.
+Config: /home/ubuntu/.config/herdr/plugins/config/devswha.herdr-web-ui
+1 plugin installed:
+- devswha.herdr-web-ui (herdr web ui) enabled [github:devswha/ovis@7e12a892273b5d7a2f61c181c95a2bb0ad178309]
+  config: /home/ubuntu/.config/herdr/plugins/config/devswha.herdr-web-ui

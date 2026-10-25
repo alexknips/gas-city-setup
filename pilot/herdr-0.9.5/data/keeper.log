@@ -1,0 +1,14 @@
+2026-10-25T09:22:34Z keeper start (quiet<12 cooldown=300s max=12)
+2026-10-25T09:26:35Z restart #1 after kill [e:load5m>20&cpu5m>1] (load1 6.76)
+[pilot] box gcs78y-pilot up (cpus=4 mem=12g pids<=1500)
+Supervisor started (PID 20)
+Dashboard:  http://127.0.0.1:8372/
+Supervisor: pid=20 exe=/usr/local/bin/gc buildID=4f698fe2a7eefae49e545c5e38189f1b63fb9b39 started=just now
+Registered city 'scratch78y' (/home/ubuntu/scratch-city)
+gc supervisor install: per-user systemd instance is not available (systemctl --user could not reach the user manager). Either enable lingering for this account ('sudo loginctl enable-linger ubuntu'), log in via a PAM session that starts user-systemd, or run the supervisor detached (e.g. 'gc supervisor start' without service install).
+[8/8] Waiting for supervisor to start city
+  Adopting sessions...
+City started under supervisor.
+gc-start: pid=20 binary=/usr/local/bin/gc build=4f698fe2a7ee drift=unknown warnings=0 fatal=
+2026-10-25T09:29:42Z restart #1 done
+2026-10-25T09:31:24Z keeper stopped by furiosa: 3 load-class kills in 30 min (09:04, 09:21, 09:30), each box start was followed by a host load surge; waiting for the mayor on attribution and the cpu cap

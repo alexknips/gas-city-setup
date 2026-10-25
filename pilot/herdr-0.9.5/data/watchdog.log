@@ -1,0 +1,8 @@
+watchdog: gcs78y-pilot cgroup /sys/fs/cgroup/system.slice/docker-50e0839de616c3ae39dffcca8f813653c81ca8759754a6107222ddc422ffbc36.scope, every 30s -> pilot/herdr-0.9.5/data/samples.tsv
+watchdog: KILL e:load5m>20&cpu5m>1 <- 2026-10-25T09:21:29Z	1	0	4	38	3.99	2.90	20.70	20.06	d,e
+watchdog: gcs78y-pilot cgroup /sys/fs/cgroup/system.slice/docker-c3a7429433c7550d7be7f9363d2defb6e2b18bd5efdd9397b66878d8eed807d5.scope, every 30s -> /home/ubuntu/gc/.gc/worktrees/gas-city-setup/polecats/gastown.furiosa/pilot/herdr-0.9.5/data/samples.tsv
+watchdog: KILL e:load5m>20&cpu5m>1 <- 2026-10-25T09:30:36Z	1	0	5	48	3.70	2.80	41.26	21.61	e
+watchdog: gcs78y-pilot cgroup /sys/fs/cgroup/system.slice/docker-cc050ebe9a41b4deeecb3c4f8d4b7df1c69a8a7cecb09cddca3f09faab61374f.scope, every 30s -> pilot/herdr-0.9.5/data/samples.tsv
+watchdog: KILL f:load1>60 <- 2026-10-25T09:46:03Z	1	0	2	18	1.36	1.37	70.25	17.78	e,f
+watchdog: gcs78y-pilot cgroup /sys/fs/cgroup/system.slice/docker-a52f0df327836aa70e5782176c6e0878a629c319339b45a581a574a5df2a2ba9.scope, every 30s -> pilot/herdr-0.9.5/data/samples.tsv
+watchdog: KILL e:load5m>20&cpu5m>1 <- 2026-10-25T09:58:25Z	1	0	2	19	1.76	1.70	30.36	20.86	e

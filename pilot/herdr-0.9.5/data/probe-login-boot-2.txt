@@ -1,0 +1,9 @@
+probe w3:p2 start 2026-10-25T09:11:05Z (status before: idle)
+typed /login + Enter at +3s
++4s	09:11:09	idle	Claude Code
++6s	09:11:11	working	Claude Code
++26s	09:11:31	done	Claude Code
+jq: parse error: Invalid numeric literal at line 1, column 4
++83s	09:12:28	?
+pilot/herdr-0.9.5/probe-status.sh: line 9: 39291 Killed                  docker exec -u ubuntu -e HOME=/home/ubuntu "$name" herdr --session "$sess" "$@"
+probe end 2026-10-25T09:14:24Z
