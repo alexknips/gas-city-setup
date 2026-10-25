@@ -81,18 +81,26 @@ wait_supervisor() {
 # after every stop. 1.5.1's gc refuses a supervisor that runs a different gc install: the unit must be repointed first.
 start_city() { log "$1 start"; gcrun timeout 900 "$1" start; }
 
-# wait_city_ready <gc>: until gc status shows the controller and no 'partial status' (agents it could not probe yet)
+# wait_city_ready <gc>: the controller is supervisor-managed and the always-on seats (mayor, deacon) have tmux sessions.
+# Deliberately NOT "gc status has no 'partial status'": status marks every agent `unknown (partial status)` when its runtime
+# probe times out (750 ms per agent) and that happens on a healthy city too: the rehearsal box shows 40 such lines on the
+# 1.4.1 baseline and on 1.5.1, so that test never passes (the first rollback rehearsal waited 900 s on it). The other seats
+# start in waves (wake budget) over the next minutes; postcheck.sh looks at the rest.
 wait_city_ready() {
-  local gc=$1 t=${GCU_READY_TIMEOUT:-900} t0 st=
+  local gc=$1 t=${GCU_READY_TIMEOUT:-900} t0 st= s miss=
   t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt "$t" ]; do
     st=$(gcrun timeout 120 "$gc" status 2>&1) || true
-    if grep -q 'Controller: *supervisor-managed' <<<"$st" && ! grep -q 'partial status' <<<"$st"; then
-      log "city ready after $(( $(date +%s) - t0 ))s"; return 0
+    miss=
+    grep -q 'Controller: *supervisor-managed' <<<"$st" || miss=" controller"
+    for s in gastown__mayor gastown__deacon; do tmux -L gc has-session -t "=$s" 2>/dev/null || miss="$miss $s"; done
+    if [ -z "$miss" ]; then
+      log "city ready after $(( $(date +%s) - t0 ))s: controller up, $(tmux -L gc ls | wc -l) tmux sessions, $(grep -c 'partial status' <<<"$st" || true) agent lines say 'partial status' (expected)"
+      return 0
     fi
     sleep 15
   done
-  die "city not ready after ${t}s; last status: $(head -4 <<<"$st" | tr '\n' '|')"
+  die "city not ready after ${t}s (still missing:$miss). It may only be slow: look at 'gc status', 'tmux -L gc ls' and $GCHOME/supervisor.log before deciding to roll back."
 }
 
 # migrate_schema <gc>: bd 1.3.x will not migrate a shared Dolt database by itself (#5920): without this, `gc start` on 1.5.1

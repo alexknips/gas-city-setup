@@ -25,6 +25,7 @@ on_exit() {
     printf '\n%s APPLY FAILED (exit %s, %s in) with the town stopped or half-upgraded.\n' "$(ts)" "$rc" "$(t)"
     printf 'Back out:  %s/run-detached.sh rollback.sh      (restores %s)\n' "$UPG" "$(cat "$BACKUP_ROOT/latest" 2>/dev/null || echo '<no backup yet>')"
     printf 'Or read the log above, fix the cause and finish the remaining steps by hand.\n'
+    printf 'If the log says "city not ready", the city may only be slow: check gc status and postcheck.sh before rolling back.\n'
   fi
 }
 trap on_exit EXIT

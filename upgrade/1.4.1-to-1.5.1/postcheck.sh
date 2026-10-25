@@ -27,7 +27,7 @@ if [ -n "$dolt_pid" ] && kill -0 "$dolt_pid" 2>/dev/null; then pass "city dolt u
 step "city is up"
 st=$(timeout 300 gc status 2>&1)
 grep -q 'Controller: *supervisor-managed' <<<"$st" && pass "controller supervisor-managed" || fail "controller is not supervisor-managed"
-grep -q 'partial status' <<<"$st" && warn "gc status says 'partial status' (probe timeout: the city is still starting, or Dolt is slow)"
+grep -q 'partial status' <<<"$st" && warn "gc status says 'partial status' for $(grep -c 'partial status' <<<"$st") agent lines (runtime probe timeouts; seen on a healthy city in the rehearsal box, so only a hint)"
 n=$(tmux -L gc ls 2>/dev/null | wc -l)
 [ "$n" -gt 0 ] && pass "$n tmux sessions on socket gc" || fail "no tmux sessions on socket gc"
 for s in mayor deacon; do tmux -L gc ls 2>/dev/null | grep -q "$s" && pass "session $s is up" || warn "no tmux session matching '$s' yet"; done
