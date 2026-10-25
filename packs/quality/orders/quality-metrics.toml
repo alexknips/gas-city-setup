@@ -1,16 +1,19 @@
 # Quality metrics per rig and per local day: bounce rate, post-merge failures, fix-of-a-fix,
 # first-pass CI, time to land, human wait, cost per landed bead, machine friction (README.md).
 # Each run recomputes the last QUALITY_DAYS days, so the first run is also the backfill
-# (~3 min, mostly GitHub); later runs take seconds. Skips when load1 > QUALITY_MAX_LOAD.
-# Manual run: gc order run quality-metrics
+# (3-8 min, mostly GitHub); later runs take seconds. Skips when load1 > QUALITY_MAX_LOAD.
+# Fires hourly (cooldown, not cron: a cron slot the controller does not evaluate in its exact
+# minute is lost, see README). Only the first successful run of a local day does the work, so
+# a load skip is retried an hour later; later fires that day exit at once and log nothing.
+# Manual run: gc order run quality-metrics (QUALITY_FORCE=1 in front to rerun the same day)
 # Dry run:    $PACK_DIR/assets/scripts/quality-metrics.sh --dry-run
 # Settings: the env below; a city changes them with [[orders.overrides]] (README.md).
 [order]
 description = "Quality metrics per rig and day (bounces, post-merge failures, first-pass CI, time to land)"
 scope = "city"
 exec = "$PACK_DIR/assets/scripts/quality-metrics.sh"
-trigger = "cron"
-schedule = "15 6 * * *"
+trigger = "cooldown"
+interval = "1h"
 timeout = "15m"
 
 [order.env]

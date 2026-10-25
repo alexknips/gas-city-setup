@@ -39,8 +39,8 @@ formulas, no changes to `gc` or `bd`.
    ```
 
 3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
-   runs it now. The first run is the backfill of the last 28 days; after that it runs daily at
-   06:15 host time (`schedule` in an override moves it).
+   runs it now. The first run is the backfill of the last 28 days; after that it runs once a day
+   (see "When it runs").
 
 To see the numbers without writing anything: `$PACK_DIR/assets/scripts/quality-metrics.sh --dry-run`
 (the path is in `gc order show quality-metrics`). To see how one bead was counted:
@@ -86,8 +86,31 @@ city event log incrementally from a byte offset, and the optional `scores.json`.
 the whole window, so late signals (a reopen, a bug filed a week later) land on the right day.
 
 Measured in the city it was built in (8 rigs, 263 landed beads and 229 merged PRs in 28 days): the first
-run took 146 s, almost all of it 252 `gh` calls to backfill the PRs; a daily run takes about 13 s
-wall and 4 s CPU, 17 `gh` calls. A merged PR's verdict never changes, so it is cached for good.
+run took 146 s, almost all of it 252 `gh` calls to backfill the PRs (442 s for the live first
+run at load 11.6); a daily run takes about 13-20 s wall and 4 s CPU, 17 `gh` calls. A merged PR's
+verdict never changes, so it is cached for good.
+
+### When it runs
+
+The order fires hourly (`trigger = "cooldown"`, `interval = "1h"`). Only the first successful run
+of a local day (`QUALITY_TZ`) does the work: it writes the day to `$QUALITY_STATE_DIR/last-ok-day`,
+and later fires that day exit at once without a `runs.log` line. A run skipped for load writes no
+stamp, so the next fire, an hour later, tries again. The page is therefore fresh from the first
+quiet hour after midnight.
+
+- Run again the same day: `QUALITY_FORCE=1 gc order run quality-metrics`. A plain
+  `gc order run quality-metrics` on a day that already ran exits at once.
+- `--dry-run` and `--bead` always run and never write the stamp.
+- Retry less often: `interval = "3h"` in the city's `[[orders.overrides]]`.
+
+Why a cooldown and not a cron like `15 6 * * *`: on 2026-10-25 the first 06:15 slot never fired
+here (no `order.fired`), although the controller dispatched other orders in that minute. The
+likely cause, from the gc 1.4.1 source: the controller reads an order's last run once, when it
+first evaluates it, and later only its own dispatches move it (a manual `gc order run` does not).
+With no last run a cron order is due only in its exact minute, with no catch-up, and a dispatch
+tick stops after it has fired 4 orders, so one order can go a whole minute unevaluated. A
+cooldown is due at the first evaluation after the interval, whatever minute that is. gc 1.4.1
+cron also has no ranges: `6-23` never matches (1.5.1 has them).
 
 Output (`QUALITY_OUT_DIR`):
 
