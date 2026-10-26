@@ -1,10 +1,13 @@
 # quality: how good a Gas City's work is
 
-A Gas City pack with one exec order, `quality-metrics`, that measures per rig and per local day
-whether work lands first time, holds after merge and how long it takes. It writes a per-day JSON
-history and a static page you can put next to any dashboard. Configuration only: no agents, no
-formulas, no changes to `gc` or `bd`. No API keys: cost comes from the transcripts the agents
-already write, priced from a table in the pack (`assets/prices.toml`).
+A Gas City pack with two exec orders and one formula. `quality-metrics` measures per rig and per
+local day whether work lands first time, holds after merge, how long it takes and where that time
+went. It writes a per-day JSON history and a static page you can put next to any dashboard.
+`quality-review` turns that into a weekly review: a script writes the week's facts, and one agent
+session (formula `mol-quality-review`) proposes one config change by mail, as a decision with a
+default (see "Weekly review"). Configuration only: no changes to `gc` or `bd`. No API keys: cost
+comes from the transcripts the agents already write, priced from a table in the pack
+(`assets/prices.toml`).
 
 | Metric | One line |
 |---|---|
@@ -13,9 +16,11 @@ already write, priced from a table in the pack (`assets/prices.toml`).
 | Fix-of-a-fix | landed beads that drew a bug about them within 14 days |
 | First-pass CI | merged PRs whose first head passed every required check |
 | Time to land | created → claimed → PR opened → merged → verified, median and p90 |
+| Lead-time stages | created → merged of each landed bead cut into blocked, parked, waiting to be routed, routed and waiting for an agent, working, in review, rework |
 | Human wait | human-gate beads open, past due, and how long answered ones stayed open |
 | Cost per landed bead | list-price dollars (and tokens) of the agents' model calls per landed bead, from their transcripts |
 | Machine friction | stalls the city already logs (order failures, stalled sessions, ...) |
+| Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
 
 ## Use it in a city
 
@@ -37,15 +42,24 @@ already write, priced from a table in the pack (`assets/prices.toml`).
    QUALITY_OUT_DIR = "/srv/dashboard/quality"     # where the page and the JSON go
    QUALITY_HUMAN_PREFIXES = "HUMAN:,ALEX:"        # title prefixes of human-gate beads
    QUALITY_PRICES = "/srv/city/prices.toml"        # your own token prices, merged over the pack's
+
+   [[orders.overrides]]
+   name = "quality-review"
+   [orders.overrides.env]
+   QUALITY_REVIEW_AGENT = "dog"                    # who writes the review; empty = facts only, no tokens
+   QUALITY_REVIEW_MAIL_TO = "mayor"                # who gets it, with a ready-to-file decision
    ```
+
+   The review order finds the output directory the metrics order wrote last
+   (`$QUALITY_STATE_DIR/out-dir`), so `QUALITY_OUT_DIR` need not be set twice.
 
 3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
    runs it now. The first run is the backfill of the last 28 days; after that it runs once a day
    (see "When it runs").
 
 To see the numbers without writing anything: `$PACK_DIR/assets/scripts/quality-metrics.sh --dry-run`
-(the path is in `gc order show quality-metrics`). To see how one bead was counted:
-`... --bead <id>`. To see one day's cost per seat, transcript and model: `... --cost <YYYY-MM-DD>`
+(the path is in `gc order show quality-metrics`). To see how one bead was counted, with its
+events and its stage timeline: `... --bead <id>` (reads only that bead's rig, 10-60 s). To see one day's cost per seat, transcript and model: `... --cost <YYYY-MM-DD>`
 (reads the transcript cache the order keeps; without it, all transcripts in the window).
 
 ## Settings
@@ -78,7 +92,25 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
 | `QUALITY_EVENTS_TZ` | read per event from a timeline | one zone for every `events.created_at`, skipping the timeline (see the time trap below) |
+| `QUALITY_PARKED_STATUSES` | `blocked,deferred` | bead statuses that count as parked in the lead-time stages |
+| `QUALITY_HOLD_KEYS` | `hold_reason` | metadata keys whose non-empty value parks a bead (the text is the reason shown) |
+| `QUALITY_ROUTE_KEYS` | `gc.routed_to` | metadata keys whose non-empty value means the bead is routed (an assignee counts too) |
 | `QUALITY_DOLT_PORT`, `_HOST`, `_USER`, `_PASSWORD` | `GC_DOLT_PORT`, 127.0.0.1, root, empty | the city's Dolt server |
+
+Settings of the `quality-review` order (the pack sets the first five in its `[order.env]`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUALITY_REVIEW_WEEKDAY` | `1` | ISO weekday of the review (1 = Monday); the reviewed week is the 7 local days before it |
+| `QUALITY_REVIEW_HOUR` | `7` | local hour on that day from which the review is due |
+| `QUALITY_REVIEW_AGENT` | empty | agent the formula is slung to (`gc sling <agent> mol-quality-review --formula`); empty = facts only |
+| `QUALITY_REVIEW_MAIL_TO` | `mayor` | who gets the review and the ready-to-file decision |
+| `QUALITY_MAX_LOAD` | `15` | skip (and log) when the 1-minute load is above this |
+| `QUALITY_REVIEW_WORDS` | `300` | word limit of the review |
+| `QUALITY_REVIEW_BEFORE_DAYS` | `21` | days before the reviewed week it is compared with (per week) |
+| `QUALITY_REVIEW_CONFIG_REPOS` | the city dir | comma list of git repos whose commits the facts list |
+| `QUALITY_REVIEW_OPEN_STATUSES` | `open,in_progress,blocked,deferred` | statuses of the "work open now" section |
+| `QUALITY_OUT_DIR`, `QUALITY_STATE_DIR`, `QUALITY_TZ` | as for `quality-metrics` | the same history, caches and day buckets |
 
 ## What a run does and costs
 
@@ -98,6 +130,18 @@ first run reads every transcript of the window, here 3.7 GB in 4,516 files, in 8
 4-7 s wall, about 3 s CPU, mostly loading and writing its 17 MB cache
 (`$QUALITY_STATE_DIR/transcripts.json`); a whole cached run took 14-16 s wall, 6-8 s CPU.
 
+The lead-time stages read each landed bead's whole event history. An update's `old_value` is the
+whole row, so the first read is large (here 26 MB for the busiest rig's 221 landed beads in 28
+days); events are only ever added, so the order caches each bead's extracted state changes in
+`state.json`, keyed by its event count and newest event, and a later run reads only the beads
+that changed. Measured on 2026-10-26 (259 landed beads, 30 `blocks` dependencies): the cold read
+took 9.0 s wall and 1.9 s CPU at load 13, a cached one 2.6 s wall and 0.7 s CPU at load 8 (one
+count query per rig), the split itself 0.6-1.9 s; the cache is 0.9 MB.
+
+The weekly review's facts step reads the history files, one `gc rig list`, the open beads and
+`git log`: 4.4 s wall at load 6-14, 8.8 s for the whole order run at load 11, 17 s wall (3 s CPU)
+at load 41.
+
 ### When it runs
 
 The order fires hourly (`trigger = "cooldown"`, `interval = "1h"`). Only the first successful run
@@ -108,7 +152,8 @@ quiet hour after midnight.
 
 - Run again the same day: `QUALITY_FORCE=1 gc order run quality-metrics`. A plain
   `gc order run quality-metrics` on a day that already ran exits at once.
-- `--dry-run` and `--bead` always run and never write the stamp.
+- `--dry-run` and `--bead` always run and never write the stamp. `--bead` and `--cost` also skip
+  the load gate (one bead or one day: the weekly reviewer's hand checks must not silently skip).
 - Retry less often: `interval = "3h"` in the city's `[[orders.overrides]]`.
 
 Why a cooldown and not a cron like `15 6 * * *`: on 2026-10-25 the first 06:15 slot never fired
@@ -123,10 +168,15 @@ cron also has no ranges: `6-23` never matches (1.5.1 has them).
 Output (`QUALITY_OUT_DIR`):
 
 - `history/<day>.json`: one file per local day: per rig the counts, every landed bead with how it
-  was counted, the PRs merged that day, human gates and friction; city-level friction and cost
-  (dollars, tokens by kind, unpriced tokens, and the same per model and per seat).
-- `quality.json`: 7-day and 28-day windows per rig and for all rigs, daily series, sources.
-- `index.html`: the page. It reads `quality.json` and says "no data" (and why) where a source has none.
+  was counted (incl. its priority, its stage hours and why), the PRs merged that day, human gates
+  and friction; city-level friction and cost (dollars, tokens by kind, unpriced tokens, and the same
+  per model and per seat).
+- `quality.json`: 7-day and 28-day windows per rig and for all rigs (incl. the stage split), daily
+  series, sources.
+- `reviews/`: the weekly review's `<week>.facts.json` and `.facts.md` (the script), `<week>.md`
+  and `<week>.json` (the reviewer), and `index.json` (the page's Weekly review card).
+- `index.html`: the page. It reads `quality.json` and `reviews/index.json` and says "no data" (and
+  why) where a source has none.
 
 ## The metrics
 
@@ -184,9 +234,41 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
 - **Source**: `issues.created_at`, `issues.started_at` (else the first `claimed` event),
   `issues.closed_at`; the bead's first PR's `createdAt` (matched by `metadata.pr_url`, `branch`, or a
   head branch ending in the bead id); the `label_added` event of a verify-OK label.
-- **Blind spots**: created → claimed includes time a bead was deliberately parked or blocked. A bead
-  reopened and landed again is measured to its last close. Merged → verified exists only where the
-  check's label event was recorded.
+- **Blind spots**: created → claimed includes time a bead was deliberately parked or blocked (the
+  lead-time stages below say which). A bead reopened and landed again is measured to its last close.
+  Merged → verified exists only where the check's label event was recorded.
+
+### Lead-time stages
+
+- **Definition**: each landed bead's created → merged (its last close) cut into seven stages that are
+  exclusive and add up to it. At each moment the first that holds wins:
+  1. **blocked**: a `blocks` dependency on a bead that is still open;
+  2. **parked**: status in `QUALITY_PARKED_STATUSES`, a non-empty `QUALITY_HOLD_KEYS` value, a
+     `defer_until` still ahead, or status closed before the first claim;
+  3. before the first claim: **routed** (waiting for an agent) when a `QUALITY_ROUTE_KEYS` value or
+     an assignee is set, else **unrouted** (waiting to be routed);
+  4. after the first claim: **working** until the bead's first PR opens, **review** from then until
+     the first bounce or the merge, **rework** from the first bounce or the first reopen after the
+     claim until the merge.
+
+  Per window, rig and stage: total hours, share of all created → merged hours, how many beads spent
+  time in it, the median and p90 over those beads, and the five beads with the most, each with why
+  (the blocker, the hold reason, the route target). `--bead <id>` prints the bead's timeline. Every
+  run checks that every bead's stages add up to its created → merged (within 0.01 h) and names any
+  that do not in `quality.json` → `sources.stages.not_adding_up`.
+- **Source**: the beads `events` table. An event's `old_value` is the whole row before it (an empty
+  field is left out), so the state between two events is the next event's `old_value`; `new_value`
+  holds only what changed, and its metadata only the changed keys. `dependencies` of type `blocks`
+  (incl. `depends_on_external` ids of other rigs; `created_at` is in the same zone as the events and
+  read through the same timeline) and the blocker's `closed_at` from the store its prefix names. The
+  first PR's `createdAt` from GitHub, bounces from `rejection_reason`, the claim from `started_at`.
+- **Blind spots**: a dependency deleted before the run is not seen (bd keeps no event for it). A
+  blocker still open (or not found) when the bead was claimed counts only up to the claim, since the
+  work went ahead. An assignee before the claim counts as routed even when it is a person. A claim
+  given back to the pool is still working, not waiting. Without a known PR there is no review stage:
+  working runs to the first bounce or the merge. Events in the same second are ordered creation
+  first, close last, else as stored. Only landed beads are split, so work still waiting is not in it;
+  the weekly review lists the open work separately.
 
 ### Human wait
 
@@ -253,6 +335,72 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
   incrementally. An event belongs to a rig when its subject or session names it, else to the city.
 - **Blind spots**: counts events, not their cost. Wake orders (a nudge to an idle seat) are not
   counted: gc keeps no record of delivered nudges, and `order.fired` only says the order ran.
+
+## Weekly review
+
+Once a week the city gets a short review: where the last week's lead time went (hours, with named
+beads), what the previous review's change did, and one proposed config change as an exact diff,
+mailed to `QUALITY_REVIEW_MAIL_TO` with a ready-to-file decision (options, default, why, cost if
+wrong). The coordinator files the decision for the city's human and applies the diff the city's
+usual way. The pack never applies anything.
+
+It has two halves and a fence between them:
+
+- **The facts are a script** (`quality_review.py`, no model, no tokens). It reads the per-day
+  history the metrics order wrote and compares the reviewed week (the 7 local days before the
+  review day) with the `QUALITY_REVIEW_BEFORE_DAYS` before it, per week. It writes
+  `reviews/<week>.facts.json` and a Markdown rendering `reviews/<week>.facts.md` with the same
+  numbers under the same names: the stage split (all rigs and per rig, median and p90, top beads with
+  why, routed wait by target and by bead priority, parked by reason, blocked by blocker, the beads
+  with the most rework and their bounce reasons), "filed together" (beads created in the same clock
+  hour that waited in one stage: a burst can be most of a sum while the median stays small), every
+  landed bead of the week with its stage hours (`beads`, JSON only), every metric of the page as a named key (`all.stage.routed.h`,
+  `hivemind.bounce_rate`, ...) with this week, before and the change, cost by seat, the config
+  repos' commits in the week and since, the work open now (not in the landed numbers), and the last
+  review's change.
+- **The review is one agent session** (`QUALITY_REVIEW_AGENT`, formula `mol-quality-review`, a
+  root-only wisp so a pool can take it). It picks the biggest slowdown a config change can reduce
+  and says why bigger ones were passed over, checks two or more of its beads by hand
+  (`quality-metrics.sh --bead`), finds the cause in the config (`gc config explain`, the git log of
+  the file), and proposes one change: a diff that `git apply --check` accepts in the city, the
+  metric key it should move, from what to what, cost and undo. It writes `reviews/<week>.md`
+  (at most `QUALITY_REVIEW_WORDS` words) and `reviews/<week>.json`, rebuilds `reviews/index.json`,
+  and mails the coordinator.
+- **The fence**: the review's output is a proposal, never an action; it may not touch anything but
+  its own wisp. It may not propose a change to the review itself (this pack's orders, formula,
+  scripts or settings). A change touching money or spend, scope, releases, merges, credentials or
+  architecture is charter-level and its decision defaults to "No change". And the loop is closed by
+  the script, not by the reviewer: next week's facts check with git whether the previous diff is in
+  the city (`git apply --check --reverse`: applied; `--check`: not applied; neither: unknown) and
+  read the named metric from both weeks' facts files. It calls the move "as expected" only when the
+  change was applied and the metric moved the wanted way; the review also records what it expected
+  without the change (`expect_without`), because work comes in bursts and a metric can fall on its
+  own.
+
+When it runs: hourly on a cooldown, like the metrics order; it does the work on the first fire
+after `QUALITY_REVIEW_WEEKDAY` at `QUALITY_REVIEW_HOUR` (local) once that day's quality-metrics run
+succeeded (`last-ok-day`), and records the week in `$QUALITY_STATE_DIR/review-last-week`. A load
+skip or a failed sling is retried an hour later. `QUALITY_FORCE=1 gc order run quality-review` runs
+it again. `quality-review.sh --dry-run` prints the due week's facts and writes nothing;
+`quality-review.sh --week 2026-W42` writes a past week's facts without slinging (to try a reviewer
+on evidence cut before the outcomes were known).
+
+The page's Weekly review card shows the latest review and, per week, the biggest stage from the
+facts, the slowdown and change the review named, the decision's default, and next week's check:
+applied or not, and the metric then and now.
+
+Cost: the review is one agent session. A backtest of the formula on week 2026-W43's facts (same
+text, a scratch output dir, the mail written to a file) took 43 Opus 5.5 calls, 3.7M cache-read and
+38k output tokens: $2.13 at list price, priced from its transcript with this pack's table; it ran
+11 min, mostly waiting for the host load to fall. The facts step costs no tokens.
+
+Blind spots: "filed together" groups by clock hour, so a burst that straddles an hour shows as two.
+"Applied" sees only the exact diff in the first config repo; a change made another way
+shows as unknown. One week is a small sample, so a metric's move after a change can be noise or
+another cause; the review is asked to say so. The facts cover landed beads plus a snapshot of open
+work, not the history of work still open. The review is as good as the agent that writes it: its
+numbers can be traced (every one must come from the facts or a command it names), its judgement
+cannot.
 
 ## Traps this pack handles
 
@@ -321,6 +469,11 @@ the city it was built in. The cases:
 | Event time | hivemind-0921o, hivemind-nf97m | `label_added` raw 08:32:20 = local 07:32:20Z (commit 07:32:20.6); `claimed` raw 08:39:31 = UTC (`started_at` 08:39:32) | same |
 | Event time | hivemind-j6tgw, hivemind-plehj (DST hour) | j6tgw `claimed` raw 02:54:19 = first fold 00:54:19Z, `closed` raw 02:33:55 = second fold 01:33:55Z (`closed_at`); plehj `claimed` raw 02:22:29 = second fold 01:22:29Z (`started_at`) | same, by commit |
 | Event time | hivemind-14zub (10-24, CEST) | events +2 h: bounce 20:14:50Z, merged 20:32:13Z, verified 21:14:44Z | same, by timeline |
+| Stages | hivemind-p7da (607.6 h) | status blocked 09-26 16:26:14Z, hold_reason from 09-28 04:24:02Z (raw 06:24:02 CEST), `blocks` on hc-3nq added 10-21 05:07:54Z, hc-3nq closed 21:18:14Z, routed 21:13:27Z, claimed 23:42:54Z, PR #351 23:46:14Z, merged 10-22 00:01:21Z | unrouted 0.011, parked 588.694, blocked 16.172, routed 2.411, working 0.056, review 0.252 h; sum 607.596 |
+| Stages | hivemind-qqou8 (42.9 h) | created 10-18 07:29:34Z, routed 07:52:42Z, claimed 10-20 01:56:48Z, PR #320 02:01:04Z, merged 02:22:16Z | unrouted 0.386, routed 42.068, working 0.071, review 0.353 h |
+| Stages | hivemind-9gatq (24.9 h) | `blocks` on hc-24n and hc-0k1 from 10-19 17:56:30Z / 17:56:47Z, hc-24n closed 10-20 18:24:35Z (the later one), hold cleared 18:25:02Z, routed 18:25:09Z, claimed 18:26:19Z, PR #335 18:36:42Z, merged 18:51:05Z | unrouted 0.007, blocked 24.468, parked 0.007, routed 0.019, working 0.173, review 0.24 h |
+| Stages | hivemind-v79o2 (10.8 h, 2 bounces) | created 10-20 00:59:23Z, routed 05:00:05Z, claimed 08:36:51Z, PR #329 10:14:12Z, first bounce 10:29:50Z, merged 11:48:05Z | unrouted 4.012, routed 3.613, working 1.623, review 0.261, rework 1.304 h |
+| Stages | every landed bead, 28 days to 10-26 | stages add up to created → merged | 259 of 259 within 0.01 h |
 | Human wait | end of 10-23 | open gc-xroei (past due since 10-20) and gc-14ghu (due 10-25); gc-7ltuf answered after 13.7 h | 2 open, 1 past due, 13.7 h |
 | Human wait | end of 10-24, end of 10-20 | 1 open / 1 past due, gc-14ghu 27.8 h; 2 open / 1 past due, gc-c0z9g 25.0 h | same |
 | Cost, day | 10-03 (CEST) | independent recount (grep, jq, awk with typed-in rates, every line whose own `cwd` is under the city's `.gc/`): 12,414 messages, $695.85; the 2 extra messages straddle midnight (lines 21:59:57Z, final line 22:00:04Z) and count on 10-04 | 12,412 messages, $695.68 |

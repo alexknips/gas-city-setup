@@ -75,6 +75,17 @@
   dl.defs dd .k { color: var(--muted); }
   a { color: var(--accent); }
   .err { border-color: var(--axis); color: var(--ink-2); }
+  h3 { font-size: 13px; font-weight: 650; margin: 16px 0 6px; color: var(--ink-2); }
+  td.bar { width: 30%; min-width: 110px; }
+  .barcell { display: flex; align-items: center; gap: 6px; }
+  .barcell .sbar { flex: 1; }
+  .barcell .pct { width: 3.2em; text-align: right; color: var(--ink-2); }
+  td.stage .bead-title { max-width: 180px; }
+  td.change .bead-title { max-width: 240px; color: var(--ink); font-size: 13px; }
+  .sbar { position: relative; height: 10px; background: var(--grid); border-radius: 4px; }
+  .sbar span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; min-width: 2px; }
+  .review-text { white-space: pre-wrap; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--page);
+                 border: 1px solid var(--grid); border-radius: 8px; padding: 12px; margin: 8px 0 0; max-height: 420px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -107,6 +118,9 @@
       <h2>Time to land, <span class="selname"></span></h2>
       <div class="scroll"><table id="ttl"></table></div>
       <p class="note">Hours. Claimed is the bead's first start; PR opened comes from GitHub; merged is the close by the refinery; verified is when the post-merge check label was added.</p>
+      <h3>Where created → merged went</h3>
+      <div class="scroll"><table id="stages"></table></div>
+      <p class="note" id="stages-note"></p>
     </section>
     <section class="card">
       <h2>Machine friction, <span class="selname"></span></h2>
@@ -122,6 +136,13 @@
       <div class="scroll"><table id="cost-seats"></table></div>
     </div>
     <p class="note" id="cost-note"></p>
+  </section>
+
+  <section class="card" style="margin-top:16px" id="review-card">
+    <h2>Weekly review</h2>
+    <div id="review-latest"></div>
+    <div class="scroll"><table id="review-weeks"></table></div>
+    <p class="note" id="review-note"></p>
   </section>
 
   <section class="card" style="margin-top:16px">
@@ -163,7 +184,7 @@ const svgEl = (tag, attrs) => {
 const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 
-let Q = null, rig = "all", win = "28";
+let Q = null, R = null, rig = "all", win = "28";
 
 const DEFS = [
   ["Bounce rate", "Share of landed beads the refinery sent back at least once before merging.",
@@ -181,6 +202,12 @@ const DEFS = [
   ["Time to land", "Median and 90th percentile hours per stage: created to claimed, claimed to PR opened, claimed to merged, merged to verified, created to merged.",
    "Beads: created_at, started_at (first claim; else the first claimed event), closed_at; GitHub PR createdAt; the label_added event of the verify label.",
    "Created to claimed includes time a bead sat blocked or parked on purpose. A bead reopened and landed again is measured to its last landing."],
+  ["Lead-time stages", "Created to merged of each landed bead, cut into seven stages that add up to it. At each moment, in this order: blocked (a blocks dependency on a bead still open), parked (status blocked or deferred, a hold reason, a defer date ahead), then before the first claim waiting to be routed or routed and waiting for an agent, after it working (to the first PR), in review (PR to the first bounce or the merge) and rework (from the first bounce or reopen).",
+   "Beads events (each event's old value is the whole row before it: status, assignee, gc.routed_to, hold_reason, defer_until), dependencies of type blocks with the blocker's close time, GitHub PR createdAt, refinery bounces.",
+   "A blocker still open when the bead was claimed counts only up to the claim. A dependency removed before the run is not seen. An assignee before the claim counts as routed, even a person. A claim given back to the pool still counts as working."],
+  ["Weekly review", "Once a week a script writes the week's facts (the stage split vs the weeks before, every metric's change, cost by seat, the city's config commits, open work) and one agent session reads them, checks beads by hand and proposes one config change by mail, as a decision with a default.",
+   "reviews/<week>.facts.json and .md (the script), reviews/<week>.md and .json (the review). Next week's script checks with git whether the change was applied and reads its metric again.",
+   "A proposal, never an action: the coordinator decides and applies it. A change touching money, scope, releases, merges, credentials or architecture defaults to no change. The review may not propose changes to itself. 'Applied' is a git check of the diff against the city's files; a change made another way shows as unknown."],
   ["Human wait", "Human-gate beads open at the end of each day, how many of those are past their due time, and how long answered gates stayed open.",
    "Beads whose title starts with QUALITY_HUMAN_PREFIXES or whose metadata has QUALITY_HUMAN_DUE_KEY (default human.due).",
    "Work blocked behind a gate is not linked to it in the bead graph, so the time other beads wait on a person is not measured, only the gate's own open time."],
@@ -199,6 +226,13 @@ function fmtH(v) {
   if (v < 48) return (Math.round(v * 10) / 10) + " h";
   return (Math.round(v / 24 * 10) / 10) + " d";
 }
+function fmtHours(v) { return v == null ? null : (v < 48 ? fmtH(v) : Math.round(v).toLocaleString() + " h"); }
+const STAGE_ORDER = ["blocked", "parked", "unrouted", "routed", "working", "review", "rework"];
+const STAGE_NAMES = { blocked: "Blocked by another bead", parked: "Parked (on hold)", unrouted: "Waiting to be routed",
+  routed: "Routed, waiting for an agent", working: "Working (claim → first PR)", review: "In review (PR → bounce or merge)",
+  rework: "Rework (bounce or reopen → merge)" };
+const STAGE_SHORT = { blocked: "Blocked", parked: "Parked", unrouted: "Waiting to be routed", routed: "Waiting for an agent",
+  working: "Working", review: "In review", rework: "Rework" };
 function fmtUsd(v) { return v == null ? null : "$" + v.toFixed(2); }
 function fmtTok(v) {
   if (v == null) return null;
@@ -380,6 +414,67 @@ function renderTtl() {
   tbl.append(body);
 }
 
+function renderStages() {
+  const st = W().stages, tbl = $("stages");
+  const head = ["Stage", "Share", "Hours", "n", "Median"];
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h, i) => el("th", { text: h, class: i < 2 ? "l" : "" })))));
+  const body = el("tbody");
+  const maxShare = st && st.beads ? Math.max(...STAGE_ORDER.map((k) => st.stages[k].share || 0), 1) : 1;  // the biggest stage fills the track
+  if (!st || !st.beads) {
+    body.append(el("tr", {}, el("td", { colspan: String(head.length) }, nd(st ? "no landed beads with a stage split" : "no stage data in this run"))));
+    tbl.append(body);
+    $("stages-note").textContent = "";
+    return;
+  }
+  for (const k of STAGE_ORDER) {
+    const x = st.stages[k], top = x.top[0];
+    const fill = el("span");
+    fill.style.width = (100 * (x.share || 0) / maxShare) + "%";
+    const bar = el("div", { class: "sbar", role: "img", "aria-label": `${STAGE_NAMES[k]}: ${fmtPct(x.share) || "0%"} of bead-hours` }, fill);
+    bar.addEventListener("pointermove", (e) => showTip(e, fmtPct(x.share) || "0%", `${STAGE_NAMES[k]}: ${fmtHours(x.h)} over ${x.n} bead${x.n === 1 ? "" : "s"}`));
+    bar.addEventListener("pointerleave", hideTip);
+    const most = top ? `${top.id} ${fmtHours(top.h)}` + (top.why && top.why.length ? ": " + top.why[0] : "") : "none";
+    body.append(el("tr", {}, el("td", { class: "l stage", title: STAGE_NAMES[k] }, document.createTextNode(STAGE_SHORT[k]), el("span", { class: "bead-title", text: most, title: most })),
+      el("td", { class: "l bar" }, el("div", { class: "barcell" }, bar, el("span", { class: "pct", text: fmtPct(x.share) || "0%" }))),
+      el("td", { text: fmtHours(x.h) }), el("td", { text: String(x.n) }),
+      el("td", {}, cellVal(x.median_h, fmtH))));
+  }
+  tbl.append(body);
+  $("stages-note").textContent = `${st.beads} of ${st.landed} landed beads, ${fmtHours(st.total_h)} from created to merged. ` +
+    "Each moment counts once: blocked by an open bead, then parked on hold, then the phase: before the claim waiting to be routed or for an agent, after it working (to the first PR), in review, rework (after a bounce or reopen). n = beads with time in the stage; under each stage, the bead with the most and why. The median is over the beads that spent time in that stage; one old bead can be most of a sum.";
+}
+
+function renderReview() {
+  const latest = $("review-latest"), tbl = $("review-weeks");
+  if (!R || !R.weeks || !R.weeks.length) {
+    latest.replaceChildren(nd("no review yet: the quality-review order writes one a week (reviews/index.json not found)"));
+    tbl.replaceChildren();
+    $("review-note").textContent = "";
+    return;
+  }
+  const weeks = R.weeks.slice().reverse(), withMd = weeks.find((w) => w.md);
+  latest.replaceChildren(withMd
+    ? el("div", {}, el("div", { class: "meta", text: `Latest review: week ${withMd.week}` + (withMd.days ? ` (${withMd.days.join(" to ")})` : "") }),
+        el("div", { class: "review-text", text: withMd.md }))
+    : nd("no review text yet: facts only (QUALITY_REVIEW_AGENT is empty), or this week's review is still running"));
+  const head = ["Week", "Biggest stage (facts)", "Slowdown named", "Proposed change", "Default", "Applied", "Effect"];
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h, i) => el("th", { text: h, class: i === 0 ? "" : "l" })))));
+  const body = el("tbody");
+  for (const w of weeks) {
+    const b = w.biggest_stage, sd = w.slowdown, ch = w.change, f = w.followup;
+    const metric = f && f.metric ? `${f.metric}: ${f.then == null ? "no data" : f.then} → ${f.now == null ? "no data" : f.now}` : "–";
+    body.append(el("tr", {}, el("td", { text: w.week }),
+      el("td", { class: "l" }, b ? document.createTextNode(`${STAGE_SHORT[b.stage] || b.stage} ${fmtHours(b.h)} (${fmtPct(b.share)})`) : nd()),
+      el("td", { class: "l" }, sd && sd.stage ? document.createTextNode(`${STAGE_SHORT[sd.stage] || sd.stage}${sd.rig && sd.rig !== "all" ? ", " + sd.rig : ""}`) : nd(w.review ? "none" : "facts only")),
+      el("td", { class: "l change" }, ch && ch.title ? el("span", { class: "bead-title", text: ch.title, title: ch.title }) : nd(w.review ? "no change proposed" : "–")),
+      el("td", { class: "l", text: w.decision_default || "–" }),
+      el("td", { class: "l" }, f ? document.createTextNode(f.applied) : nd("next week")),
+      el("td", { class: "l", text: metric })));
+  }
+  tbl.append(body);
+  $("review-note").textContent = "The facts come from a script; the review is one agent's proposal and changes nothing. Whether a change was applied (a git check of its diff) and how its metric moved are read by the next week's script, not by the reviewer.";
+}
+
 const FRICTION_NAMES = {
   "session.reset_stalled": "stalled session reset", "session.cold_start_timeout": "session cold start timed out",
   "session.work_query_failed": "session work query failed", "bead.dead_assignee_reopened": "work reopened from a dead session",
@@ -405,8 +500,8 @@ function renderBeads() {
   const days = new Set(windowDays());
   const list = Q.beads.filter((b) => (rig === "all" || b.rig === rig) && days.has(b.day)).sort((a, b) => (a.landed < b.landed ? 1 : -1));
   const tbl = $("beads");
-  const head = ["Landed", "Bead"].concat(rig === "all" ? ["Rig"] : [], ["Bounces", "Post-merge", "Fix-of-a-fix", "First-pass CI", "Claimed→ merged"]);
-  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { text: h, class: ["Bead", "Rig", "Post-merge", "Fix-of-a-fix", "First-pass CI"].includes(h) ? "l" : "" })))));
+  const head = ["Landed", "Bead"].concat(rig === "all" ? ["Rig"] : [], ["Bounces", "Post-merge", "Fix-of-a-fix", "First-pass CI", "Claimed→ merged", "Longest stage"]);
+  tbl.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { text: h, class: ["Bead", "Rig", "Post-merge", "Fix-of-a-fix", "First-pass CI", "Longest stage"].includes(h) ? "l" : "" })))));
   const body = el("tbody");
   for (const b of list.slice(0, 80)) {
     const pm = b.post_merge_failed ? (b.verdict === "failed" ? "check failed" : "reopened") : (b.verdict === "ok" ? "verified" : "not checked");
@@ -416,10 +511,18 @@ function renderBeads() {
       ...(rig === "all" ? [el("td", { class: "l", text: b.rig })] : []),
       el("td", { text: String(b.bounces) }), el("td", { class: "l", text: pm }),
       el("td", { class: "l", text: b.fix_of_a_fix.length ? b.fix_of_a_fix.map((f) => f.id).join(", ") : "–" }),
-      el("td", { class: "l", text: fp + (b.pr ? " (#" + b.pr + ")" : "") }), el("td", {}, cellVal(b.hours.claimed_merged, fmtH))));
+      el("td", { class: "l", text: fp + (b.pr ? " (#" + b.pr + ")" : "") }), el("td", {}, cellVal(b.hours.claimed_merged, fmtH)),
+      el("td", { class: "l" }, longest(b))));
   }
   if (!list.length) body.append(el("tr", {}, el("td", { colspan: String(head.length) }, nd("no landed beads in this window"))));
   tbl.append(body);
+}
+
+function longest(b) {
+  if (!b.stages) return nd();
+  const [k, h] = Object.entries(b.stages).sort((x, y) => y[1] - x[1])[0];
+  const SHORT = { blocked: "blocked", parked: "parked", unrouted: "unrouted", routed: "waiting for an agent", working: "working", review: "review", rework: "rework" };
+  return document.createTextNode(`${SHORT[k] || k} ${fmtH(h)}`);
 }
 
 function renderCost() {
@@ -488,7 +591,7 @@ function render() {
   $("w7").setAttribute("aria-pressed", String(win === "7"));
   $("w28").setAttribute("aria-pressed", String(win !== "7"));
   for (const s of document.querySelectorAll(".selname")) s.textContent = (rig === "all" ? "all rigs" : rig) + ", last " + win + " days";
-  renderTiles(); renderRigs(); renderTtl(); renderFriction(); renderCost(); renderBeads(); renderDaily();
+  renderTiles(); renderRigs(); renderTtl(); renderStages(); renderFriction(); renderCost(); renderBeads(); renderDaily();
 }
 
 function init(data) {
@@ -509,6 +612,8 @@ function init(data) {
   $("gen").textContent = `${Q.days[0]} to ${Q.days[Q.days.length - 1]} (${Q.timezone}), today counts so far · updated ${gen.toLocaleString()}`;
   renderDefs();
   render();
+  fetch("reviews/index.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    .then((d) => { R = d; renderReview(); });
   let t = null;
   window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(renderTiles, 150); });
 }

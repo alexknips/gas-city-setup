@@ -1,0 +1,26 @@
+# Weekly review (README.md, "Weekly review"): where last week's lead time went, what last week's
+# proposed change did, and one proposed config change, mailed as a decision with a default.
+# Two halves with a fence between them: the facts are a script (quality_review.py, no model, a few
+# seconds); the proposal comes from one agent session (formula mol-quality-review) whose output is
+# a proposal only. It applies nothing, and next week's script checks whether the change was applied
+# and whether its metric moved. With QUALITY_REVIEW_AGENT empty the order writes the facts and
+# stops: no agent, no tokens.
+# Fires hourly like quality-metrics (cooldown, see README "When it runs"); does the work on the
+# first fire after QUALITY_REVIEW_WEEKDAY at QUALITY_REVIEW_HOUR (local) once that day's
+# quality-metrics run succeeded. Skips when load1 > QUALITY_MAX_LOAD and retries an hour later.
+# Manual run: QUALITY_FORCE=1 gc order run quality-review
+# Dry run:    $PACK_DIR/assets/scripts/quality-review.sh --dry-run
+[order]
+description = "Weekly review: where last week's lead time went and one proposed config change"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/quality-review.sh"
+trigger = "cooldown"
+interval = "1h"
+timeout = "10m"
+
+[order.env]
+QUALITY_REVIEW_WEEKDAY = "1"
+QUALITY_REVIEW_HOUR = "7"
+QUALITY_REVIEW_AGENT = ""
+QUALITY_REVIEW_MAIL_TO = "mayor"
+QUALITY_MAX_LOAD = "15"

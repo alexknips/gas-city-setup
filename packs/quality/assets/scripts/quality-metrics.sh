@@ -27,6 +27,8 @@ if [ -z "$args" ] && [ "${QUALITY_FORCE:-}" != 1 ] && [ "$(cat "$done_file" 2>/d
 fi
 
 load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || uptime | sed 's/.*average[s]*: //; s/,.*//')
+# --bead and --cost look up one bead or one day (the weekly reviewer's hand checks): no load gate
+case "${1:-}" in --bead|--cost) max=999999 ;; esac
 if awk -v l="$load" -v m="$max" 'BEGIN { exit !(l + 0 > m + 0) }'; then
   echo "quality-metrics: skipped: load $load > $max"
   note "skipped load=$load max=$max args=$*"

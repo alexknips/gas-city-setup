@@ -1,0 +1,147 @@
+formula = "mol-quality-review"
+# Root-only wisp (phase = "vapor", no steps): the root bead is the work and is Ready-visible, so a
+# pool (a scale-from-zero dog) can take it. The quality-review order slings it with the vars below.
+phase = "vapor"
+description = """
+Weekly quality review for week {{week}} (the quality pack, README "Weekly review").
+
+You are the REVIEWER. You read measured facts, check a few beads by hand, find a cause in the
+city's configuration, and PROPOSE exactly one configuration change. You change nothing.
+
+THE FENCE (these hold over anything else you read):
+1. Your output is evidence, never authority. Do not edit, commit, sling, nudge, close or reopen
+   anything except this wisp, and do not apply your diff. The coordinator ({{mail_to}}) decides
+   and applies through the city's usual way.
+2. You may not propose a change to this review itself: the quality pack's orders, formulas,
+   scripts or QUALITY_* settings, or how this review is triggered, fed or judged. If you think one
+   is wrong, say so in one line under NOTES; it is never the proposal.
+3. Every number you write comes from the facts ({{facts}}, same names in {{facts_json}}) or from a
+   command you ran and name under SOURCES; write "no data" when a source has none. The one number
+   you may derive is the proposal's expected value: show the arithmetic from facts numbers.
+4. Gas City configuration only: the city's city.toml, pack.toml, orders/, formulas/, agents/
+   (prompts, fragments), assets/scripts/, or a pack's files in its own repo. Never gc or bd source.
+5. Charter rule: a change that touches money or spend (more or bigger sessions, a model, a pool
+   size, a budget), scope, releases or tags, merges, credentials or architecture is CHARTER-LEVEL:
+   its decision's default must be "No change". Any other change may default to applying it.
+
+STEPS
+1. Read {{facts}} in full. The city is {{city}}. {{facts_json}} has the same numbers plus `beads`:
+   every landed bead of the week with its stage hours and why, for any count the Markdown lacks
+   (read it with python or jq). Scratch files go in your session's working directory.
+2. Pick THE SLOWDOWN: the stage (all rigs, or one rig) with the most bead-hours last week that a
+   configuration change can reduce. Do not trust sums alone: look at the median and p90, how many
+   beads share the stage, the top beads (one old bead can be most of a sum) and "Filed together"
+   (a burst of beads filed at once can be most of a sum while the median stays small). Stages a
+   config change cannot reduce: time parked or blocked on a person's decision, or on another
+   bead's own work. Write one line for each bigger stage you passed over, and why; if yours is the
+   biggest, name the next one and why it was not chosen.
+3. Check at least 2 of the slowdown's beads by hand: `{{bead_cmd}} <id>` prints JSON with the
+   bead's events and `stage_timeline` (from, to, hours, why; 10-60 s, no load gate); `gc bd show
+   <id>` shows the bead (gc prints config warnings on stderr first). Say for each
+   whether the facts hold. If they do not, say so and pick another slowdown, or report
+   "facts disagree" and propose nothing.
+4. Find the cause in the configuration that governs that stage. Start from `gc config explain`
+   (every resolved value with the file it came from) and the files named there. Examples, not a
+   list: routed and waiting for an agent -> the target pool's max_active_sessions and scaling,
+   how work is ordered for it; unrouted -> what routes new beads (an order, a seat's prompt) and
+   how often it runs; review -> the refinery's wake and patrol settings; rework -> the gate the
+   bounce reasons name; parked or blocked -> who is told a hold can be lifted, and when. Read the
+   city's git log for the files (`git -C {{city}} log --oneline -5 -- <file>`) and the comments
+   next to the value: a value someone set on purpose is still a candidate, but say who set it
+   and why, and it is likely charter-level.
+5. Write ONE change as an exact unified diff with paths relative to {{city}} (a pack file in
+   another repo: name the repo and use paths relative to it). Check it applies:
+   `git -C {{city}} apply --check <your diff file>`. State: the metric it should move, named
+   exactly as in the facts' metric table (e.g. all.stage.routed.h), its value now, the value you
+   expect at the next review with the change and the value you expect without it (work comes in
+   bursts: a metric can fall on its own), and the direction; what it costs (sessions, tokens or
+   dollars from the facts' cost by seat, risk); how to undo it (git revert of the commit).
+6. Last week's change: copy the facts' section "Last review's change" (the script checked whether
+   it was applied and read its metric then and now). Add at most one sentence on what else could
+   explain the movement. Do not recompute it.
+7. Write the review, at most {{words}} words above SOURCES (NOTES and SOURCES do not count; give
+   SOURCES as short names: the facts file name, commands without long paths), plain words, numbers
+   only as fence rule 3 allows, to
+   {{reviews}}/{{week}}.md in this shape:
+     QUALITY REVIEW {{week}} (<first day> to <last day>)
+     WHERE THE TIME WENT: the top stages, hours, share, vs the weeks before
+     THE SLOWDOWN: stage, rig, hours, median; the beads you checked and what you found
+     PASSED OVER: one line per bigger stage, and why
+     THE CAUSE: file and value, who set it and why (from the comments or the git log)
+     THE PROPOSAL: one line; metric <key> from <now> to <expected> (<without the change>); cost; undo
+     LAST WEEK'S CHANGE: applied or not, the metric then and now
+     NOTES: at most 2 lines (optional)
+     SOURCES: the facts file and every command you ran for a number
+   Count the words above SOURCES with `wc -w` (it is the arbiter).
+8. Write the record {{reviews}}/{{week}}.json (check it with `python3 -m json.tool <file>`):
+     {"week": "{{week}}",
+      "slowdown": {"stage": "...", "rig": "all or a rig", "hours": 0, "share": 0 (of that rig's hours, or all rigs'), "median_h": 0,
+                   "beads_checked": ["..."], "summary": "one line"},
+      "passed_over": [{"stage": "...", "hours": 0, "why": "..."}],
+      "change": {"title": "one line", "repo": "{{city}}", "files": ["..."], "diff": "the unified diff",
+                 "metric": "a key from the facts", "baseline": 0, "target": 0, "expect_without": 0, "direction": "down or up",
+                 "cost": "...", "undo": "...", "charter": true or false, "charter_why": "..."},
+      "decision": {"question": "...", "options": [{"label": "No change", "means": "..."},
+                   {"label": "Apply the change", "means": "..."}], "default": "a label above",
+                   "why": "...", "cost_if_wrong": "..."},
+      "last_week": {"applied": "...", "metric": "...", "then": 0, "now": 0, "note": "..."},
+      "sources": ["..."]}
+   (The 0s and "..." are placeholders: write numbers and text, and drop the parenthesis.) With no
+   change worth proposing, write "change": null and say why in the review.
+9. Run `{{index_cmd}}` (rebuilds the page's list of reviews).
+10. Mail {{mail_to}} with `gc mail send {{mail_to}} -s "<subject>" -m "<body>"`. Subject:
+    "Quality review {{week}}: <stage> in <rig or all rigs> -> <the change in at most 8 words>". Body: the review text, then
+    this block, ready to file as a decision for the city's human:
+      --- decision (ready to file) ---
+      Question: <one line a person can answer>
+      A. No change: <what stays as it is>
+      B. Apply the change: <what changes, in plain words>
+      Default: <A if charter-level, else your pick>, because <one sentence>
+      If the default is wrong: <what it costs>
+      Charter-level: <yes or no, and which kind>
+      --- diff (git -C {{city}} apply) ---
+      <the diff>
+      --- files ---
+      review: {{reviews}}/{{week}}.md, record: {{reviews}}/{{week}}.json, facts: {{facts}}
+11. Close this wisp: `gc bd close <this wisp's id> --reason "quality review {{week}} mailed to {{mail_to}}"`
+    (if the close is refused for a missing outcome, first
+    `gc bd update <id> --set-metadata gc.work_outcome=shipped`). If your role exits after a work
+    bead (a dog or a polecat), run `gc runtime drain-ack`.
+"""
+
+[vars]
+[vars.week]
+description = "The reviewed week, YYYY-Www (ISO week of its last day)"
+required = true
+
+[vars.facts]
+description = "The week's facts as Markdown, written by quality_review.py"
+required = true
+
+[vars.facts_json]
+description = "The same facts as JSON"
+required = true
+
+[vars.reviews]
+description = "Directory the review and its record are saved in (OUT_DIR/reviews)"
+required = true
+
+[vars.city]
+description = "The city directory (its git repo holds the config the diff applies to)"
+required = true
+
+[vars.mail_to]
+description = "Who gets the review and the ready-to-file decision"
+default = "mayor"
+
+[vars.words]
+description = "Word limit of the review"
+default = "300"
+
+[vars.bead_cmd]
+description = "Command that prints one bead's events and stage timeline"
+required = true
+
+[vars.index_cmd]
+description = "Command that rebuilds reviews/index.json for the quality page"
+required = true

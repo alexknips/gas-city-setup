@@ -1,6 +1,8 @@
-# quality: how good a Gas City's work is, per rig and per day (README.md).
-# One exec order (orders/quality-metrics.toml) writes per-day JSON history and a static page.
-# No agents, no formulas, no core changes; reads beads, GitHub (gh) and the city event log.
+# quality: how good a Gas City's work is, per rig and per day, and a weekly review of it (README.md).
+# orders/quality-metrics.toml writes per-day JSON history and a static page (no agents, no tokens).
+# orders/quality-review.toml writes the week's facts and, when QUALITY_REVIEW_AGENT is set, slings
+# formulas/mol-quality-review.toml: one agent proposes one config change by mail and applies nothing.
+# Reads beads, GitHub (gh), the city event log and the agents' transcripts; no core changes.
 [pack]
 name = "quality"
 schema = 2

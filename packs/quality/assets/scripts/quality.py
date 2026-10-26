@@ -87,6 +87,10 @@ FRICTION_EVENTS = env_list("QUALITY_FRICTION_EVENTS",
                            "order.failed,session.reset_stalled,session.cold_start_timeout,"
                            "session.work_query_failed,bead.dead_assignee_reopened,"
                            "supervisor.fs_pressure.skipped_tick")
+# Lead-time stages: what parks a bead, and the metadata keys that say it is routed or on hold.
+PARKED_STATUSES = env_list("QUALITY_PARKED_STATUSES", "blocked,deferred")
+HOLD_KEYS = env_list("QUALITY_HOLD_KEYS", "hold_reason")
+ROUTE_KEYS = env_list("QUALITY_ROUTE_KEYS", "gc.routed_to")
 REPOS = dict(x.split("=", 1) for x in env_list("QUALITY_REPOS") if "=" in x)  # rig=owner/repo|none
 USE_GH = env("QUALITY_GH", "auto").lower() not in ("off", "no", "0", "false")
 POST_RENDER = env("QUALITY_POST_RENDER")
@@ -360,12 +364,19 @@ class EventClock:
                 return {z} if t >= first else {z, runs[i - 1][0]}
         return {runs[-1][0]}
 
-    def resolve(self, rig, evs):
-        """Set e['at'] (aware UTC, None if unreadable) and e['how'] on events of one rig."""
+    def resolve(self, rig, evs, count=True):
+        """Set e['at'] (aware UTC, None if unreadable) and e['how'] on events of one rig (or on
+        dependency rows, whose created_at is written the same way; count=False keeps them out of
+        the events tally)."""
         if self.forced:
             for e in evs:
                 e["at"] = as_utc(e["created_at"], next(iter(self.zones.values())), True)
                 e["how"] = "forced"
+            return
+        if not count:
+            saved = dict(self.counts)
+            self.resolve(rig, evs)
+            self.counts = defaultdict(int, saved)
             return
         pending = []
         for e in evs:
@@ -450,7 +461,7 @@ def is_landed(meta):
 def collect_rig(beads, rig, start, now, clock):
     """Landed beads of one rig since `start`, with everything the bead-level metrics need."""
     landed = {}
-    for r in beads.rows(rig, "SELECT id, title, issue_type, created_at, started_at, closed_at, "
+    for r in beads.rows(rig, "SELECT id, title, issue_type, priority, created_at, started_at, closed_at, "
                              "CAST(metadata AS CHAR) AS metadata FROM {T}issues "
                              "WHERE status = 'closed' AND closed_at >= %s", (sqlts(start),)):
         meta = jload(r["metadata"])
@@ -458,12 +469,13 @@ def collect_rig(beads, rig, start, now, clock):
             continue
         closed = as_utc(r["closed_at"])
         landed[r["id"]] = {
-            "id": r["id"], "rig": rig.name, "title": r["title"], "type": r["issue_type"],
+            "id": r["id"], "rig": rig.name, "title": r["title"], "type": r["issue_type"], "priority": r["priority"],
             "created": as_utc(r["created_at"]), "started": as_utc(r["started_at"]), "closed": closed,
             "day": day_of(closed), "merge_result": meta.get("merge_result"),
             "pr_url": meta.get("pr_url") or meta.get("validation_pr") or None,
             "branch": meta.get("branch") or meta.get("gc.work_branch") or None,
-            "bounces": [], "closes": [], "reopens": [], "first_claim_event": None,
+            "bounces": [], "closes": [], "reopens": [], "reopen_times": [], "first_claim_event": None,
+            "stages": None, "stage_by": None, "timeline": None,
             "verdict": None, "verified_at": None, "labels": [], "fof": [], "pr": None,
         }
     ids = list(landed)
@@ -494,6 +506,7 @@ def collect_rig(beads, rig, start, now, clock):
         elif et == "closed":
             b["closes"].append(at)
         elif et == "reopened":
+            b["reopen_times"].append(at)
             prev = b["closes"][-1] if b["closes"] else None
             if is_landed(meta_of(e["ov"])) and prev and at - prev <= timedelta(days=FOLLOW_DAYS):
                 b["reopens"].append({"at": iso(at), "actor": e["actor"],
@@ -553,6 +566,232 @@ def collect_human(beads, rig, start, now):
         gates.append({"id": r["id"], "rig": rig.name, "title": r["title"][:120], "created": as_utc(r["created_at"]),
                       "closed": closed, "due": as_utc(meta.get(HUMAN_DUE_KEY)) or as_utc(r["due_at"])})
     return gates
+
+
+# ---------- lead-time stages ----------
+
+STAGES = ("blocked", "parked", "unrouted", "routed", "working", "review", "rework")
+STAGE_CACHE_VERSION = 1
+EVENT_ORDER = {"created": 0, "closed": 2}  # events in the same second: the creation first, a close last
+
+
+def issue_state(value, full):
+    """The fields the stages read, from an events old_value (full: the whole row before the event,
+    where an empty field is left out) or new_value (only what the event changed; its metadata
+    holds only the changed keys). None when the value is not an issue."""
+    d = jload(value)
+    if not isinstance(d, dict) or not d or (full and "status" not in d):
+        return None
+    if full:
+        s = {"status": d["status"], "assignee": d.get("assignee") or "", "defer_until": d.get("defer_until")}
+    else:
+        s = {k: d[k] for k in ("status", "assignee", "defer_until") if k in d}
+    m = d.get("metadata")
+    m = (jload(m) if not isinstance(m, dict) else m) or {}
+    for name, keys in (("routed", ROUTE_KEYS), ("hold", HOLD_KEYS)):
+        present = [k for k in keys if k in m]
+        if full or present:
+            s[name] = next((str(m[k]).strip()[:160] for k in present if str(m[k] or "").strip()), "")
+    return s or None
+
+
+def event_record(r):
+    """One event, compact and cacheable: [raw created_at, type, state before or None, change or None]."""
+    et = r["event_type"]
+    before = issue_state(r["old_value"], True)
+    if et == "closed":
+        change = {"status": "closed"}
+    elif et == "created":
+        change = None
+    else:
+        change = issue_state(r["new_value"], False)
+        if et == "reopened" and not (change or {}).get("status"):
+            change = dict(change or {}, status="open")
+    return [str(r["created_at"]), et, before, change]
+
+
+def collect_stage_events(beads, rig, ids, cache):
+    """Every event of these beads as event_record()s. Events are only ever added, so a bead whose
+    event count and newest timestamp are unchanged comes from the cache: a full read is ~25 MB
+    for a busy rig, because an update's old_value is the whole row."""
+    out, todo = {}, []
+    for part in chunks(ids):
+        for r in beads.rows(rig, "SELECT issue_id, COUNT(*) AS n, MAX(created_at) AS last FROM {T}events "
+                                 f"WHERE issue_id IN ({placeholders(len(part))}) GROUP BY issue_id", tuple(part)):
+            c = cache.get(f"{rig.db}/{r['issue_id']}")
+            if c and c["n"] == r["n"] and c["last"] == str(r["last"]):
+                out[r["issue_id"]] = c["ev"]
+            else:
+                todo.append(r["issue_id"])
+    for part in chunks(todo, 40):
+        evs = defaultdict(list)
+        for r in beads.rows(rig, "SELECT issue_id, event_type, created_at, old_value, new_value FROM {T}events "
+                                 f"WHERE issue_id IN ({placeholders(len(part))})", tuple(part)):
+            evs[r["issue_id"]].append(event_record(r))
+        for i in part:
+            cache[f"{rig.db}/{i}"] = {"n": len(evs[i]), "last": max((e[0] for e in evs[i]), default=""), "ev": evs[i]}
+            out[i] = evs[i]
+    return out, len(todo)
+
+
+def collect_stage_inputs(beads, rigs, stores, landed_all, clock, state):
+    """Attach each landed bead's events (instants read through the clock) and its 'blocks'
+    dependencies with the blocker's state, for split_stages()."""
+    cache = state.setdefault("stage_events", {})
+    if cache.get("v") != STAGE_CACHE_VERSION:
+        cache.clear()
+        cache.update({"v": STAGE_CACHE_VERSION, "beads": {}})
+    beads_cache, keep, read, deps_all = cache["beads"], set(), 0, []
+    for rig in rigs:
+        ids = [i for i, b in landed_all.items() if b["rig"] == rig.name]
+        if not ids:
+            continue
+        evs, n = collect_stage_events(beads, rig, ids, beads_cache)
+        read += n
+        keep |= {f"{rig.db}/{i}" for i in ids}
+        rows = [{"issue_id": i, "created_at": e[0], "type": e[1], "before": e[2], "change": e[3]}
+                for i, lst in evs.items() for e in lst]
+        clock.resolve(rig, rows, count=False)
+        for r in rows:
+            landed_all[r["issue_id"]].setdefault("_events", []).append(r)
+        deps = []
+        for part in chunks(ids):
+            deps += beads.rows(rig, "SELECT issue_id, created_at, depends_on_issue_id AS dep, depends_on_external AS ext "
+                                    f"FROM {{T}}dependencies WHERE type = 'blocks' AND issue_id IN ({placeholders(len(part))})",
+                               tuple(part))
+        for d in deps:
+            d["on"] = d["dep"] or (str(d["ext"]).split(":")[-1] if d["ext"] else None)
+        deps = [d for d in deps if d["on"]]
+        clock.resolve(rig, deps, count=False)
+        for d in deps:
+            landed_all[d["issue_id"]].setdefault("_deps", []).append(d)
+        deps_all += deps
+    for k in list(beads_cache):  # forget beads that left the window
+        if k not in keep:
+            del beads_cache[k]
+    blockers = blocker_states(beads, stores, {d["on"] for d in deps_all})
+    missing = sorted({d["on"] for d in deps_all} - set(blockers))
+    return blockers, {"events_read": read, "events_cached": len(keep) - read, "blocks_deps": len(deps_all),
+                      "blockers_not_found": missing}
+
+
+def blocker_states(beads, stores, ids):
+    """id -> (status, closed_at) of each blocker, read from the store whose prefix the id carries."""
+    order = sorted(stores, key=lambda r: -len(r.prefix))
+    by_store = defaultdict(list)
+    for i in ids:
+        r = next((s for s in order if i.startswith(s.prefix + "-")), None)
+        if r:
+            by_store[r.db].append((r, i))
+    out = {}
+    for pairs in by_store.values():
+        rig = pairs[0][0]
+        for part in chunks([i for _, i in pairs]):
+            try:
+                rows = beads.rows(rig, f"SELECT id, status, closed_at FROM {{T}}issues WHERE id IN ({placeholders(len(part))})",
+                                  tuple(part))
+            except Exception as e:
+                log(f"blockers on {rig.name}: {e}")
+                continue
+            for r in rows:
+                out[r["id"]] = (r["status"], as_utc(r["closed_at"]))
+    return out
+
+
+def split_stages(b, blockers):
+    """Cut a landed bead's created -> last close into STAGES: exclusive, adding up to it.
+    At each instant, in this order: blocked (a 'blocks' dependency on an open bead), parked (a
+    parked status, a hold reason, a defer date ahead, or closed before the first claim), then the
+    phase: before the first claim unrouted or routed (a route key or an assignee is set); after
+    it working until the first PR opens, in review from then, rework from the first bounce or the
+    first reopen after the claim. The state at an instant is the old_value of the next event (the
+    whole row before it), else the last known state plus what the events since changed."""
+    t0, t1 = b["created"], b["closed"]
+    if not t0 or not t1 or t1 < t0 or not b.get("_events"):
+        return
+    evs = sorted((e for e in b["_events"] if e["at"] and e["at"] <= t1),
+                 key=lambda e: (e["at"], EVENT_ORDER.get(e["type"], 1)))
+    pts, cur, prev = [], None, t0
+    for e in evs:
+        before = e["before"] if e["before"] is not None else cur
+        if before is not None:
+            pts.append((prev if pts else t0, before))
+        if before is not None or e["change"]:
+            cur = dict(before or {}, **(e["change"] or {}))
+        prev = max(e["at"], t0)
+    if cur is not None:
+        pts.append((prev if pts else t0, cur))
+    claim = b["claimed"] if b["claimed"] and t0 <= b["claimed"] <= t1 else None
+    pr = as_utc(b["pr"]["created"]) if b["pr"] else None
+    bounce = as_utc(b["bounces"][0]["at"]) if b["bounces"] else None
+    reopen = next((t for t in sorted(b["reopen_times"]) if claim and t > claim), None)
+    rework = min((t for t in (bounce, reopen) if t), default=None)
+    spans = []
+    for d in b.get("_deps", []):
+        if not d.get("at"):
+            continue
+        st, closed = blockers.get(d["on"], (None, None))
+        start = max(d["at"], t0)
+        # a blocker still open (or unknown) when the bead was taken up did not hold it after that
+        end = closed if st == "closed" and closed else (claim if claim and claim > start else start)
+        if min(end, t1) > start:
+            spans.append((start, min(end, t1), d["on"]))
+    cuts = {t0, t1} | {t for t, _ in pts} | {t for t in (claim, pr, rework) if t} | {x for s in spans for x in s[:2]}
+    defers = {}
+    for _, s in pts:
+        if s.get("defer_until") and s["defer_until"] not in defers:
+            defers[s["defer_until"]] = as_utc(s["defer_until"])
+    cuts |= {t for t in defers.values() if t}
+    cuts = sorted(t for t in cuts if t0 <= t <= t1)
+    times = [t for t, _ in pts]
+    secs, by, timeline = dict.fromkeys(STAGES, 0.0), defaultdict(lambda: defaultdict(float)), []
+    for a, z in zip(cuts, cuts[1:]):
+        i = bisect_right(times, a) - 1
+        s = (pts[max(i, 0)][1] if pts else None) or {}
+        status, pre = s.get("status") or "", claim is None or a < claim
+        du = defers.get(s.get("defer_until")) if s.get("defer_until") else None
+        on = [x[2] for x in spans if x[0] <= a < x[1]]
+        if on:
+            stage, w = "blocked", on
+        elif status in PARKED_STATUSES or s.get("hold") or (du and a < du) or (pre and status == "closed"):
+            stage = "parked"
+            w = [s["hold"] if s.get("hold") else (f"defer until {iso(du)}" if du and a < du else f"status {status}")]
+        elif pre:
+            route = s.get("routed") or s.get("assignee") or ""
+            stage, w = ("routed", [route]) if route else ("unrouted", [])
+        else:
+            stage, w = ("rework" if rework and a >= rework else "review" if pr and a >= pr else "working"), []
+        secs[stage] += (z - a).total_seconds()
+        if w:  # the hours of a segment with two blockers go to the pair, so they add up per bead
+            by[stage][" + ".join(w)] += (z - a).total_seconds()
+        if timeline and timeline[-1]["stage"] == stage and timeline[-1]["why"] == w:
+            timeline[-1]["to"] = iso(z)
+            timeline[-1]["s"] += (z - a).total_seconds()
+        else:
+            timeline.append({"stage": stage, "from": iso(a), "to": iso(z), "s": (z - a).total_seconds(), "why": w})
+    b["stages"] = {k: round(v / 3600, 3) for k, v in secs.items()}
+    # why a bead was blocked, parked or routed: blocker ids, hold reasons, route targets, with hours
+    b["stage_by"] = {k: {w: round(x / 3600, 3) for w, x in sorted(v.items(), key=lambda t: -t[1])[:6]}
+                     for k, v in by.items()}
+    for t in timeline:
+        t["h"] = round(t.pop("s") / 3600, 3)
+    b["timeline"] = timeline
+
+
+def stage_summary(beads, top=5):
+    """Per stage over landed beads that have a split: total hours, share of all created -> merged
+    hours, how many beads spent time in it, their median and p90, and the beads with the most."""
+    split = [b for b in beads if b.get("stages")]
+    total = sum(sum(b["stages"].values()) for b in split)
+    out = {"beads": len(split), "landed": len(beads), "total_h": round(total, 1), "stages": {}}
+    for s in STAGES:
+        xs = sorted(((b["stages"][s], b) for b in split if b["stages"][s] > 0), key=lambda t: -t[0])
+        h = sum(x for x, _ in xs)
+        out["stages"][s] = {"h": round(h, 1), "share": pct(h, total), "n": len(xs),
+                            "median_h": quantile([x for x, _ in xs], 0.5), "p90_h": quantile([x for x, _ in xs], 0.9),
+                            "top": [{"id": b["id"], "rig": b.get("rig"), "priority": b.get("priority"), "h": round(x, 1),
+                                     "why": list((b.get("stage_by") or {}).get(s, {}))[:2]} for x, b in xs[:top]]}
+    return out
 
 
 # ---------- GitHub: first-pass CI ----------
@@ -1118,7 +1357,8 @@ def attach_prs(landed_all, prs_by_rig):
 def bead_record(b):
     pr_opened = as_utc(b["pr"]["created"]) if b["pr"] else None
     return {
-        "id": b["id"], "title": b["title"][:120], "type": b["type"], "landed": iso(b["closed"]),
+        "id": b["id"], "rig": b["rig"], "title": b["title"][:120], "type": b["type"], "priority": b["priority"],
+        "landed": iso(b["closed"]),
         "bounces": len(b["bounces"]), "bounce_detail": b["bounces"],
         "verdict": b["verdict"], "reopened": b["reopens"],
         "post_merge_failed": b["verdict"] == "failed" or bool(b["reopens"]),
@@ -1133,6 +1373,7 @@ def bead_record(b):
                   "claimed_merged": hours(b["claimed"], b["closed"]),
                   "merged_verified": hours(b["closed"], b["verified_at"]),
                   "created_merged": hours(b["created"], b["closed"])},
+        "stages": b["stages"], "stage_by": b["stage_by"],
     }
 
 
@@ -1280,6 +1521,7 @@ def summarize(rig_days, city_days, follow_days, today):
         "first_pass_ci_rate": pct(s["prs_first_pass"], s["prs_known"]), "prs_merged": s["prs_merged"],
         "prs_known": s["prs_known"], "prs_first_pass": s["prs_first_pass"],
         "time_to_land": {k: {"n": len(v), "median": quantile(v, 0.5), "p90": quantile(v, 0.9)} for k, v in hrs.items()},
+        "stages": stage_summary([b for d in rig_days for b in d["beads"]]),
         "human": {"open_now": last["open_eod"], "past_due_now": last["past_due_eod"], "answered": len(ans),
                   "answer_median_h": quantile(ans, 0.5), "answer_p90_h": quantile(ans, 0.9)},
         "friction_total": sum(friction.values()), "friction": dict(sorted(friction.items(), key=lambda x: -x[1])),
@@ -1338,6 +1580,7 @@ def merge_rig_days(days_list):
         for k in ("open_eod", "past_due_eod", "answered"):
             out["human"][k] += d["human"][k]
         out["human"]["answer_hours"] += d["human"]["answer_hours"]
+        out["beads"] += d["beads"]
         for k, v in d["friction"].items():
             out["friction"][k] = out["friction"].get(k, 0) + v
     return out
@@ -1444,6 +1687,7 @@ def explain(bead_id, landed_all, beads, clock, rigs):
         r["labels"] = b["labels"]
         r["pr_detail"] = b.get("prs")
         r["landed_day"] = b["day"]
+        r["stage_timeline"] = b["timeline"]
     else:
         print(f"{bead_id}: not a bead that landed in the window (status closed with merge_result in "
               f"{LANDED_RESULTS}, closed in the last {DAYS} days)", file=sys.stderr)
@@ -1521,22 +1765,34 @@ def main():
     clock = EventClock(beads, rigs, start)
     log(f"beads via {beads.mode}; events.created_at timeline: {clock.note()}")
 
+    # --bead reads the landed beads and PRs of the bead's own rig only (seconds, not a whole run)
+    work = rigs
+    if args.bead:
+        own = max((r for r in rigs if args.bead.startswith(r.prefix + "-")), key=lambda r: len(r.prefix), default=None)
+        work = [own] if own else rigs
     landed_all, followups, gates, errors = {}, [], [], []
     for rig in rigs:
         try:
-            landed_all.update(collect_rig(beads, rig, start, now, clock))
+            if rig in work:
+                landed_all.update(collect_rig(beads, rig, start, now, clock))
             followups += collect_followups(beads, rig, start)
             gates += collect_human(beads, rig, start, now)
         except Exception as e:
             errors.append(f"{rig.name}: {e.__class__.__name__}: {e}")
             log(f"beads on {rig.name} failed: {e}")
     link_followups(landed_all, followups, [r.prefix for r in rigs])
+    try:
+        blockers, stage_src = collect_stage_inputs(beads, work, {r.db: r for r in rigs + hq}.values(), landed_all, clock, state)
+    except Exception as e:
+        blockers, stage_src = None, {"error": f"{e.__class__.__name__}: {e}"}
+        errors.append(f"stages: {e.__class__.__name__}: {e}")
+        log(f"lead-time stages failed: {e}")
     log(f"{len(landed_all)} landed bead(s), {len(followups)} follow-up candidate(s), {len(gates)} human gate(s)")
 
     prs_by_rig, gh_sources = {}, {}
     gh = GitHub(state, dry)
     if USE_GH and not args.no_gh and shutil.which("gh"):
-        for rig in rigs:
+        for rig in work:
             if not rig.repo:
                 gh_sources[rig.name] = {"repo": None, "note": "no GitHub remote"}
                 continue
@@ -1553,6 +1809,14 @@ def main():
         for rig in rigs:
             gh_sources[rig.name] = {"repo": rig.repo, "note": "GitHub disabled (QUALITY_GH=off, --no-gh or no gh)"}
     attach_prs(landed_all, prs_by_rig)
+    if blockers is not None:
+        for b in landed_all.values():
+            split_stages(b, blockers)
+        # the stages must add up to created -> merged on every bead; any that do not are named
+        stage_src["no_split"] = sorted(i for i, b in landed_all.items() if not b["stages"])
+        stage_src["not_adding_up"] = sorted(i for i, b in landed_all.items() if b["stages"] and
+                                            abs(sum(b["stages"].values()) - hours(b["created"], b["closed"])) > 0.01)
+        log(f"stages: {stage_src}")
 
     if args.bead:
         return explain(args.bead, landed_all, beads, clock, rigs)
@@ -1562,7 +1826,7 @@ def main():
     log(f"cost: {cost_src.get('read_mb', 0)} MB of transcripts read, {cost_src.get('files', 0)} file(s) in the window")
     days = build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, now)
     sources = {"beads": beads.mode, "events_tz": clock.note(), "events_clock": clock.detail(), "github": gh_sources,
-               "event_log": friction_src, "cost": cost_src, "errors": errors, "runtime_s": None}
+               "event_log": friction_src, "cost": cost_src, "stages": stage_src, "errors": errors, "runtime_s": None}
     q = build_quality(days, day_list, rigs, sources, now)
     q["sources"]["runtime_s"] = round(time.monotonic() - T0, 1)
     if dry:
@@ -1574,6 +1838,8 @@ def main():
         write_json(os.path.join(OUT_DIR, "history", f"{day}.json"), rec)
     write_json(os.path.join(OUT_DIR, "quality.json"), q)
     write_json(state_path, state)
+    with open(os.path.join(STATE_DIR, "out-dir"), "w") as f:  # the quality-review order reads the same output
+        f.write(OUT_DIR + "\n")
     render_page()
     print_summary(q)
     log(f"wrote {len(days)} day(s) to {OUT_DIR}")
