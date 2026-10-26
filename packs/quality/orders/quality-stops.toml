@@ -1,0 +1,22 @@
+# Stop census (README.md, "Why it's waiting"): for every bead in flight and every always-on seat,
+# one typed stop with a class, the actor who clears it and how long it has waited; moving work with
+# who moves it; and the host's load with its top consumers. No model, no tokens: beads SQL, two gc
+# calls per run (rig, agent and config answers are kept until a config file changes) and /proc.
+# Above QUALITY_MAX_LOAD only the host part runs (the load and who causes it, about 3 s), so a busy
+# host is still recorded; the beads and seats wait for the next fire.
+# Writes OUT_DIR/stops.json (the page's "Why it's waiting") and one line per run to
+# OUT_DIR/stops/<day>.jsonl, from which time per class is summed. QUALITY_STOPS_INTERVAL_MIN must
+# match `interval`: each run stands for that long.
+# Manual run: gc order run quality-stops
+# Dry run:    $PACK_DIR/assets/scripts/quality-stops.sh --dry-run   (one bead: --bead <id>)
+[order]
+description = "Stop census: why each bead in flight and each seat waits, and who clears it"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/quality-stops.sh"
+trigger = "cooldown"
+interval = "30m"
+timeout = "5m"
+
+[order.env]
+QUALITY_STOPS_INTERVAL_MIN = "30"
+QUALITY_MAX_LOAD = "15"

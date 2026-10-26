@@ -84,6 +84,12 @@
   td.change .bead-title { max-width: 240px; color: var(--ink); font-size: 13px; }
   .sbar { position: relative; height: 10px; background: var(--grid); border-radius: 4px; }
   .sbar span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 4px; min-width: 2px; }
+  td.what { white-space: normal; min-width: 280px; max-width: 560px; }
+  td.what .bead-title { max-width: 520px; }
+  td.what .why { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+  td.who { white-space: normal; min-width: 120px; }
+  details.stops { margin-top: 12px; }
+  details.stops summary { font-size: 13px; color: var(--ink-2); }
   .review-text { white-space: pre-wrap; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--page);
                  border: 1px solid var(--grid); border-radius: 8px; padding: 12px; margin: 8px 0 0; max-height: 420px; overflow: auto; }
 </style>
@@ -106,6 +112,23 @@
   </div>
 
   <section class="tiles" id="tiles" aria-label="Metrics for the selected rig and window"></section>
+
+  <section class="card" style="margin-bottom:16px" id="stops-card">
+    <h2>Why it's waiting, now, <span id="stops-sel"></span></h2>
+    <div class="meta" id="stops-meta">loading…</div>
+    <div class="scroll"><table id="stops-classes"></table></div>
+    <details class="stops">
+      <summary id="stops-list-sum">Every stop</summary>
+      <div class="scroll"><table id="stops-list"></table></div>
+    </details>
+    <h3>Moving</h3>
+    <div class="scroll"><table id="stops-moving"></table></div>
+    <details class="stops">
+      <summary id="stops-seats-sum">Seats</summary>
+      <div class="scroll"><table id="stops-seats"></table></div>
+    </details>
+    <p class="note" id="stops-note"></p>
+  </section>
 
   <section class="card">
     <h2>Per rig, <span id="rigs-window"></span></h2>
@@ -184,7 +207,7 @@ const svgEl = (tag, attrs) => {
 const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
 
-let Q = null, R = null, rig = "all", win = "28";
+let Q = null, R = null, S, rig = "all", win = "28";
 
 const DEFS = [
   ["Bounce rate", "Share of landed beads the refinery sent back at least once before merging.",
@@ -217,6 +240,9 @@ const DEFS = [
   ["Owner turns", "Turns the owner typed into the city: in the seats named by QUALITY_OWNER_SEATS (default the mayor) and in sessions started by hand in the city or a rig directory. How often the owner is asked whether something is stuck starts here: quality.py --owner lists the turns to label by hand (README).",
    "The same Claude Code transcripts as cost: user lines that are not tool results, meta lines, compaction summaries or a subagent's prompt, and whose text gc or Claude Code did not inject (system reminders, queued nudges pasted in, the session's start prompt, task notifications, shell output).",
    "Counts turns, not what they ask: no rule separates a stuck-ask from other turns reliably (README has the hand count and the test). Turns in other tools (Slack, the dashboard) and in other agents' CLIs are not read. Transcripts older than Claude Code's cleanupPeriodDays (30 by default) are gone unless the cache already holds them. City-level only."],
+  ["Why it's waiting", "Every 30 minutes, every bead in flight gets one class: why it waits (blocked by another bead, parked on purpose, waiting for a person, rig suspended, in review with the reviewer down or idle, bounced with nobody on it, assignee down or idle, routed to a suspended pool, routed while the pool is at its cap, routed and not picked up, landed without a post-merge verdict or with a failed one) or that it is moving (working, reworking a bounce, in review, just routed), with the seat or person who clears it and how long it has waited. Always-on seats that are not running or keep being reset as stalled, and the host's load above the threshold with the seats and commands behind it, are stops too. Stop-hours add up each census's stops for the time until the next one.",
+   "Beads stores (status, assignee, gc.routed_to, hold_reason, rejection_reason, defer_until, human.due, blocks dependencies, the events that set each), gc rig/agent/session lists and config show (pools and their caps, suspension, always-on seats, each session's state and last activity), the city event log (stalled resets, session stops) and /proc (load, CPU per process for 2 s, grouped by the seat whose work_dir the process runs in).",
+   "A snapshot every 30 minutes: a wait shorter than that can be missed, and stop-hours are an estimate from the snapshots. Above the load gate only the host part runs, so beads and seats are not seen then (the coverage says how much). A city that is down writes no census, and the page then shows the last one as stale. Who clears a stop is a rule (the assignee, whoever set a hold, the blocker's assignee, the rig's witness for a down seat, the mayor when nobody owns it), not a check that they know. Slack threads, deploys outside the beads, and processes too short-lived to sample (their CPU is counted to the parent) are not seen. Stop-hours are for all rigs."],
   ["Machine friction", "Stalls the town already logs, per day: order failures, stalled-session resets, cold-start timeouts, dead-assignee reopens, skipped supervisor ticks and gate-caused bounces.",
    "The city event log ($GC_CITY_PATH/.gc/events.jsonl and rotated archives), read incrementally.",
    "Counts events, not their cost. Events without a rig (most order failures) are city-level and appear under All rigs. Wake orders (a nudge to an idle seat) are not counted: gc keeps no record of delivered nudges, and a fired order only means it ran."],
@@ -485,6 +511,92 @@ function renderReview() {
   $("review-note").textContent = "The facts come from a script; the review is one agent's proposal and changes nothing. Whether a change was applied (a git check of its diff) and how its metric moved are read by the next week's script, not by the reviewer.";
 }
 
+function renderStops() {
+  const meta = $("stops-meta"), cls = $("stops-classes"), list = $("stops-list"), mov = $("stops-moving");
+  $("stops-sel").textContent = rig === "all" ? "all rigs" : rig;
+  if (S === undefined) return;  // still loading
+  if (!S) {
+    meta.replaceChildren(nd("no census yet: the quality-stops order writes stops.json every 30 minutes (stops.json not found)"));
+    for (const t of [cls, list, mov]) t.replaceChildren();
+    $("stops-note").textContent = "";
+    return;
+  }
+  const every = S.interval_min || 30, at = new Date(S.generated_at), full = S.full_at ? new Date(S.full_at) : null;
+  const ageMin = (Date.now() - at) / 60000, h = S.host || {};
+  let m = `Census ${at.toLocaleString()}, every ${every} min`;
+  if (ageMin > 2 * every) m += ` · stale: no census for ${fmtH(ageMin / 60)} (a city that is down writes none)`;
+  if (S.part === "host") m += full ? ` · beads and seats as of ${full.toLocaleString()}: the host has been over the load gate since`
+                                   : " · beads and seats not read yet: the host was over the load gate";
+  if (h.load1 != null) m += ` · load ${h.load1} on ${h.cores} cores`;
+  meta.textContent = m;
+  const label = {};
+  for (const c of S.classes || []) label[c.key] = c.label;
+  const stops = (S.stops || []).filter((s) => rig === "all" || s.rig === rig || s.kind === "host");
+  const moving = (S.moving || []).filter((s) => rig === "all" || s.rig === rig);
+  const by = {};
+  for (const s of stops) (by[s.class] = by[s.class] || []).push(s);
+  const head = ["What it waits on", "Now", "Longest", "Who clears it", "Stop-hours, 7 days"];
+  cls.replaceChildren(el("thead", {}, el("tr", {}, ...head.map((x, i) => el("th", { text: x, class: i === 0 || i === 3 ? "l" : "" })))));
+  const body = el("tbody");
+  for (const c of S.classes || []) {
+    const xs = by[c.key] || [];
+    if (!xs.length && !c.h_7d) continue;
+    const ages = xs.map((s) => s.age_h).filter((v) => v != null), n = {};
+    for (const s of xs) n[s.actor] = (n[s.actor] || 0) + 1;
+    const who = Object.entries(n).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([a, k]) => (k > 1 ? `${a} (${k})` : a)).join(", ");
+    body.append(el("tr", {}, el("td", { text: c.label }), el("td", { text: String(xs.length) }),
+      el("td", {}, ages.length ? document.createTextNode(fmtH(Math.max(...ages))) : document.createTextNode("–")),
+      el("td", { class: "l who", text: who || "–" }), el("td", {}, cellVal(c.h_7d, fmtHours))));
+  }
+  if (!body.children.length) body.append(el("tr", {}, el("td", { colspan: "5" }, nd("nothing waits"))));
+  cls.append(body);
+  const what = (s) => el("td", { class: "l what" }, el("span", { text: s.id }),
+    s.kind === "bead" ? el("span", { class: "bead-title", text: s.title, title: s.title }) : "",
+    el("div", { class: "why", text: s.why + (s.also && s.also.length ? ` (also: ${s.also.join(", ")})` : "") }));
+  $("stops-list-sum").textContent = `Every stop (${stops.length}), the longest wait first within a class`;
+  const lh = ["Class", "Waiting", "Bead or seat, and why", "Who clears it", "Rig"];
+  list.replaceChildren(el("thead", {}, el("tr", {}, ...lh.map((x, i) => el("th", { text: x, class: i === 1 ? "" : "l" })))));
+  const lb = el("tbody");
+  for (const s of stops.slice(0, 300)) {
+    lb.append(el("tr", {}, el("td", { class: "l", text: label[s.class] || s.class }), el("td", {}, cellVal(s.age_h, fmtH)),
+      what(s), el("td", { class: "l who", text: s.actor }), el("td", { class: "l", text: s.rig || "city" })));
+  }
+  if (!lb.children.length) lb.append(el("tr", {}, el("td", { colspan: "5" }, nd("nothing waits"))));
+  list.append(lb);
+  const mh = ["State", "For", "Bead, and its last activity", "Who moves it", "Rig"];
+  mov.replaceChildren(el("thead", {}, el("tr", {}, ...mh.map((x, i) => el("th", { text: x, class: i === 1 ? "" : "l" })))));
+  const mb = el("tbody");
+  for (const s of moving) {
+    mb.append(el("tr", {}, el("td", { class: "l", text: (S.moving_labels || {})[s.class] || s.class }),
+      el("td", {}, cellVal(s.age_h, fmtH)), what(s), el("td", { class: "l who", text: s.actor }), el("td", { class: "l", text: s.rig })));
+  }
+  if (!mb.children.length) mb.append(el("tr", {}, el("td", { colspan: "5" }, nd("nothing in flight is moving"))));
+  mov.append(mb);
+  const seats = (S.seats || []).filter((r) => rig === "all" || r.rig === rig);
+  const down = seats.filter((r) => r.always_on && !r.up).length;
+  $("stops-seats-sum").textContent = `Seats (${seats.length}: ${seats.filter((r) => r.up).length} running` +
+    (down ? `, ${down} always-on seat(s) not running` : "") + `), as of the last full census`;
+  const sh = ["Seat", "State", "Last active", "Unread mail", "Stalled resets today"];
+  const st = $("stops-seats");
+  st.replaceChildren(el("thead", {}, el("tr", {}, ...sh.map((x, i) => el("th", { text: x, class: i < 2 ? "l" : "" })))));
+  const sb = el("tbody");
+  for (const r of seats) {
+    sb.append(el("tr", {}, el("td", { class: "l", text: r.seat + (r.always_on ? " (always on)" : "") }), el("td", { class: "l", text: r.state }),
+      el("td", {}, r.last_active ? document.createTextNode(fmtH(r.idle_h) + " ago") : nd()),
+      el("td", { text: r.unread ? `${r.unread} (oldest ${fmtH(r.oldest_unread_h)})` : "0" }),
+      el("td", { text: String(r.resets_today || 0) })));
+  }
+  st.append(sb);
+  const days = S.days || [];
+  const cov = (k) => { const xs = days.map((d) => d[k]).filter((v) => v != null); return xs.length ? fmtPct(100 * xs.reduce((a, b) => a + b, 0) / xs.length) : "no data"; };
+  const bl = S.backlog || {}, blN = rig === "all" ? Object.values(bl).reduce((a, b) => a + b, 0) : (bl[rig] || 0);
+  const errs = (S.sources && S.sources.errors) || [];
+  $("stops-note").textContent = `Each bead in flight gets the first class that applies, in the order of the table; who clears it is the seat or person that has to act next. ` +
+    `${blN} bead(s) are backlog (open, not routed, not held) and not listed. Stop-hours are for all rigs: each census stands for the ${every} minutes until the next, ` +
+    `summed over the last 7 days; the census covered ${cov("coverage_full")} of that time for beads and seats and ${cov("coverage_host")} for the host ` +
+    `(above the load gate it records only the host). To check one bead: stops.py --bead <id>.` + (errs.length ? " Errors: " + errs.join("; ") : "");
+}
+
 const FRICTION_NAMES = {
   "session.reset_stalled": "stalled session reset", "session.cold_start_timeout": "session cold start timed out",
   "session.work_query_failed": "session work query failed", "bead.dead_assignee_reopened": "work reopened from a dead session",
@@ -602,7 +714,7 @@ function render() {
   $("w7").setAttribute("aria-pressed", String(win === "7"));
   $("w28").setAttribute("aria-pressed", String(win !== "7"));
   for (const s of document.querySelectorAll(".selname")) s.textContent = (rig === "all" ? "all rigs" : rig) + ", last " + win + " days";
-  renderTiles(); renderRigs(); renderTtl(); renderStages(); renderFriction(); renderCost(); renderBeads(); renderDaily();
+  renderTiles(); renderStops(); renderRigs(); renderTtl(); renderStages(); renderFriction(); renderCost(); renderBeads(); renderDaily();
 }
 
 function init(data) {
@@ -629,6 +741,9 @@ function init(data) {
   window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(renderTiles, 150); });
 }
 
+// the census does not need quality.json: a city whose metrics run has not happened yet still sees it
+fetch("stops.json", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+  .then((d) => { S = d; renderStops(); });
 const savedWin = store.get("quality.win");
 if (savedWin) win = savedWin;
 fetch("quality.json", { cache: "no-store" }).then((r) => {

@@ -184,6 +184,7 @@ def sqlts(d):
 class Rig:
     def __init__(self, name, path, prefix, hq, branch):
         self.name, self.path, self.prefix, self.hq, self.branch = name, path, prefix, hq, branch
+        self.suspended = False
         self.db = prefix
         try:
             with open(os.path.join(path, ".beads", "metadata.json")) as f:
@@ -205,16 +206,32 @@ def github_repo(path):
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def discover_rigs():
+def discover_rigs(listed=None):
+    """The city's rigs with an initialized beads store, and its own store (hq). `listed` is a
+    `gc rig list --json` answer the caller already has."""
     cmd = [GC, "rig", "list", "--json"] + (["--city", CITY] if CITY else [])
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if out.returncode != 0:
-        sys.exit(f"quality: `{' '.join(cmd)}` failed: {out.stderr.strip()[:300]}")
+    for attempt in (1, 2):
+        if listed is not None:
+            break
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if out.returncode != 0:
+            sys.exit(f"quality: `{' '.join(cmd)}` failed: {out.stderr.strip()[:300]}")
+        try:
+            listed = json.loads(out.stdout).get("rigs", [])
+            break
+        except (ValueError, AttributeError):
+            # once (2026-10-26) it exited 0 with nothing on stdout; it answered normally right after
+            if attempt == 2:
+                sys.exit(f"quality: `{' '.join(cmd)}` printed no JSON twice: stdout {out.stdout.strip()[:200]!r}, "
+                         f"stderr {out.stderr.strip()[-200:]!r}")
+            log(f"`{' '.join(cmd)}` printed no JSON; asking again in 5 s")
+            time.sleep(5)
     rigs, hq = [], []
-    for r in json.loads(out.stdout).get("rigs", []):
+    for r in listed:
         if r.get("beads") != "initialized" or (ONLY_RIGS and r["name"] not in ONLY_RIGS and not r.get("hq")):
             continue
         rig = Rig(r["name"], r["path"], r.get("prefix") or r["name"], bool(r.get("hq")), r.get("default_branch") or "main")
+        rig.suspended = bool(r.get("suspended"))
         if rig.hq:
             hq.append(rig)  # the city's own store holds the session beads, even when QUALITY_RIGS leaves it out
         if not ONLY_RIGS or rig.name in ONLY_RIGS:
@@ -354,6 +371,27 @@ class EventClock:
                 self.runs.append([z, t, t])
         if not self.runs:
             self.runs = [["local", None, None]]
+
+    @classmethod
+    def from_detail(cls, beads, detail):
+        """The timeline a metrics run measured (quality.json sources.events_clock), without its
+        anchor queries; None when there is none to reuse. A later event falls in its last run."""
+        if not detail or detail.get("forced") or not detail.get("runs"):
+            return None
+        self = cls.__new__(cls)
+        self.beads, self.forced, self.anchors = beads, None, detail.get("anchors") or 0
+        self.zones = {"local": LOCAL, "UTC": UTC}
+        self.names = {"local": LOCAL_NAME, "UTC": "UTC"}
+        self.counts = defaultdict(int)
+        keys = {LOCAL_NAME: "local", "UTC": "UTC"}
+        self.runs = []
+        for r in detail["runs"]:
+            if r.get("zone") not in keys:
+                return None
+            self.runs.append([keys[r["zone"]], as_utc(r.get("first")), as_utc(r.get("last"))])
+        if self.runs[0][1] is None:
+            self.runs = [[self.runs[0][0], None, None]]
+        return self
 
     def readings(self, raw, zone):
         """Instants a raw value can mean in one zone: two in a repeated local hour, else one."""
@@ -1705,7 +1743,8 @@ def build_quality(days, day_list, rigs, sources, now):
         "config": {"verify_ok_labels": VERIFY_OK, "verify_fail_labels": VERIFY_FAIL, "fof_types": FOF_TYPES,
                    "human_prefixes": HUMAN_PREFIXES, "human_due_key": HUMAN_DUE_KEY,
                    "friction_events": FRICTION_EVENTS,
-                   "landed_results": LANDED_RESULTS},
+                   "landed_results": LANDED_RESULTS, "parked_statuses": PARKED_STATUSES,
+                   "hold_keys": HOLD_KEYS, "route_keys": ROUTE_KEYS},
     }
 
 

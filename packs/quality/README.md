@@ -1,13 +1,14 @@
 # quality: how good a Gas City's work is
 
-A Gas City pack with two exec orders and one formula. `quality-metrics` measures per rig and per
+A Gas City pack with three exec orders and one formula. `quality-metrics` measures per rig and per
 local day whether work lands first time, holds after merge, how long it takes and where that time
 went. It writes a per-day JSON history and a static page you can put next to any dashboard.
-`quality-review` turns that into a weekly review: a script writes the week's facts, and one agent
-session (formula `mol-quality-review`) proposes one config change by mail, as a decision with a
-default (see "Weekly review"). Configuration only: no changes to `gc` or `bd`. No API keys: cost
-comes from the transcripts the agents already write, priced from a table in the pack
-(`assets/prices.toml`).
+`quality-stops` is a census every 30 minutes: why each bead in flight and each seat is waiting, who
+clears it, and for how long (see "Why it's waiting"). `quality-review` turns the history into a
+weekly review: a script writes the week's facts, and one agent session (formula
+`mol-quality-review`) proposes one config change by mail, as a decision with a default (see
+"Weekly review"). Configuration only: no changes to `gc` or `bd`. No API keys: cost comes from the
+transcripts the agents already write, priced from a table in the pack (`assets/prices.toml`).
 
 | Metric | One line |
 |---|---|
@@ -21,6 +22,7 @@ comes from the transcripts the agents already write, priced from a table in the 
 | Cost per landed bead | list-price dollars (and tokens) of the agents' model calls per landed bead, from their transcripts |
 | Owner turns | turns a person typed into the city (the mayor's seat, hand sessions in the city), listed for labelling |
 | Machine friction | stalls the city already logs (order failures, stalled sessions, ...) |
+| Why it's waiting | every 30 minutes: one typed stop per waiting bead and seat, with who clears it and for how long; stop-hours per class |
 | Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
 
 ## Use it in a city
@@ -51,8 +53,12 @@ comes from the transcripts the agents already write, priced from a table in the 
    QUALITY_REVIEW_MAIL_TO = "mayor"                # who gets it, with a ready-to-file decision
    ```
 
-   The review order finds the output directory the metrics order wrote last
-   (`$QUALITY_STATE_DIR/out-dir`), so `QUALITY_OUT_DIR` need not be set twice.
+   The review and census orders find the output directory the metrics order wrote last
+   (`$QUALITY_STATE_DIR/out-dir`), so `QUALITY_OUT_DIR` need not be set twice. The census also
+   takes the metrics order's conventions (human-gate prefixes and due key, verify labels, hold and
+   route keys, parked statuses) from its `quality.json`, so they are set once, on `quality-metrics`.
+   The census's own settings are optional; a city whose human gates name a person sets
+   `QUALITY_STOP_HUMAN` on a `quality-stops` override.
 
 3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
    runs it now. The first run is the backfill of the last 28 days; after that it runs once a day
@@ -114,6 +120,26 @@ Settings of the `quality-review` order (the pack sets the first five in its `[or
 | `QUALITY_REVIEW_CONFIG_REPOS` | the city dir | comma list of git repos whose commits the facts list |
 | `QUALITY_REVIEW_OPEN_STATUSES` | `open,in_progress,blocked,deferred` | statuses of the "work open now" section |
 | `QUALITY_OUT_DIR`, `QUALITY_STATE_DIR`, `QUALITY_TZ` | as for `quality-metrics` | the same history, caches and day buckets |
+
+Settings of the `quality-stops` order (the pack sets the first two in its `[order.env]`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUALITY_STOPS_INTERVAL_MIN` | `30` | the order's `interval` in minutes: each census stands for this long in the stop-hours |
+| `QUALITY_MAX_LOAD` | `15` | above this 1-minute load only the census's host part runs (and is logged) |
+| `QUALITY_STOP_LOAD` | `QUALITY_MAX_LOAD` | the load above which the host is a stop |
+| `QUALITY_STOP_GRACE_MIN` | `20` | routed work younger than this, a seat down for less, and mail unread for less are not stops |
+| `QUALITY_STOP_IDLE_MIN` | `60` | an assignee whose session has done nothing for this long is idle |
+| `QUALITY_STOP_RESETS` | `3` | stalled-session resets in one local day that make a seat a stop |
+| `QUALITY_STOP_VERIFY_H`, `_DAYS` | `30`, `3` | a landing without a verify label is a stop after these hours, until it is these days old |
+| `QUALITY_STOP_SKIP_TYPES` | `session,convoy,epic,milestone,molecule,message` | bead types that are not work in flight (a skipped type can still block) |
+| `QUALITY_STOP_REVIEWERS` | `refinery` | agent names (without rig and binding) that review and merge |
+| `QUALITY_STOP_WATCHERS` | `witness` | agent names that wake or reclaim a rig's seats; who clears a down or idle seat |
+| `QUALITY_STOP_ROUTER` | `mayor` | who routes, applies config and holds what nobody owns |
+| `QUALITY_STOP_HUMAN` | `owner` | the person behind a human gate nobody is assigned to |
+| `QUALITY_STOP_DEPLOYER` | `post-merge check` | what labels a landing verified |
+| `QUALITY_HUMAN_PREFIXES`, `_DUE_KEY`, `QUALITY_VERIFY_*`, `QUALITY_HOLD_KEYS`, `QUALITY_ROUTE_KEYS`, `QUALITY_PARKED_STATUSES`, `QUALITY_LANDED_RESULTS` | the metrics order's, from its `quality.json` | set here only to differ |
+| `QUALITY_OUT_DIR`, `QUALITY_STATE_DIR`, `QUALITY_TZ`, `QUALITY_DAYS` | as for `quality-metrics` | the same page, caches, day buckets; `stops/<day>.jsonl` is kept `QUALITY_DAYS` days |
 
 ## What a run does and costs
 
@@ -383,6 +409,169 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
 - **Blind spots**: counts events, not their cost. Wake orders (a nudge to an idle seat) are not
   counted: gc keeps no record of delivered nudges, and `order.fired` only says the order ran.
 
+## Why it's waiting (stop census)
+
+The `quality-stops` order answers "is it stuck, and on whom?" before anyone has to ask. Every 30
+minutes it gives every bead in flight one class: why it waits, or that it is moving. Each class
+comes with the seat or person who has to act next and how long the bead has waited. It also names
+always-on seats that are down, keep being reset or leave mail unread, and the host's load with the
+seats behind it. It uses no model and no tokens. It is the measure rung of the pack's next loop
+(the town's maturity grid, 2026-10-26: Dispatch and Recover lacked a typed reason and an actor for
+work that waits).
+
+### Classes
+
+A bead in flight (not closed, not a `QUALITY_STOP_SKIP_TYPES` type) gets the first class that
+applies, in this order (the lead-time stages' order: a blocker, then a hold, then the phase):
+
+| Class | When | Who clears it |
+|---|---|---|
+| blocked | a `blocks` dependency on a bead still open (a blocker in no store counts as open) | the assignee of the bead at the end of the chain (a blocker that is itself blocked passes the wait on, up to 6 hops), else the router |
+| parked | a non-empty `QUALITY_HOLD_KEYS` value, a status in `QUALITY_PARKED_STATUSES`, or a `defer_until` ahead | the assignee, else whoever set the hold (the actor of the event that set it) |
+| human_gate_due, human_gate | a title with a `QUALITY_HUMAN_PREFIXES` prefix or a `QUALITY_HUMAN_DUE_KEY`, or assigned to someone who is not an agent; past its due time or not | the assignee, else `QUALITY_STOP_HUMAN` |
+| rig_suspended | the bead's rig is suspended | the router |
+| review_down, review_idle | assigned to a reviewer (`QUALITY_STOP_REVIEWERS`) whose session is not running, or whose last activity is older than the moment the bead reached it (after the grace time) | the rig's watcher; the reviewer |
+| bounced | `rejection_reason` set and nobody assigned | the route target, else the router |
+| assignee_down, assignee_idle | assigned to an agent whose session is not running, or has done nothing for `QUALITY_STOP_IDLE_MIN` | the rig's watcher (`QUALITY_STOP_WATCHERS`), else the router |
+| pool_suspended, pool_cap, routed_unclaimed | routed (`QUALITY_ROUTE_KEYS`), nobody assigned: the pool or its rig is suspended; every slot is busy (the stop names the beads that hold them); a slot is free but nobody took it within the grace time | the router; the pool; the rig's watcher |
+| deploy_failed, landed_unverified | landed in the last `QUALITY_STOP_VERIFY_DAYS` in a rig that uses verify labels: a fail label, or no verdict after `QUALITY_STOP_VERIFY_H` | the router; `QUALITY_STOP_DEPLOYER` |
+| seat_down | a `mode = "always"` named session not running for longer than the grace time (its agent and rig not suspended) | the router (the human, when the router is the seat) |
+| seat_resets | reset as stalled `QUALITY_STOP_RESETS` or more times this local day | the router |
+| seat_mail | mail unread for longer than the grace time while the seat is down, or idle since before it came (mail a seat sent itself, a handoff note, is left out) | the rig's watcher, else the router |
+| host_load | the 1-minute load above `QUALITY_STOP_LOAD` | the seat or command using the most CPU |
+
+Moving, listed with who moves it: **working** and **rework** (an agent assigned, its session
+active), **review** (with a reviewer that has been active since), **routed** (younger than the
+grace time). Routed to a seat that runs under its own name (the mayor, a crew) is that seat's
+work, not a pool's: not running is `assignee_down`. **Backlog** (open, not routed, not held, nobody
+assigned) is counted per rig and not listed. A name is an agent when gc lists it as an agent or a
+session, or it has an agent's or a session's form (`rig/name`, `binding.name`, gc session names
+and ids); anything else, an email address included, is a person.
+
+### Output and when it runs
+
+- `stops.json`: the census now (stops, moving, backlog, every session with its state, last
+  activity, unread mail and resets today, the host), the classes with their 7-day stop-hours, and
+  the census's coverage. The page's "Why it's waiting" card reads it and follows the rig filter.
+- `stops/<day>.jsonl`: one line per run, `[id, class, actor, since]` per stop, kept `QUALITY_DAYS`
+  days. Stop-hours come from it: each run stands for the time to the next one, at most two
+  intervals. Coverage is the share of the day the runs stood for: "full" (beads and seats) and
+  "host".
+- `$QUALITY_STATE_DIR/stops-state.json` (the event-log offset, stalled resets and session stops of
+  the last 7 days, the cached gc answers) and `stops.log` (one line per run).
+- The order fires every 30 minutes (cooldown). Above `QUALITY_MAX_LOAD` only its host part runs,
+  because a busy host is what a census then has to report: the load, CPU per seat over 2 s, one
+  `gc session list` to name the seats. Beads and seats wait for the next fire, and the page shows
+  them as of the last full census.
+- Cost, measured on 2026-10-26 in the city it was built in (8 rigs, 57 beads in flight, 19
+  sessions): a first run 25-29 s wall and 11-13 s CPU at load 19-20, most of it reading the 80 MB
+  event log once and three gc calls; later runs 9-14 s wall and 5-6 s CPU at load 17-24, most of
+  it the one `gc session list` (6-7 s wall at that load); a host-only run 3.5-4.5 s wall, 2.2-2.5 s
+  CPU. 48 runs a day are about 4 CPU minutes. `gc rig list`, `gc agent list` and `gc config show`
+  are kept until `city.toml`, `pack.toml`, `packs.lock`, `.gc/site.toml` or
+  `.gc/runtime/suspension-state.json` changes (at most 6 h).
+- One bead by hand: `quality-stops.sh --bead <id>` prints its row, dependencies, every event with
+  its resolved time, and its class. `--dry-run` prints the census and writes nothing.
+
+### Sources
+
+The beads stores (`issues`: status, assignee, `defer_until`, metadata; `dependencies` of type
+`blocks`; `events`, read through the pack's event timeline, for when and by whom a hold, route,
+bounce or assignee was set), mail beads (open, without `mail.read`), `gc rig list` (stores,
+suspension), `gc agent list` (pools and their caps, suspension), `gc config show` (named sessions
+and their mode), `gc session list` (state, last activity, work_dir), the city event log
+(`session.reset_stalled`, `session.stopped`, `session.woke`, `session.idle_killed`, read from a
+byte offset) and `/proc` (load average; every process's CPU read twice 2 s apart and grouped by the
+seat whose work_dir holds its cwd, else by command, another user's as `user:command`).
+
+### Blind spots
+
+- A snapshot every 30 minutes: a wait shorter than that can be missed, and stop-hours are an
+  estimate from the snapshots. Above the load gate the beads and seats are not read; the coverage
+  says how much of a day was.
+- A city that is down writes no census: the page then shows the last one as stale. A census that
+  should report the city down has to run outside it.
+- Who clears a stop is a rule (the table), not a check that they know or can.
+- Anything not in beads or sessions: Slack threads, deploys outside beads (a preview build, a
+  domain), a seat that is running but hard to find, work that already finished.
+- CPU of a process too short-lived for a 2 s sample is counted when its parent reaps it, to the
+  parent's seat (at most one core per seat, since a long child's whole life lands at once). The
+  system-wide ticks in `/proc/stat` are not used: on the host this was built on they added up to
+  about half the wall time (only their ratios hold, which is what `top` shows). Over the same 4 s
+  windows (2026-10-26) the census counted 5.8, 8.8 and 8.2 cores in use where `top`'s CPU line said
+  6.1, 8.9 and 6.3: a long child that ends inside the sample can still push it up.
+- `last_active` is gc's, so idle classes are only as good as its activity tracking.
+- A metadata key the city uses for a hold other than `QUALITY_HOLD_KEYS` (here hc-fav.2's
+  `waiting_on`) leaves the bead in the backlog.
+
+### Backtest (rung 2)
+
+`stops_replay.py` rebuilds the census at a past instant, with the census's own rules, from what the
+city keeps anyway:
+- each bead's state from its events (an event's `old_value` is the whole row before it);
+- which sessions were up, from the event log and its archives;
+- each pool's cap, from the git history of `city.toml`;
+- the load, from sysstat when the host keeps it.
+
+It cannot see:
+- last activity, so no idle classes;
+- rig and agent suspension (runtime state with no history);
+- unread mail;
+- post-merge verdicts;
+- which seats were always-on then;
+- the processes behind a past load.
+
+`--at ISO [--bead ID]` prints one census and `--from DAY --to DAY` the stop-hours per day. The 7
+days of W43 (336 censuses over 699 beads) took 325 s wall, 166 s CPU and 89 MB.
+
+The test, set before it ran (bead gcs-lqd): of the 27 turns in which the owner asked whether
+something was stuck or ordered an unjam in the 30 days to 10-26 (hand-labelled, see "Owner turns"),
+15 are about things a census could see; the other 12 are the city being down (8) and Slack threads
+(4). The census passes if, at the census slot before each ask, it names at least 12 of the 15
+typed and with an actor. The per-turn reading of the 15 differs slightly from gcs-ybt's totals:
+CPU 2, mayor liveness 2 and the nudge 1 here, where gcs-ybt counted CPU 4 and mayor 1, and the
+nudge under progress.
+
+| Ask (UTC) | About | Census before it said | Named |
+|---|---|---|---|
+| 09-28 02:40, check on the mayor | the mayor after a reset | 02:30: `seat_down` gastown.mayor, asleep 1.3 h (every seat down after the reset) | yes |
+| 09-28 03:11, is the public website fixed | the site's beads | 03:00: hc-8h3 parked, part (a) shipped, /demo waits on hivemind-2cde; hc-fav.11 open with nobody on it (backlog, not listed) | partly |
+| 09-29 05:25, the host is struggling (CPU) | host load | no load history (sysstat keeps 8 days); the mayor measured 48.4, 15-min 34.8, a minute later | not checkable |
+| 09-29 05:28, how many polecats per rig, does it work | pools and their work | 05:00: hivemind pool at its cap on hivemind-ydmp (rework) with 2 waiting, hivemind-ui's at its cap on hu-myj5, hc-fav.6.1 working | yes |
+| 10-02 23:41, how is it going | the queue just routed | 23:30: hivemind pool (cap 1) on hivemind-md0y, 12 beads waiting 15-38 h; m306.4.3 bounced; hivemind-8606 human gate 16.5 h past due | yes |
+| 10-03 16:09, is the work almost done | open work | 16:00: 14 at a pool cap, 2 working, 12 blocked, 16 parked, 10 backlog | yes |
+| 10-03 16:20, check the CPU usage | host load | no load history; the mayor measured 29.5, 15-min 25.1, a minute later | not checkable |
+| 10-03 19:20, progress of the benchmark polecats | hmd-9dd, hmd-o17 | 19:00: both working 1.8 h on their slots, hmd-0ao waiting at the cap of 2 | yes |
+| 10-08 03:15, a pasted preview-build failure: solved yet? | a preview build of branch screenshots/hc-fav.6.9 | 03:00: hc-fav.6.9 working; the build is not in beads | no |
+| 10-08 15:35, is the new domain live yet | a domain waiting for Vercel's check | nothing: not in beads | no |
+| 10-14 00:32, cannot see the new session | a new session he could not find in tmux | 00:30: the session running | no |
+| 10-15 15:51, nudge the crew | the hivemind crew and its mail | 15:30: the crew running; no unread mail to it 12:00-16:00Z in the store | no |
+| 10-20 16:15, how is the quality work going | quality-bar beads | none in flight | no |
+| 10-23 01:38, status of the repo merge | hivemind-21yg5, -89vgq, -4ruxj | all closed by 10-22 | no |
+| 10-23 02:02, is the mayor stuck | the mayor, 24 min into a long turn | 02:00: the mayor running; load 8.5 (sysstat) | no |
+
+**Result: fail.** Named 5 of 15, partly 1, not checkable 2. Even with the partial and both CPU
+asks counted, that is 8, under the 12 set. Where it names, it is the dispatch side: pools at their
+cap and what holds them, queues, working slots, seats down. Where it does not, the owner asked
+about something no bead or seat was waiting on: a deploy outside beads, finished work, a seat that
+was busy. The seat list now on the page shows a running seat with its last activity. That
+answers two of the misses (is the mayor stuck, cannot see the session), but it was added after these asks
+were read, so it is not counted. Whether such a list would have spared an ask is a shadow-rung
+question, not a replay question. So the loop does not climb on this evidence: no shadow ask seat
+is proposed. The census stays a measure: the Dispatch and Recover stops typed, with an actor and a
+time.
+
+The same replay over W43 (10-19 to 10-25), stop-hours per class:
+
+| Class | Hours | Mostly |
+|---|---|---|
+| parked | 5,330 | 32 beads on hold at any time |
+| blocked | 2,224 | 13 beads at any time (on 10-26: 9 in the hc launch chain behind hc-fav.2, 3 behind hivemind-m306.6) |
+| pool_cap | 760 | 680 h on 10-19: the 10-18 scan batch behind the hivemind pool's cap of 1 |
+| routed_unclaimed | 574 | gcs-qc8, -f70, -jc0, -vlb, routed to a rig that was suspended (the replay cannot see suspension; live they are `pool_suspended`), parked on 10-24 |
+| human_gate_due | 276 | gc-xroei, past due since 10-20 |
+| host_load | 34 | load over 15, from sysstat |
+
 ## Weekly review
 
 Once a week the city gets a short review: where the last week's lead time went (hours, with named
@@ -484,6 +673,16 @@ cannot.
   most dog sessions and every crew session), it was empty from 10-04 to 10-18 under gc 1.4.1, and gc 1.5.1 prices only
   claude-opus-5-5, with every cache write at the 5-minute rate.
 - Every `gc` CLI call costs seconds of CPU, so the pack calls `gc` once and reads Dolt directly.
+  The census calls `gc session list` every run and keeps the other answers until a config or
+  suspension file changes. It runs `gc` in the city directory: `--city` cost the CLI about twice
+  the CPU (1.5+1.0 s against 0.7+0.5 s for `gc agent list`, 2026-10-26).
+- Once (2026-10-26 07:32Z) `gc rig list --json` exited 0 with nothing on stdout; it answered
+  normally right after. The pack asks again after 5 s, and fails with one line if it gets no JSON
+  twice.
+- A bead's assignee can be a session name (`gastown__polecat-gc-wbnef`) and not an alias; the
+  session id is its tail. gc names some of a pool slot's `session.woke`/`stopped` events after the
+  pool (`hivemind/gastown.polecat`) and others after the slot (`hivemind/gastown.furiosa`), so the
+  replay tells slots apart by session id.
 
 ## Spot checks
 
@@ -534,3 +733,15 @@ the city it was built in. The cases:
 | Owner turns | other seats | the owner also typed into a polecat, a crew, a refinery and cv-crew (15 turns); none is an owner seat here, so none is counted. Agents' nudges into those seats ("MAYOR, interrupt: ...") are plain typed text, which is why the default is the mayor only | 0 |
 | Stuck-asks (hand) | 30 days to 10-26 | 17 stuck-asks and 10 unjam turns among the 135; phrase rules found 17/17 and 10/10 there (written from them) and 4/15 and 1/9 on a holdout labelled first | not shipped, see "Owner turns" |
 | Friction | 10-20, 10-18, 10-22 | grep of the log: 12 mol-dog-compactor failures; 11 skipped ticks; 1 stalled reset in hivemind-ui; 1 dead-session reopen (hivemind-otruj) | 12, 11, 1, 1 (hivemind) |
+| Stops | hivemind-zdsh.23, .25 (10-26 08:03Z) | routed to hivemind/gastown.polecat at 05:19Z and 07:20Z, nobody assigned; the pool's cap is 1 and its one slot (furiosa) is active on hivemind-zdsh.22 | pool_cap 2.7 h and 0.7 h, "1 of 1 slot(s) busy, on hivemind-zdsh.22" |
+| Stops | the same at 08:23Z | zdsh.22 handed to the refinery, zdsh.23 claimed by furiosa | zdsh.22 in review, zdsh.23 working, zdsh.25 pool_cap on zdsh.23 |
+| Stops | gc-xroei | ALEX: gate, `human.due` 10-20 07:16:36Z | human_gate_due, 144.8 h past due |
+| Stops | gcs-78y | `hold_reason` set by gastown.mayor 10-25 18:50Z, nobody assigned | parked 13.2 h, actor gastown.mayor |
+| Stops | hmd-4tf | status blocked set by a polecat 09-19 00:15:41Z, which assigned it to gastown.mayor with `awaiting_signoff` | parked 896 h, actor gastown.mayor (its rig suspended too) |
+| Stops | hc-e21.5 | `blocks` on hc-mnn (open, unassigned), which `blocks` on hc-fav.2 (open, unassigned) | blocked; the chain ends 1 hop on at hc-fav.2; actor the router |
+| Stops | hivemind-f3b4y | closed 10-23 08:23Z with `verify:failed` | deploy_failed, 72 h |
+| Stops | stalled resets | the event log: hivemind--gastown__refinery reset 3 times on local 10-25 (first 02:00:42Z), quality-crew once on 10-26 | 3 and 1, in the right local days across the DST change |
+| Stops | seats, 10-26 08:23Z | 19 sessions, 15 awake; the 2 always-on witnesses asleep are in suspended rigs; the mayor's 6 unread mails came while it was active | no seat_down, no seat_mail |
+| Stops | host, 10-26 | `top` over the same 4 s windows: 6.1, 8.9, 6.3 cores busy | 5.8, 8.8, 8.2 (own + reaped children) |
+| Stops (replay) | live census 10-26 08:03Z vs `stops_replay.py --at` the same instant | 13 blocked, 33 parked, 1 human_gate_due, 2 pool_cap, 2 working, deploy_failed 1 | the same, without deploy_failed (not replayed), plus 2 seat_down in suspended rigs (no suspension history) |
+| Stops (replay) | hivemind-d4fbt (10-18 scan batch) | the stage split: routed 26.69 h | pool_cap 14.0 + 12.5 = 26.5 h, "1 of 1 slot(s) busy, on hivemind-u46nq" then hivemind-7v4dg |
