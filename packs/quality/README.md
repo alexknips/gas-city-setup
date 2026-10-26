@@ -4,7 +4,10 @@ A Gas City pack with three exec orders and one formula. `quality-metrics` measur
 local day whether work lands first time, holds after merge, how long it takes and where that time
 went. It writes a per-day JSON history and a static page you can put next to any dashboard.
 `quality-stops` is a census every 30 minutes: why each bead in flight and each seat is waiting, who
-clears it, and for how long (see "Why it's waiting"). `quality-review` turns the history into a
+clears it, and for how long (see "Why it's waiting"). After each census it also writes the pack's
+first screen, **Today**: what waits on the city's human, who clears every other wait, health,
+trends and one cost figure, every row linking into gc's own dashboard (see "Today").
+`quality-review` turns the history into a
 weekly review: a script writes the week's facts, and one agent session (formula
 `mol-quality-review`) proposes one config change by mail, as a decision with a default (see
 "Weekly review"). Configuration only: no changes to `gc` or `bd`. No API keys: cost comes from the
@@ -24,6 +27,7 @@ transcripts the agents already write, priced from a table in the pack (`assets/p
 | Machine friction | stalls the city already logs (order failures, stalled sessions, ...) |
 | Why it's waiting | every 30 minutes: one typed stop per waiting bead and seat, with who clears it and for how long; stop-hours per class |
 | Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
+| Today | after every census, one page: the decisions waiting on the human with what each unblocks, who clears the other waits, health, 7-day trends, cost |
 
 ## Use it in a city
 
@@ -58,7 +62,11 @@ transcripts the agents already write, priced from a table in the pack (`assets/p
    takes the metrics order's conventions (human-gate prefixes and due key, verify labels, hold and
    route keys, parked statuses) from its `quality.json`, so they are set once, on `quality-metrics`.
    The census's own settings are optional; a city whose human gates name a person sets
-   `QUALITY_STOP_HUMAN` on a `quality-stops` override.
+   `QUALITY_STOP_HUMAN` on a `quality-stops` override. The Today page needs nothing more. When a
+   browser reaches gc's dashboard at another address than the supervisor's own (a tailnet name, a
+   proxy), set `QUALITY_GC_DASHBOARD_URL` on that override so the page's links open; a city that
+   adds its own nav with `QUALITY_POST_RENDER` sets it there too (`{name}` is `today` there and
+   `quality` on the metrics order).
 
 3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
    runs it now. The first run is the backfill of the last 28 days; after that it runs once a day
@@ -99,7 +107,7 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_INJECTED_RE` | see `quality.py` | a user turn whose text matches was put there by gc or Claude Code, not typed |
 | `QUALITY_PRICES` | unset | a TOML price table in the shape of `assets/prices.toml`; its models replace the pack's one by one |
 | `GC_BIN` | the gc that started the order, else `gc` on PATH | the gc binary every order calls (see "Traps") |
-| `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
+| `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}`, `{out}` and `{name}` (`quality`) are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
 | `QUALITY_EVENTS_TZ` | read per event from a timeline | one zone for every `events.created_at`, skipping the timeline (see the time trap below) |
 | `QUALITY_PARKED_STATUSES` | `blocked,deferred` | bead statuses that count as parked in the lead-time stages |
@@ -133,12 +141,18 @@ Settings of the `quality-stops` order (the pack sets the first two in its `[orde
 | `QUALITY_STOP_IDLE_MIN` | `60` | an assignee whose session has done nothing for this long is idle |
 | `QUALITY_STOP_RESETS` | `3` | stalled-session resets in one local day that make a seat a stop |
 | `QUALITY_STOP_VERIFY_H`, `_DAYS` | `30`, `3` | a landing without a verify label is a stop after these hours, until it is these days old |
-| `QUALITY_STOP_SKIP_TYPES` | `session,convoy,epic,milestone,molecule,message` | bead types that are not work in flight (a skipped type can still block) |
+| `QUALITY_STOP_SKIP_TYPES` | `session,convoy,molecule,message` | bead types that are not work in flight (a skipped type can still block) |
+| `QUALITY_STOP_HUMAN_ONLY_TYPES` | `epic,milestone` | containers: read, but a stop only when a person acts next (see "Classes") |
 | `QUALITY_STOP_REVIEWERS` | `refinery` | agent names (without rig and binding) that review and merge |
 | `QUALITY_STOP_WATCHERS` | `witness` | agent names that wake or reclaim a rig's seats; who clears a down or idle seat |
 | `QUALITY_STOP_ROUTER` | `mayor` | who routes, applies config and holds what nobody owns |
 | `QUALITY_STOP_HUMAN` | `owner` | the person behind a human gate nobody is assigned to |
 | `QUALITY_STOP_DEPLOYER` | `post-merge check` | what labels a landing verified |
+| `QUALITY_GC_API` | what `gc dashboard --no-open` prints | gc's API base URL, read once per run for the city's health (Today); `off` = none |
+| `QUALITY_GC_CITY_NAME` | the city `/v0/cities` lists at this city's path | the city's name in gc's API and dashboard links |
+| `QUALITY_GC_DASHBOARD_URL` | the API URL | gc's dashboard as a browser reaches it; Today links to `<it>/city/<city>/beads?bead=<id>` |
+| `QUALITY_HUMAN_NAME` | `QUALITY_STOP_HUMAN` | how Today names the human |
+| `QUALITY_POST_RENDER` | unset | as for `quality-metrics`, run on `today.html` with `{name}` = `today` |
 | `QUALITY_HUMAN_PREFIXES`, `_DUE_KEY`, `QUALITY_VERIFY_*`, `QUALITY_HOLD_KEYS`, `QUALITY_ROUTE_KEYS`, `QUALITY_PARKED_STATUSES`, `QUALITY_LANDED_RESULTS` | the metrics order's, from its `quality.json` | set here only to differ |
 | `QUALITY_OUT_DIR`, `QUALITY_STATE_DIR`, `QUALITY_TZ`, `QUALITY_DAYS` | as for `quality-metrics` | the same page, caches, day buckets; `stops/<day>.jsonl` is kept `QUALITY_DAYS` days |
 
@@ -453,6 +467,14 @@ assigned) is counted per rig and not listed. A name is an agent when gc lists it
 session, or it has an agent's or a session's form (`rig/name`, `binding.name`, gc session names
 and ids); anything else, an email address included, is a person.
 
+**Containers** (`QUALITY_STOP_HUMAN_ONLY_TYPES`: epics and milestones) are classified like any
+bead but kept only when a person acts next. Nobody works on a container, so it is never moving or
+backlog, and a hold on it that an agent set is that agent's plan, not a wait. A container's hold
+waits on `QUALITY_STOP_HUMAN` when its text has that name as a word
+(`alex_judges_redesign_on_preview_and_demo`) and names no other bead still in flight: a milestone
+held "until its exit-gate child hivemind-zdsh.21 closes" waits on that child first. A container
+never counts as the bead that keeps a pool slot busy.
+
 ### Output and when it runs
 
 - `stops.json`: the census now (stops, moving, backlog, every session with its state, last
@@ -462,8 +484,11 @@ and ids); anything else, an email address included, is a person.
   days. Stop-hours come from it: each run stands for the time to the next one, at most two
   intervals. Coverage is the share of the day the runs stood for: "full" (beads and seats) and
   "host".
+- `today.json` and `today.html`, the Today page (see "Today"), after every run, full or host-only.
+  A Today failure is noted in `stops.log` (`today_error=`); the census is written either way.
 - `$QUALITY_STATE_DIR/stops-state.json` (the event-log offset, stalled resets and session stops of
-  the last 7 days, the cached gc answers) and `stops.log` (one line per run).
+  the last 7 days, the cached gc answers), `today-state.json` (gc's API address and the city's
+  name there) and `stops.log` (one line per run).
 - The order fires every 30 minutes (cooldown). Above `QUALITY_MAX_LOAD` only its host part runs,
   because a busy host is what a census then has to report: the load, CPU per seat over 2 s, one
   `gc session list` to name the seats. Beads and seats wait for the next fire, and the page shows
@@ -643,6 +668,47 @@ work, not the history of work still open. The review is as good as the agent tha
 numbers can be traced (every one must come from the facts or a command it names), its judgement
 cannot.
 
+## Today (the first screen)
+
+`today.html` answers what the person running the city asks when they open it, in this order
+(`docs/dashboard-design.md` in this repo): what needs me, what is stuck and who clears it, is the
+town healthy, is it getting better, what does it cost. It is a static page. The census order writes
+`today.json` next to it after every run (`today.py`), from the files the pack already writes and
+one read of gc's API. The browser makes no call to gc, so the page still loads when the supervisor
+is down. Acting on a row is one click into gc's own dashboard, which has the claim, close, nudge
+and mail actions.
+
+| Block | What it shows | Source |
+|---|---|---|
+| Summary | decisions waiting on the human, the stops of the actor with the most, host load against the gate, beads landed per day; when each source was read | the blocks below |
+| Needs you | every stop whose actor is `QUALITY_STOP_HUMAN`, one card per root: beads blocked behind the same root are listed under it ("Answering it unblocks 3 beads"). Past due first, then gates, holds and blocked work, oldest first. "Open in gc" opens the bead in gc's bead view, a seat in its Agents view | `stops.json` |
+| Waiting, and who clears it | every bead and seat stop per actor, split into 7 fixed reason groups (the exact classes on hover); moving and backlog counts | `stops.json` |
+| Is the town healthy? | supervisor status, version, uptime; seats running, always-on seats down; host load and its busiest seats or commands; unread seat mail; friction over 7 days | gc's `/v0/city/<city>/health`; `stops.json`; `quality.json` |
+| Is it getting better? | landed per day, bounce rate, claimed → merged median, post-merge failure rate, cost per landed bead: the 7-day value against the 28-day one, over the daily series (the last 7 days in the accent colour); the latest weekly review's slowdown, proposal and decision, and the check of the change before it | `quality.json`, `reviews/` |
+| What it costs | cost per landed bead over 7 and 28 days, 7-day cost, today's cost as of the metrics run | `quality.json` (transcripts at list price) |
+
+gc's API address is `QUALITY_GC_API`, else what `gc dashboard --no-open` prints. It is kept 6
+hours, and looked up again after a failed read. The city's name is the one `/v0/cities` lists at
+this city's path. Links go to `QUALITY_GC_DASHBOARD_URL`, else to the API address, which is right
+for a browser on the same host.
+
+Cost, measured on 2026-10-26 in the city it was built in (load 23-48): `today.py` 2.8 s wall and
+1.0 s CPU with the address kept, most of it Python reading the 490 KB `quality.json`; a run that
+looks the address up adds one `gc dashboard --no-open` (6.9 s wall and 1.7 s CPU in all, at load
+26).
+
+Blind spots:
+- As fresh as its sources: the census (30 minutes, or the last full census while the host is over
+  the load gate, which the page says), the metrics (daily), the review (weekly). The supervisor
+  line is as of the census run, not live.
+- "Needs you" is the census's rule for who acts next, so it misses what the census misses: a
+  decision asked only in mail or chat, a hold under a key that is not in `QUALITY_HOLD_KEYS`, a
+  container whose hold names the human in other words.
+- One cost source. Other figures the town shows for the same day (gc's own estimate, a page that
+  prices tokens itself) are not reconciled here.
+- The 7-day window counts today so far, as the Quality page does, so landed per day reads low
+  early in the day.
+
 ## Traps this pack handles
 
 - `events.created_at` has no zone, and which zone it is in depends on the bd that wrote it. bd 1.2
@@ -688,6 +754,11 @@ cannot.
   that started the order (the nearest ancestor process whose binary is named `gc`; Linux `/proc`)
   and falls back to PATH only without one. A run with no JSON from `gc` fails with one line that
   names the binary.
+- Dolt closes a connection that has been idle longer than its `read_timeout_millis` (60 s in the
+  city this was built in), and a run that reads files between two queries can be idle that long
+  under load: the replay lost its connection twice on 2026-10-26 at load 35-48 while it read the
+  event-log archives. A query that loses its connection (MySQL errors 2006, 2013) reconnects and
+  runs once more.
 - A bead's assignee can be a session name (`gastown__polecat-gc-wbnef`) and not an alias; the
   session id is its tail. gc names some of a pool slot's `session.woke`/`stopped` events after the
   pool (`hivemind/gastown.polecat`) and others after the slot (`hivemind/gastown.furiosa`), so the
@@ -754,3 +825,9 @@ the city it was built in. The cases:
 | Stops | host, 10-26 | `top` over the same 4 s windows: 6.1, 8.9, 6.3 cores busy | 5.8, 8.8, 8.2 (own + reaped children) |
 | Stops (replay) | live census 10-26 08:03Z vs `stops_replay.py --at` the same instant | 13 blocked, 33 parked, 1 human_gate_due, 2 pool_cap, 2 working, deploy_failed 1 | the same, without deploy_failed (not replayed), plus 2 seat_down in suspended rigs (no suspension history) |
 | Stops (replay) | hivemind-d4fbt (10-18 scan batch) | the stage split: routed 26.69 h | pool_cap 14.0 + 12.5 = 26.5 h, "1 of 1 slot(s) busy, on hivemind-u46nq" then hivemind-7v4dg |
+| Stops, containers | the 5 epics and milestones in flight, 10-26 18:03Z | hu-65k (epic): `hold_reason` alex_judges_redesign_on_preview_and_demo, no assignee, waits on Alex; hivemind-zdsh (milestone): held until its exit-gate child hivemind-zdsh.21 closes, and .21 is in flight (parked by the mayor); hc-e21, hc-fav, hc-j4b: open goals, no hold | hu-65k parked, actor alex; the other four not in the census (before the in-flight rule, hivemind-zdsh came out as alex's because its text names him) |
+| Stops (replay), containers | `stops_replay.py --at 2026-10-26T16:38:00Z` for the same 5 and gc-xroei | as above | hu-65k parked on alex, gc-xroei past due, the other containers not stops |
+| Today, needs you | census of 10-26 18:03Z, checked in `bd show` | gc-xroei: a decision bead, `human.due` 10-20 07:16:36Z, unassigned; hivemind-m306.6: deferred, assigned to alex, and hivemind-fabq.4, -5r6q, -o6iy each `blocks` on it; hu-65k as above | 3 cards: gc-xroei past due 154.8 h; m306.6 parked, "Answering it unblocks 3 beads" (those three); hu-65k parked |
+| Today, who clears it | the same census | stops.json: 54 stops, one of them the host | 53 stops over 5 actors (gastown.mayor 43, alex 6, the hivemind polecat pool 2, two old sessions 1 each) |
+| Today, trends and cost | quality.json of 10-26 09:31Z | landed per day over the last 7 days: 23+12+8+16+1+15+4 = 79, 11.3 a day; 7-day cost $2,008.87 / 79 = $25.43 | 11.3 per day; $25.43 per landed bead |
+| Today, links | "Open in gc" on hu-65k | gc 1.5.1's dashboard at `/city/gc/beads?bead=hu-65k` opens the bead's detail (title, epic, open, description); the page sent only GET requests | the same URL |

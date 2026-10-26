@@ -268,9 +268,18 @@ class Beads:
 
     def rows(self, rig, sql, args=()):
         if self.conn:
-            with self.conn.cursor() as cur:
-                cur.execute(sql.replace("{T}", f"`{rig.db}`."), args)
-                return list(cur.fetchall())
+            import pymysql
+            for attempt in (1, 2):
+                try:
+                    with self.conn.cursor() as cur:
+                        cur.execute(sql.replace("{T}", f"`{rig.db}`."), args)
+                        return list(cur.fetchall())
+                except pymysql.err.OperationalError as e:
+                    # Dolt drops a connection idle past its read timeout (60 s in the city this was
+                    # built in), and a run can read files that long between two queries: reconnect once
+                    if attempt == 2 or not e.args or e.args[0] not in (2006, 2013):
+                        raise
+                    self.conn.ping(reconnect=True)
         q = sql.replace("{T}", "") % tuple(sql_literal(a) for a in args)
         out = subprocess.run(["bd", "sql", "--json", q], capture_output=True, text=True, timeout=300,
                              env={**os.environ, "BEADS_DIR": os.path.join(rig.path, ".beads")})
@@ -1779,7 +1788,7 @@ def render_page():
     shutil.copyfile(src, tmp)
     os.replace(tmp, dst)
     if POST_RENDER:
-        cmd = POST_RENDER.replace("{page}", dst).replace("{out}", OUT_DIR)
+        cmd = POST_RENDER.replace("{page}", dst).replace("{out}", OUT_DIR).replace("{name}", "quality")
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             log(f"post-render hook failed ({r.returncode}): {r.stderr.strip()[:300]}")

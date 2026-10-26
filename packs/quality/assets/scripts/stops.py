@@ -43,7 +43,9 @@ IDLE_MIN = float(q.env("QUALITY_STOP_IDLE_MIN", "60"))       # an assignee whose
 RESETS = int(q.env("QUALITY_STOP_RESETS", "3"))              # stalled-session resets in one local day that make a stop
 VERIFY_H = float(q.env("QUALITY_STOP_VERIFY_H", "30"))       # hours after landing a post-merge verdict is due
 VERIFY_DAYS = float(q.env("QUALITY_STOP_VERIFY_DAYS", "3"))  # landed beads older than this leave the census
-SKIP_TYPES = q.env_list("QUALITY_STOP_SKIP_TYPES", "session,convoy,epic,milestone,molecule,message")
+SKIP_TYPES = q.env_list("QUALITY_STOP_SKIP_TYPES", "session,convoy,molecule,message")
+# containers nobody works on: read, but a stop only when a person has to act next (a held epic the human judges)
+HUMAN_ONLY_TYPES = q.env_list("QUALITY_STOP_HUMAN_ONLY_TYPES", "epic,milestone")
 REVIEWERS = q.env_list("QUALITY_STOP_REVIEWERS", "refinery")  # agent base names that review and merge
 WATCHERS = q.env_list("QUALITY_STOP_WATCHERS", "witness")     # agent base names that wake or reclaim a rig's seats
 ROUTER = q.env("QUALITY_STOP_ROUTER", "mayor")                # routes work, applies config, holds what has no owner
@@ -83,6 +85,7 @@ UP_STATES = ("active", "awake")
 # and its id (gc-wbnef, gc-wisp-ovexok: the city's prefix and a short id); a pool slot's session
 # name ends in its id
 GC_NAME = re.compile(r"__|^[a-z0-9]+-(?:wisp-)?[a-z0-9]{3,}$")
+BEAD_ID = re.compile(r"(?<![\w.-])[a-z][a-z0-9]*-[a-z0-9]+(?:\.[0-9]+)*")  # hivemind-zdsh.21, hu-65k
 
 
 def session_id_of(name):
@@ -590,7 +593,10 @@ def classify(b, city, blockers, holders, now, work=None):
     # who clears a hold: the assignee when there is one, else whoever set it
     if hold:
         at, by = set_by(b, hold)
-        return stop(b, "parked", a or by, str(m[hold]).strip() + f" (set by {by or '?'})", at, now, also=also)
+        text = str(m[hold]).strip()
+        # a container's hold names who it waits for only in its text; a task's names its setter's plan
+        who = a or (HUMAN if b.get("type") in HUMAN_ONLY_TYPES and held_for_human(b, text, work) else by)
+        return stop(b, "parked", who, text + f" (set by {by or '?'})", at, now, also=also)
     if status in q.PARKED_STATUSES:
         at, by = set_by(b, "status", status)
         return stop(b, "parked", a or by, f"status {status}, set by {by or '?'}", at, now, also=also)
@@ -663,6 +669,24 @@ def classify(b, city, blockers, holders, now, work=None):
             f"; {len(city.slots(route))} of {((pool.get('pool') or {}).get('max'))} slot(s) busy"
         return stop(b, "routed_unclaimed", city.watcher(rig_of(route) or rig), f"routed to {route} by {by or '?'}{free}", at, now)
     return None
+
+
+def held_for_human(b, text, work):
+    """A container's hold waits on the human when its text names them as a word
+    ('alex_judges_redesign' names alex) and names no other bead still in flight: a milestone held
+    until its exit-gate child closes waits on that child first, whoever the child then needs."""
+    if not re.search(rf"(?<![a-z0-9]){re.escape(HUMAN.lower())}(?![a-z0-9])", text.lower()):
+        return False
+    return not any(i != b["id"] and i in (work or {}) for i in BEAD_ID.findall(text))
+
+
+def counts(b, r, city):
+    """Whether a classified bead belongs in the census: every bead, except one of a
+    QUALITY_STOP_HUMAN_ONLY_TYPES type (an epic, a milestone), which is a stop only when a person
+    has to act next; otherwise it is neither a stop, nor moving, nor backlog."""
+    if b.get("type") not in HUMAN_ONLY_TYPES:
+        return True
+    return bool(r) and r["class"] not in MOVING and r["actor"] != "nobody" and not city.is_agent(r["actor"])
 
 
 def landed_stop(b, now):
@@ -818,12 +842,14 @@ def census(now, only=None):
     work_by_id = {b["id"]: b for b in work}
     holders = defaultdict(list)  # session name -> beads assigned to it
     for b in work:
-        if b["assignee"]:
+        if b["assignee"] and b.get("type") not in HUMAN_ONLY_TYPES:
             for n in session_names(city.session(b["assignee"])) or [b["assignee"]]:
                 holders[n].append(b["id"])
     stops, moving, backlog = [], [], Counter()
     for b in work:
         r = classify(b, city, blockers, holders, now, work_by_id)
+        if not counts(b, r, city):
+            continue
         if r is None:
             backlog[b["rig"]] += 1
         elif r["class"] in MOVING:
@@ -951,10 +977,21 @@ def write_census(now, part, c, previous):
            "classes": class_summary(page_stops, days), "moving_labels": MOVING, "days": days, "sources": c["sources"],
            "config": {"max_load": MAX_LOAD, "load_stop": LOAD_STOP, "grace_min": GRACE_MIN, "idle_min": IDLE_MIN,
                       "resets": RESETS, "verify_h": VERIFY_H, "reviewers": REVIEWERS, "watchers": WATCHERS,
-                      "router": ROUTER, "human": HUMAN, "human_prefixes": q.HUMAN_PREFIXES}}
+                      "router": ROUTER, "human": HUMAN, "human_prefixes": q.HUMAN_PREFIXES,
+                      "human_only_types": HUMAN_ONLY_TYPES}}
     q.write_json(os.path.join(q.OUT_DIR, "stops.json"), out)
     prune(now)
     return out
+
+
+def publish_today(out, now):
+    """The Today page (today.py) from this census; a failure there is logged, not the census's."""
+    try:
+        import today
+        err = today.publish(out, now)
+    except Exception as e:  # noqa: BLE001  (the census is written already; Today waits for the next run)
+        err = f"{e.__class__.__name__}: {str(e)[:200]}"
+    return f" today_error={err!r}" if err else ""
 
 
 def log_run(msg):
@@ -1023,8 +1060,9 @@ def main():
         previous = q.load_json(os.path.join(q.OUT_DIR, "stops.json"), {})
         c = {"stops": [hs] if hs else [], "host": host,
              "sources": dict(previous.get("sources") or {}, skipped=f"load {load1:.1f} > {MAX_LOAD:g}: host part only")}
-        write_census(now, "host", c, previous)
-        log_run(f"part=host load={load1:.2f} max={MAX_LOAD:g} secs={time.monotonic() - t0:.1f}")
+        out = write_census(now, "host", c, previous)
+        today_err = publish_today(out, now)
+        log_run(f"part=host load={load1:.2f} max={MAX_LOAD:g} secs={time.monotonic() - t0:.1f}{today_err}")
         print(f"quality-stops: load {load1:.1f} > {MAX_LOAD:g}: host part only")
         return 0
     c = census(now)
@@ -1033,10 +1071,11 @@ def main():
         q.log("dry run: nothing written")
         return 0
     previous = q.load_json(os.path.join(q.OUT_DIR, "stops.json"), {})
-    write_census(now, "full", c, previous)
+    out = write_census(now, "full", c, previous)
     q.write_json(STATE, c["state"], compact=True)
+    today_err = publish_today(out, now)
     log_run(f"part=full load={load1:.2f} stops={len(c['stops'])} moving={len(c['moving'])} "
-            f"errors={len(c['sources']['errors'])} secs={time.monotonic() - t0:.1f}")
+            f"errors={len(c['sources']['errors'])} secs={time.monotonic() - t0:.1f}{today_err}")
     print(f"quality-stops: {len(c['stops'])} stop(s), {len(c['moving'])} moving, backlog {sum(c['backlog'].values())}")
     return 0
 

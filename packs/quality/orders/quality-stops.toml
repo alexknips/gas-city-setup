@@ -6,7 +6,8 @@
 # host is still recorded; the beads and seats wait for the next fire.
 # Writes OUT_DIR/stops.json (the page's "Why it's waiting") and one line per run to
 # OUT_DIR/stops/<day>.jsonl, from which time per class is summed. QUALITY_STOPS_INTERVAL_MIN must
-# match `interval`: each run stands for that long.
+# match `interval`: each run stands for that long. After every run it writes the first screen,
+# OUT_DIR/today.json and today.html (assets/scripts/today.py; README.md, "Today").
 # Manual run: gc order run quality-stops
 # Dry run:    $PACK_DIR/assets/scripts/quality-stops.sh --dry-run   (one bead: --bead <id>)
 [order]

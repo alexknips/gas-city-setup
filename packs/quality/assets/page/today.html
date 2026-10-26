@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Today</title>
+<style>
+  /* The Quality page's tokens, so the two pages read as one. Reasons take categorical slots in a
+     fixed order (colour follows the reason, never its rank); status colours only mark a state,
+     always beside a word that says it. */
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --accent: #2a78d6; --hover: rgba(11,11,11,0.05);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #6250d6;
+    --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+      --accent: #3987e5; --hover: rgba(255,255,255,0.07);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --accent: #3987e5; --hover: rgba(255,255,255,0.07);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; display: grid; gap: 16px; }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  h1 { font-size: 26px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  h2 .count { color: var(--muted); font-weight: 500; font-size: 14px; }
+  .num { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .sub { color: var(--ink-2); font-size: 13px; }
+  .nd { color: var(--muted); font-style: italic; }
+
+  .head { display: grid; gap: 8px; }
+  .verdict { margin: 0; font-size: 16px; max-width: 72ch; text-wrap: pretty; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ring); background: var(--surface);
+          border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--ink-2); }
+  .chip i, .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--axis); flex: none; }
+  .ok i, .dot.ok { background: var(--good); }
+  .warn i, .dot.warn { background: var(--warning); }
+  .crit i, .dot.crit { background: var(--critical); }
+  .links { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 14px; }
+
+  .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 12px; padding: 16px; min-width: 0; }
+  .two { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; }
+
+  .decisions { display: grid; gap: 10px; margin-top: 12px; }
+  .dec { display: grid; grid-template-columns: 4px 1fr auto; gap: 0 14px; border: 1px solid var(--ring); border-radius: 10px; overflow: hidden; }
+  .dec .stripe { background: var(--warning); }
+  .dec.crit .stripe { background: var(--critical); }
+  .dec .body { padding: 12px 0; min-width: 0; }
+  .dec .title { font-weight: 600; overflow-wrap: anywhere; }
+  .dec .why { color: var(--ink-2); font-size: 14px; margin-top: 2px; overflow-wrap: anywhere; }
+  .dec .meta { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 8px; align-items: center; font-size: 13px; }
+  .tag { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 600; }
+  .bead { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow-wrap: anywhere; }
+  .behind { font-size: 13px; color: var(--ink-2); margin-top: 6px; overflow-wrap: anywhere; }
+  .behind a { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .dec .act { padding: 12px 14px 12px 0; }
+  .btn { display: inline-block; border: 1px solid var(--ring); border-radius: 8px; padding: 5px 10px; font-size: 13px;
+         white-space: nowrap; background: var(--surface); text-decoration: none; }
+  .btn:hover { background: var(--hover); }
+  .empty { margin: 12px 0 0; display: flex; gap: 8px; align-items: center; }
+
+  .who { display: grid; gap: 10px; margin-top: 12px; }
+  .who-row { display: grid; grid-template-columns: minmax(0, 11rem) 1fr 2.5em; gap: 10px; align-items: center; }
+  .who-name { overflow-wrap: break-word; font-weight: 550; font-size: 14px; min-width: 0; }
+  .who-name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+  .bar { display: flex; gap: 2px; height: 10px; }
+  .bar span { display: block; height: 100%; min-width: 3px; }
+  .bar span:last-child { border-radius: 0 4px 4px 0; }
+  .who-n { text-align: right; font-variant-numeric: tabular-nums; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 12px; font-size: 12px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .foot { margin-top: 12px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); }
+
+  .health { display: grid; margin-top: 6px; }
+  .hrow { display: grid; grid-template-columns: 14px minmax(0, 8rem) 1fr; gap: 8px; padding: 9px 0; border-top: 1px solid var(--grid); align-items: baseline; font-size: 14px; }
+  .hrow:first-child { border-top: 0; }
+  .hrow .dot { align-self: center; }
+  .hrow b { font-weight: 550; }
+  .hrow .v { min-width: 0; overflow-wrap: anywhere; color: var(--ink-2); }
+
+  .tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+  .tile { border: 1px solid var(--ring); border-radius: 10px; padding: 10px 12px; min-width: 0; display: grid; gap: 2px; align-content: start; }
+  .tile .k { font-size: 13px; color: var(--ink-2); }
+  .tile .v { font-size: 22px; font-weight: 650; }
+  .tile .v small { font-size: 12px; font-weight: 500; color: var(--muted); }
+  .delta { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .delta.good { color: var(--good); } .delta.bad { color: var(--critical); }
+  .spark { width: 100%; height: 36px; display: block; margin-top: 4px; overflow: visible; }
+  .spark .base { stroke: var(--grid); stroke-width: 1; }
+  .spark .all { fill: none; stroke: var(--axis); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .spark .week { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .spark .ring { stroke: var(--surface); stroke-width: 12; stroke-linecap: round; }
+  .spark .end { stroke: var(--accent); stroke-width: 8; stroke-linecap: round; }
+  .spark .hit { fill: transparent; }
+  .spark .hit:hover { fill: var(--hover); }
+  .review { margin-top: 14px; border-top: 1px solid var(--grid); padding-top: 12px; display: grid; gap: 6px; font-size: 14px; }
+  .review .q { font-weight: 600; }
+
+  .cost { display: flex; flex-wrap: wrap; gap: 10px 40px; margin-top: 10px; align-items: baseline; }
+  .big { font-size: 28px; font-weight: 700; }
+  .cost .lbl { color: var(--ink-2); font-size: 13px; }
+  .errs { font-size: 12px; color: var(--muted); }
+
+  @media (max-width: 900px) {
+    .two { grid-template-columns: 1fr; }
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 520px) {
+    .dec { grid-template-columns: 4px 1fr; }
+    .dec .act { grid-column: 2; padding: 0 0 12px; }
+    .who-row { grid-template-columns: minmax(0, 7.5rem) 1fr 2.5em; }
+    .hrow { grid-template-columns: 14px 1fr; }
+    .hrow .v { grid-column: 2; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <section class="head" aria-label="Summary">
+    <h1>Today</h1>
+    <p class="verdict" id="verdict">Loading…</p>
+    <div class="chips" id="chips"></div>
+    <div class="links" id="links"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-needs">
+    <h2 id="h-needs">Needs you <span class="count" id="needs-count"></span></h2>
+    <div class="decisions" id="needs"></div>
+  </section>
+
+  <div class="two">
+    <section class="card" aria-labelledby="h-who">
+      <h2 id="h-who">Waiting, and who clears it <span class="count" id="who-count"></span></h2>
+      <div class="who" id="who"></div>
+      <div class="legend" id="legend"></div>
+      <div class="foot" id="who-foot"></div>
+    </section>
+    <section class="card" aria-labelledby="h-health">
+      <h2 id="h-health">Is the town healthy?</h2>
+      <div class="health" id="health"></div>
+    </section>
+  </div>
+
+  <section class="card" aria-labelledby="h-better">
+    <h2 id="h-better">Is it getting better? <span class="count" id="better-count"></span></h2>
+    <div class="tiles" id="tiles"></div>
+    <div class="review" id="review"></div>
+  </section>
+
+  <section class="card" aria-labelledby="h-cost">
+    <h2 id="h-cost">What it costs</h2>
+    <div class="cost" id="cost"></div>
+    <p class="sub" id="cost-note"></p>
+  </section>
+
+  <p class="errs" id="errs"></p>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function age(h) {
+  if (h == null) return "no data";
+  if (h >= 48) return (h / 24).toFixed(1) + " days";
+  if (h >= 1) return h.toFixed(1) + " h";
+  return Math.round(h * 60) + " min";
+}
+function when(iso) {
+  if (!iso) return "no data";
+  const d = new Date(iso), now = new Date();
+  const t = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? t : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + t;
+}
+function money(v) { return v == null ? "no data" : "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function hoursSince(iso) { return iso ? (Date.now() - new Date(iso).getTime()) / 3.6e6 : null; }
+
+// A reason family per census class, in a fixed order: the slot follows the family on every run.
+const FAMILIES = [
+  ["blocked", "blocked by another bead", ["blocked"]],
+  ["parked", "parked on purpose", ["parked"]],
+  ["person", "waiting for a person", ["human_gate_due", "human_gate"]],
+  ["routed", "routed, not picked up", ["pool_cap", "routed_unclaimed", "pool_suspended"]],
+  ["seat", "a seat down, idle or unread", ["assignee_down", "assignee_idle", "review_down", "review_idle", "seat_down", "seat_resets", "seat_mail"]],
+  ["landed", "landed, not verified", ["deploy_failed", "landed_unverified"]],
+  ["other", "bounced or rig suspended", ["bounced", "rig_suspended"]],
+];
+const FAMILY_OF = {};
+FAMILIES.forEach((f, i) => f[2].forEach((c) => { FAMILY_OF[c] = i; }));
+
+function render(m) {
+  const L = m.links || {};
+  const beadHref = (id) => L.beads ? L.beads + "?bead=" + encodeURIComponent(id) : null;
+  const census = m.census || {}, health = m.health || {}, host = health.host || {};
+  const needs = m.needs_you || [], who = m.who || [];
+
+  // Summary line.
+  const parts = [];
+  parts.push(needs.length === 0 ? "Nothing waits on you." :
+    needs.length + (needs.length === 1 ? " decision waits" : " decisions wait") + " on you.");
+  const other = who.find((a) => !a.human);
+  if (other) parts.push(other.n + (other.n === 1 ? " stop waits" : " stops wait") + " on " + other.name + ".");
+  if (host.load1 != null) parts.push(host.over ? "Host load " + host.load1.toFixed(1) + " is over the gate (" + host.threshold + "): orders skip work."
+                                               : "Host load " + host.load1.toFixed(1) + " is under the gate (" + host.threshold + ").");
+  const landed = (m.trends || []).find((t) => t.key === "landed");
+  if (landed && landed.now != null) parts.push(landed.now + " beads landed per day over 7 days (" + landed.base + " over " + (m.metrics || {}).window_days + ").");
+  $("verdict").textContent = parts.join(" ");
+
+  // Freshness: what each part of the page is as of.
+  const every = census.every_min || 30;
+  const stale = hoursSince(census.at) > 3 * every / 60;
+  const chips = [[stale ? "warn" : "ok", "census " + when(census.at) + (stale ? ", stale" : ", every " + Math.round(every) + " min")]];
+  if (census.part === "host" && census.full_at) chips.push(["warn", "beads and seats as of " + when(census.full_at) + " (host over the load gate since)"]);
+  chips.push([hoursSince((m.metrics || {}).at) > 36 ? "warn" : "ok", "metrics " + when((m.metrics || {}).at) + ", daily"]);
+  chips.push(["", m.review ? "review " + m.review.week : "no review yet"]);
+  const sup = health.supervisor;
+  chips.push([sup ? (sup.status === "ok" ? "ok" : "crit") : "warn", "supervisor " + (sup ? sup.status : "no data")]);
+  chips.forEach(([cls, text]) => { const c = el("span", "chip " + cls); c.appendChild(el("i")); c.appendChild(document.createTextNode(text)); $("chips").appendChild(c); });
+  const q = el("a", null, "Every stop and metric: the Quality page"); q.href = L.quality || "index.html"; $("links").appendChild(q);
+  if (L.gc) { const g = el("a", null, "Live beads, agents and mail in gc's dashboard ↗"); g.href = L.gc + "/"; $("links").appendChild(g); }
+
+  // Needs you: one card per root decision.
+  $("needs-count").textContent = needs.length ? needs.length + (needs.length === 1 ? " decision" : " decisions") : "";
+  if (!needs.length) {
+    const p = el("p", "empty"); p.appendChild(el("span", "dot ok")); p.appendChild(document.createTextNode("Nothing waits on you right now.")); $("needs").appendChild(p);
+  }
+  needs.forEach((g) => {
+    const h = g.head, crit = h["class"] === "human_gate_due";
+    const d = el("article", "dec" + (crit ? " crit" : ""));
+    d.appendChild(el("div", "stripe"));
+    const b = el("div", "body");
+    b.appendChild(el("div", "title", h.title));
+    b.appendChild(el("div", "why", h.why + (h.also ? "; " + h.also.join("; ") : "")));
+    const meta = el("div", "meta");
+    const tag = el("span", "tag"); tag.appendChild(el("span", "dot " + (crit ? "crit" : "warn")));
+    tag.appendChild(document.createTextNode((crit ? "past due, waiting " : h.label + ", ") + age(h.age_h)));
+    meta.appendChild(tag);
+    meta.appendChild(el("span", "bead", h.id + (h.rig ? " · " + h.rig : "")));
+    b.appendChild(meta);
+    if (g.behind.length) {
+      const w = el("div", "behind");
+      w.appendChild(document.createTextNode("Answering it unblocks " + g.behind.length + (g.behind.length === 1 ? " bead: " : " beads: ")));
+      g.behind.forEach((x, i) => {
+        const href = beadHref(x.id), a = el(href ? "a" : "span", null, x.id);
+        if (href) a.href = href;
+        a.title = x.title; w.appendChild(a);
+        if (i < g.behind.length - 1) w.appendChild(document.createTextNode(", "));
+      });
+      b.appendChild(w);
+    }
+    d.appendChild(b);
+    const act = el("div", "act"), href = h.kind === "seat" ? L.agents : beadHref(h.id);
+    if (href) { const a = el("a", "btn", "Open in gc ↗"); a.href = href; act.appendChild(a); }
+    d.appendChild(act);
+    $("needs").appendChild(d);
+  });
+
+  // Who clears what: stops per actor, split by reason family.
+  let total = 0, maxN = 0;
+  const seen = {};
+  who.forEach((a) => { total += a.n; maxN = Math.max(maxN, a.n); });
+  $("who-count").textContent = total + (total === 1 ? " stop" : " stops");
+  who.forEach((a) => {
+    const row = el("div", "who-row");
+    const nm = el("div", "who-name", a.name.replace(/([\/.])/g, "$1\u200b") + (a.human ? " (you)" : ""));  // may break after a slash or dot
+    nm.appendChild(el("small", null, "oldest " + age(a.oldest_h)));
+    row.appendChild(nm);
+    const fam = {};
+    a.classes.forEach(([key, , n]) => { const f = FAMILY_OF[key] ?? FAMILIES.length - 1; fam[f] = (fam[f] || 0) + n; });
+    const bar = el("div", "bar"); bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", a.classes.map(([, label, n]) => n + " " + label).join(", "));
+    bar.title = a.classes.map(([, label, n]) => n + " " + label).join("\n");
+    bar.style.width = (100 * a.n / maxN) + "%";
+    Object.keys(fam).map(Number).sort((x, y) => x - y).forEach((f) => {
+      const s = el("span"); s.style.flex = String(fam[f]); s.style.background = "var(--s" + (f + 1) + ")";
+      seen[f] = (seen[f] || 0) + fam[f]; bar.appendChild(s);
+    });
+    const track = el("div"); track.appendChild(bar); row.appendChild(track);
+    row.appendChild(el("div", "who-n", String(a.n)));
+    $("who").appendChild(row);
+  });
+  Object.keys(seen).map(Number).sort((x, y) => x - y).forEach((f) => {
+    const s = el("span"), i = el("i"); i.style.background = "var(--s" + (f + 1) + ")";
+    s.appendChild(i); s.appendChild(document.createTextNode(FAMILIES[f][1] + " " + seen[f])); $("legend").appendChild(s);
+  });
+  $("who-foot").appendChild(el("span", null, m.moving + " moving (in work or review) · " + m.backlog + " in the backlog, not routed"));
+
+  // Health.
+  const seats = health.seats || {};
+  const rows = [
+    [sup ? (sup.status === "ok" ? "ok" : "crit") : "", "Supervisor",
+     sup ? sup.status + ", gc " + sup.version + ", up " + age(sup.uptime_sec / 3600) : "no data: " + (health.supervisor_error || "gc's API not reachable")],
+    [seats.always_on_down ? "crit" : "ok", "Seats",
+     seats.up + " of " + seats.total + " running; " + (seats.always_on_down == null ? "always-on seats: no data" : seats.always_on_down + " of " + seats.always_on + " always-on down") +
+     (seats.resets ? "; " + seats.resets + " reset as stalled repeatedly" : "")],
+    [host.load1 == null ? "" : host.over ? "warn" : "ok", "Host load",
+     host.load1 == null ? "no data" : host.load1.toFixed(1) + " on " + host.cores + " cores, gate " + host.threshold +
+     (host.over ? ". Over the gate: orders skip. Busiest: " + (host.top || []).slice(0, 3).map((t) => t.who + " " + t.cores.toFixed(1) + " cores").join(", ") : "")],
+    [seats.mail_waiting ? "warn" : "ok", "Seat mail", (seats.unread || 0) + " unread in agent inboxes" + (seats.mail_waiting ? "; " + seats.mail_waiting + " seat(s) down or idle with mail waiting" : "")],
+    [health.friction_7d == null ? "" : "", "Friction, 7 days",
+     health.friction_7d == null ? "no data" : health.friction_7d + " events; most: " + (health.friction_top || []).map(([k, n]) => k + " " + n).join(", ")],
+  ];
+  rows.forEach(([cls, k, v]) => {
+    const r = el("div", "hrow"); r.appendChild(el("span", "dot " + cls)); r.appendChild(el("b", null, k)); r.appendChild(el("span", "v", v)); $("health").appendChild(r);
+  });
+
+  // Getting better: 7 days against the long window, each over its daily series.
+  const days = (m.metrics || {}).days || [], wd = (m.metrics || {}).window_days;
+  $("better-count").textContent = "last 7 days against the last " + wd;
+  (m.trends || []).forEach((t) => {
+    const tile = el("div", "tile");
+    tile.appendChild(el("div", "k", t.label));
+    const v = el("div", "v", t.now == null ? "no data" : t.unit === "$" ? money(t.now) : String(t.now));
+    if (t.now != null && t.unit !== "$") v.appendChild(el("small", null, " " + t.unit));
+    tile.appendChild(v);
+    let cls = "", txt = "no " + wd + "-day value";
+    if (t.now != null && t.base != null) {
+      if (t.now === t.base) txt = "same as over " + wd + " days";
+      else {
+        const up = t.now > t.base, good = up === (t.better === "up");
+        cls = good ? "good" : "bad";
+        const diff = Math.abs(t.now - t.base), unit = t.unit === "%" ? " pt" : t.unit.startsWith("h") ? " h" : "";
+        txt = (up ? "▲ " : "▼ ") + (t.unit === "$" ? money(diff) : diff.toFixed(1) + unit) + " vs " + (t.unit === "$" ? money(t.base) : t.base) + " over " + wd + " days";
+      }
+    }
+    tile.appendChild(el("div", "delta " + cls, txt));
+    tile.appendChild(spark(t, days));
+    $("tiles").appendChild(tile);
+  });
+  const R = m.review, rv = $("review");
+  if (!R) rv.appendChild(el("div", "sub", "No weekly review yet: the quality-review order writes one a week."));
+  else {
+    const s = R.slowdown || {};
+    rv.appendChild(el("div", "sub", "Weekly review " + R.week + (s.stage ? ": the biggest wait was " + s.stage + (s.rig ? " in " + s.rig : "") +
+      (s.hours != null ? ", " + Math.round(s.hours).toLocaleString() + " bead-hours" : "") + ". " : ". ") + (s.summary || "")));
+    if (R.change) rv.appendChild(el("div", "q", "Proposed: " + R.change));
+    if (R.question) rv.appendChild(el("div", "sub", R.question + (R.default ? " Default: " + R.default + "." : "")));
+    const lw = R.last_week;
+    if (lw && lw.applied) rv.appendChild(el("div", "sub", "The week before's change: " + lw.applied + (lw.metric ? "; " + lw.metric + " " + lw.then + " → " + lw.now : "") + "."));
+  }
+
+  // Cost: one source.
+  const c = m.cost || {};
+  [[money(c.per_landed_7d), "per landed bead, last 7 days (" + money(c.per_landed_long) + " over " + wd + ")"],
+   [money(c.usd_7d), "over 7 days, " + (c.landed_7d ?? "no data") + " beads landed"],
+   [money(c.today_usd), "today, as of the metrics run " + when((m.metrics || {}).at)]
+  ].forEach(([big, lbl]) => { const d = el("div"); d.appendChild(el("div", "big", big)); d.appendChild(el("div", "lbl", lbl)); $("cost").appendChild(d); });
+  const unpriced = Object.keys(c.unpriced || {});
+  $("cost-note").textContent = "The agents' transcripts priced at API list price (the pack's prices.toml): a list price, not an invoice." +
+    (unpriced.length ? " Models without a price, left out: " + unpriced.join(", ") + "." : "");
+  if ((m.errors || []).length) $("errs").textContent = "Sources that did not answer: " + m.errors.join("; ");
+}
+
+function spark(t, days) {
+  const ns = "http://www.w3.org/2000/svg", W = 160, H = 36, pad = 4;
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "spark"); svg.setAttribute("viewBox", "0 0 " + W + " " + H); svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("aria-hidden", "true");
+  const vals = t.spark || [], n = vals.length;
+  const line = (cls, x1, x2, y) => { const l = document.createElementNS(ns, "line"); l.setAttribute("class", cls);
+    l.setAttribute("x1", x1); l.setAttribute("x2", x2); l.setAttribute("y1", y); l.setAttribute("y2", y); return l; };
+  svg.appendChild(line("base", 0, W, H - pad));
+  if (n < 2) return svg;
+  const max = Math.max(...vals.filter((v) => v != null), 0) || 1;
+  const x = (i) => pad + i * (W - 2 * pad) / (n - 1), y = (v) => H - pad - (v / max) * (H - 2 * pad);
+  const path = (from) => { let d = "", pen = false;
+    for (let i = from; i < n; i++) { if (vals[i] == null) { pen = false; continue; } d += (pen ? "L" : "M") + x(i).toFixed(1) + " " + y(vals[i]).toFixed(1); pen = true; }
+    return d; };
+  const add = (cls, d) => { if (!d) return; const p = document.createElementNS(ns, "path"); p.setAttribute("class", cls); p.setAttribute("d", d);
+    p.setAttribute("vector-effect", "non-scaling-stroke"); svg.appendChild(p); };
+  add("all", path(0));
+  add("week", path(Math.max(n - 7, 0)));
+  for (let i = 0; i < n; i++) {  // one hover target per day, wider than the line
+    const r = document.createElementNS(ns, "rect"); r.setAttribute("class", "hit");
+    r.setAttribute("x", x(i) - (W - 2 * pad) / (n - 1) / 2); r.setAttribute("width", (W - 2 * pad) / (n - 1)); r.setAttribute("y", 0); r.setAttribute("height", H);
+    const tt = document.createElementNS(ns, "title");
+    tt.textContent = (days[i] || "") + ": " + (vals[i] == null ? "no data" : t.unit === "$" ? money(vals[i]) : vals[i] + " " + t.unit);
+    r.appendChild(tt); svg.appendChild(r);
+  }
+  // the end dot: a zero-length round-capped stroke stays round when the viewBox is stretched
+  const last = [...vals.keys()].reverse().find((i) => vals[i] != null);
+  if (last != null) ["ring", "end"].forEach((cls) => { const l = line(cls, x(last), x(last), y(vals[last]));
+    l.setAttribute("vector-effect", "non-scaling-stroke"); svg.appendChild(l); });
+  return svg;
+}
+
+fetch("today.json", { cache: "no-store" }).then((r) => {
+  if (!r.ok) throw new Error("today.json: HTTP " + r.status);
+  return r.json();
+}).then(render).catch((e) => {
+  $("verdict").textContent = "No data yet: " + e.message + ". The quality-stops order writes today.json next to this page after each census.";
+});
+</script>
+</body>
+</html>

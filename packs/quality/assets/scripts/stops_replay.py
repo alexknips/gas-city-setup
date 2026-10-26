@@ -320,7 +320,7 @@ def census_at(t, beads_all, now_city, changes, resets, caps, loads, others, only
                                  {"status": "closed", "assignee": "", "title": x["title"]})
     holders = defaultdict(list)
     for b in work:
-        if b["assignee"]:
+        if b["assignee"] and b.get("type") not in S.HUMAN_ONLY_TYPES:
             for n in S.session_names(city.session(b["assignee"])) or [b["assignee"]]:
                 holders[n].append(b["id"])
     stops, moving, backlog = [], [], Counter()
@@ -328,6 +328,8 @@ def census_at(t, beads_all, now_city, changes, resets, caps, loads, others, only
         if only and b["id"] not in only:
             continue
         r = S.classify(b, city, blockers, holders, t, work_by_id)
+        if not S.counts(b, r, city):
+            continue
         if r is None:
             backlog[b["rig"]] += 1
         else:
