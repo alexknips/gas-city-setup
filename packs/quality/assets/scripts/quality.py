@@ -1593,6 +1593,14 @@ def add_counts(dst, name, src):
             t[k] = round(t.get(k, 0) + v, 2) if k == "usd" else t.get(k, 0) + v
 
 
+def day_cost(city):
+    """A day's cost record, priced from the transcripts, or None. A history day written by a pack
+    older than gcs-cpe holds the dashboard feed's dollars and merged count instead: another source,
+    so it counts as a day without cost rather than being added to transcript dollars."""
+    c = (city or {}).get("cost")
+    return c if c and "tokens" in c else None
+
+
 def summarize(rig_days, city_days, follow_days, today):
     """One window (a list of per-day records of one rig, or 'all' merged) -> metric values."""
     s = defaultdict(int)
@@ -1613,7 +1621,7 @@ def summarize(rig_days, city_days, follow_days, today):
     for d in city_days:
         for k, v in d["city"]["friction"].items():
             friction[k] += v
-    cost_days = [d["city"]["cost"] for d in city_days if d["city"]["cost"] is not None]
+    cost_days = [c for c in (day_cost(d["city"]) for d in city_days) if c is not None]
     owner_days = [d["city"].get("owner") for d in city_days if d["city"].get("owner") is not None]
     where_counts = defaultdict(int)
     for o in owner_days:
@@ -1679,7 +1687,7 @@ def series_value(d, city, metric):
     if metric == "owner_turns":
         return (((city or {}).get("owner")) or {}).get("turns")
     if metric in ("cost_per_landed", "tokens_per_landed", "cost_usd"):
-        c = (city or {}).get("cost") or {}
+        c = day_cost(city) or {}
         return c.get({"cost_per_landed": "per_landed", "cost_usd": "usd"}.get(metric, metric))
     if metric == "landed":
         return d["landed"]

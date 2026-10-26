@@ -359,6 +359,10 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
   - With `QUALITY_RIGS` set, the dollars are still the whole city's, but only those rigs' beads
     are counted as landed.
   - List prices, not a bill: batch discounts, credits and negotiated rates are not known.
+  - A history day older than the window that a pack version before this one wrote holds another
+    source's dollars (here the dashboard feed's, $2.22 per landed bead on 09-28 against $45.39
+    from transcripts on 09-29). Such a day counts as a day without cost, and the weekly review
+    says how many days of each window were priced.
 
 ### Owner turns
 

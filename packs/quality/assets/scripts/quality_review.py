@@ -320,6 +320,7 @@ def build_facts(now, week=None):
     facts = {
         "week": label, "days": [days[0], days[-1]], "before": [before[0], before[-1]] if before else None,
         "days_with_history": n_last, "before_days_with_history": n_prev, "history_missing": missing,
+        "cost_days": (last.get("all") or {}).get("cost_days"), "before_cost_days": (prev.get("all") or {}).get("cost_days"),
         "review_day": review_day.isoformat(), "timezone": q.LOCAL_NAME, "generated_at": q.iso(now),
         "out_dir": q.OUT_DIR, "city": q.CITY,
         "stages": stages,
@@ -411,7 +412,10 @@ def to_md(f):
         if (v["last"] is None and v["before"] is None) or (scope != "all" and (scope not in landed_rigs or name not in rig_keys)):
             continue
         L.append(f"| {k} | {fh(v['last'])} | {fh(v['before'])} | {fh(v['change'])} | {v['unit']} | {v['basis']} |")
-    L += ["", "## Cost by seat (list price, all rigs)", "", "| Seat | This week $ | Before $/week |", "|---|---|---|"]
+    L += ["", "## Cost by seat (list price, all rigs)", "",
+          f"Days priced from transcripts: {f['cost_days'] or 0} this week, {f['before_cost_days'] or 0} before (per-week "
+          "figures divide by these). A history day written before the pack read cost from transcripts has none.", "",
+          "| Seat | This week $ | Before $/week |", "|---|---|---|"]
     L += [f"| {x['seat']} | {fh(x['usd'])} | {fh(x['before_per_week'])} |" for x in f["cost_by_seat"]]
     L += ["", "## City config commits"]
     for c in f["config_commits"]:
