@@ -214,6 +214,9 @@ const DEFS = [
   ["Cost per landed bead", "List-price dollars of every model call the city's agents made, divided by the beads that landed (all rigs), over the days the transcripts cover. Tokens per landed bead next to it: on a subscription the dollars are what the same calls would cost on the API, not a bill.",
    "The agents' Claude Code transcripts (one line per assistant message with its token usage), kept when the transcript was started in a gc session's work_dir or below it, each message counted once by its id; priced per model, speed and cache duration from the pack's price table (a city can override it).",
    "Lower bound: Claude Code's side calls (WebFetch summaries, compaction, titles) leave no usage in the transcripts, and agents of other providers are not read. A model without a price is shown as unpriced tokens, not $0. City-level only. Sessions a person starts by hand outside the agents' directories are not counted."],
+  ["Owner turns", "Turns the owner typed into the city: in the seats named by QUALITY_OWNER_SEATS (default the mayor) and in sessions started by hand in the city or a rig directory. How often the owner is asked whether something is stuck starts here: quality.py --owner lists the turns to label by hand (README).",
+   "The same Claude Code transcripts as cost: user lines that are not tool results, meta lines, compaction summaries or a subagent's prompt, and whose text gc or Claude Code did not inject (system reminders, queued nudges pasted in, the session's start prompt, task notifications, shell output).",
+   "Counts turns, not what they ask: no rule separates a stuck-ask from other turns reliably (README has the hand count and the test). Turns in other tools (Slack, the dashboard) and in other agents' CLIs are not read. Transcripts older than Claude Code's cleanupPeriodDays (30 by default) are gone unless the cache already holds them. City-level only."],
   ["Machine friction", "Stalls the town already logs, per day: order failures, stalled-session resets, cold-start timeouts, dead-assignee reopens, skipped supervisor ticks and gate-caused bounces.",
    "The city event log ($GC_CITY_PATH/.gc/events.jsonl and rotated archives), read incrementally.",
    "Counts events, not their cost. Events without a rig (most order failures) are city-level and appear under All rigs. Wake orders (a nudge to an idle seat) are not counted: gc keeps no record of delivered nudges, and a fired order only means it ran."],
@@ -300,6 +303,13 @@ function tileDefs() {
   } else {
     t.push({ key: "cost_per_landed", label: "Cost per landed bead", value: null, nodata: "city-level only: choose All rigs",
       sub: "dogs, the mayor and the witnesses work for every rig, so cost is not split per rig", fmt: fmtUsd, noSeries: true });
+  }
+  if (rig === "all") {
+    const where = Object.entries(m.owner_by_where || {}).map(([k, v]) => `${k === "hand" ? "hand sessions" : k} ${v}`).join(", ");
+    t.push({ key: "owner_turns", label: "Owner turns", value: m.owner_turns == null ? null : String(m.owner_turns),
+      nodata: m.owner_days ? null : "no transcripts cover this window",
+      sub: m.owner_days ? `typed by a person into the city over ${m.owner_days} of ${days} days (${where || "none"}); quality.py --owner lists them` : "",
+      fmt: (v) => v == null ? null : String(v) });
   }
   t.push({ key: "friction", label: "Machine friction", value: String(m.friction_total),
     nodata: null, sub: `logged stalls in ${sel}` + (rig === "all" ? ", city-level ones included" : ", rig-attributed only"),
@@ -560,7 +570,8 @@ function renderDaily() {
     ["fix_of_a_fix_rate", "Fix-of-a-fix", fmtPct], ["first_pass_ci_rate", "First-pass CI", fmtPct], ["claimed_merged_median_h", "Claimed→merged", fmtH],
     ["human_open_eod", "Gates open", (v) => v == null ? null : String(v)], ["human_past_due_eod", "Past due", (v) => v == null ? null : String(v)],
     ["friction", "Friction", (v) => v == null ? null : String(v)]];
-  if (rig === "all") cols.push(["cost_usd", "Cost", fmtUsd], ["cost_per_landed", "$/landed", fmtUsd], ["tokens_per_landed", "Tokens/landed", fmtTok]);
+  if (rig === "all") cols.push(["cost_usd", "Cost", fmtUsd], ["cost_per_landed", "$/landed", fmtUsd], ["tokens_per_landed", "Tokens/landed", fmtTok],
+    ["owner_turns", "Owner turns", (v) => v == null ? null : String(v)]);
   const tbl = $("daily");
   tbl.replaceChildren(el("thead", {}, el("tr", {}, el("th", { text: "Day" }), ...cols.map((c) => el("th", { text: c[1] })))));
   const body = el("tbody");

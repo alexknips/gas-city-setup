@@ -19,6 +19,7 @@ comes from the transcripts the agents already write, priced from a table in the 
 | Lead-time stages | created → merged of each landed bead cut into blocked, parked, waiting to be routed, routed and waiting for an agent, working, in review, rework |
 | Human wait | human-gate beads open, past due, and how long answered ones stayed open |
 | Cost per landed bead | list-price dollars (and tokens) of the agents' model calls per landed bead, from their transcripts |
+| Owner turns | turns a person typed into the city (the mayor's seat, hand sessions in the city), listed for labelling |
 | Machine friction | stalls the city already logs (order failures, stalled sessions, ...) |
 | Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
 
@@ -88,6 +89,8 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_HUMAN_DUE_KEY` | `human.due` | metadata key with a gate's due time (also marks a gate) |
 | `QUALITY_FRICTION_EVENTS` | six event types, see below | city event types counted as friction |
 | `QUALITY_TRANSCRIPTS` | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` | comma list of Claude Code transcript directories the agents write to |
+| `QUALITY_OWNER_SEATS` | `mayor` | comma list of seats a person types into; a seat matches with or without its rig or binding prefix (`mayor` matches `gastown.mayor`) |
+| `QUALITY_INJECTED_RE` | see `quality.py` | a user turn whose text matches was put there by gc or Claude Code, not typed |
 | `QUALITY_PRICES` | unset | a TOML price table in the shape of `assets/prices.toml`; its models replace the pack's one by one |
 | `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
@@ -128,7 +131,11 @@ verdict never changes, so it is cached for good. The transcripts are the other c
 first run reads every transcript of the window, here 3.7 GB in 4,516 files, in 80-98 s wall and
 51-54 s CPU at load 13-19. After that a run reads only what was appended and the cost part takes
 4-7 s wall, about 3 s CPU, mostly loading and writing its 17 MB cache
-(`$QUALITY_STATE_DIR/transcripts.json`); a whole cached run took 14-16 s wall, 6-8 s CPU.
+(`$QUALITY_STATE_DIR/transcripts.json`); a whole cached run took 14-16 s wall, 6-8 s CPU. Owner
+turns come from the same pass and add 0.4 MB to that cache (2,589 typed turns of every seat in 28
+days, 400 characters each at most). The cache's format changed with them, so the first run after
+that upgrade reads every transcript again: 654 s wall in a test run at load 40-100 under `nice`,
+inside the order's 15-minute timeout; the load gate keeps a live run from starting that high.
 
 The lead-time stages read each landed bead's whole event history. An update's `old_value` is the
 whole row, so the first read is large (here 26 MB for the busiest rig's 221 landed beads in 28
@@ -326,6 +333,46 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
     are counted as landed.
   - List prices, not a bill: batch discounts, credits and negotiated rates are not known.
 
+### Owner turns
+
+- **Definition**: per local day, the user turns a person typed into the city: in the seats named by
+  `QUALITY_OWNER_SEATS` (default the mayor, the seat the owner talks to) and in Claude Code
+  sessions started by hand in the city directory or a rig's directory (not any gc session's
+  work_dir). McEvoy's first check for a Gas City ("count how often you ask your own system
+  whether it is stuck", *Building a Gas City maturity model*, 2026-10-22) starts from these turns.
+- **Source**: the same transcripts as cost, read in the same pass. A user line counts when it is
+  not a tool result, a meta line, a compaction summary, a subagent's prompt (sidechain) or a
+  headless run, and its text does not match `QUALITY_INJECTED_RE`: system reminders (gc delivers
+  queued nudges and mail notices this way, also as one paste), the session's start prompt
+  (`[<city>] <seat> • <date>`), task notifications, slash-command and shell output, interruptions.
+  A turn is counted once by its uuid (a resumed session copies earlier lines into a new file).
+  The first 400 characters of each turn are kept in the cache for `quality.py --owner DAY|all`,
+  which lists them with where they were typed; `quality.json` holds only counts.
+- **Stuck-asks are counted by hand, not by a rule.** The pack has no rule that tells a stuck-ask
+  ("is it stuck?", "how is this going?", "did the deploy work?") from other turns well enough to
+  ship. In the city it was built in, phrase rules written from 30 days of the owner's turns found
+  all 17 stuck-asks and 10 unjam orders in them, but on a holdout labelled first (181 turns the
+  same person typed into another agent setup, 15 stuck-asks and 9 unjam turns) they found 4 and 1.
+  So the number is a hand count: `quality.py --owner all`, then label each turn:
+  - **stuck-ask**: a question whether work, an agent or the system is moving, done or alive
+    (status, progress, liveness: "how far is it", "did you finish", "is the bot still up").
+  - **unjam**: an order to fix, restart or nudge something that stopped, or a report that it did
+    (a pasted error, "the system is struggling again").
+  - **other**: everything else (new work, decisions, questions about content).
+- **Blind spots**:
+  - Counts turns, not what they ask (above). A person who asks once and waits looks the same as
+    one who asks five times.
+  - Only Claude Code transcripts on this host: turns in Slack, on the dashboard, in a phone app or
+    in another agent's CLI are not read. A seat listed in `QUALITY_OWNER_SEATS` that agents also
+    nudge with plain text (not a system reminder) counts those nudges too; the default mayor seat
+    gets its nudges as reminders.
+  - Claude Code deletes transcripts older than `cleanupPeriodDays` (30 by default). The cache keeps
+    turns it has read until they leave the window, so a city that runs the pack daily keeps the
+    whole window; a first run sees at most the last 30 days, and the first day it reaches is
+    shown as no data, as for cost.
+  - A shell command typed with `!` and its output are not counted as turns.
+  - City-level only.
+
 ### Machine friction
 
 - **Definition**: per day, counts of `order.failed` (per order), `session.reset_stalled`,
@@ -482,4 +529,8 @@ the city it was built in. The cases:
 | Cost, session | gas-city-setup polecat `f6e9fe55`, 10-25 | 6 Sonnet 5.5 messages (11 lines): input 12, 1-hour writes 14,808, reads 330,733, output 1,380 = $0.1061 | $0.1061 |
 | Cost, tokens | gc's `.gc/usage.jsonl` | its 5,337 records with a transcript message (by `upstream_req_id`) have identical tokens; its 2,363 priced Opus 5.5 records total $155.16, equal to the pack's price with every cache write at the 5-minute rate (gc ignores the 1-hour split) | same tokens; $196.79 with 1-hour writes at $8 |
 | Cost, geo | `inference_geo` per day | every message says `not_available` until 10-09 and `global` from then on, from the same sessions; none says `us` | `not_available` priced as global |
+| Owner turns | 28 days to 10-26 | independent extraction (every user line of the mayor's transcripts and of the sessions started in the city root, injected text dropped by the same kinds of rule, each turn read by hand): 135 turns since 09-25 20:15Z, 123 inside the window (the other 12 are before its first day) | 123, the same uuids |
+| Owner turns | 10-25 (25 h, DST ends) | 4 in the mayor's seat (10-24 22:00Z-23:49Z) and 12 in hand sessions in the city root (18:35Z-22:33Z) | 16 (mayor 4, hand 12) |
+| Owner turns | other seats | the owner also typed into a polecat, a crew, a refinery and cv-crew (15 turns); none is an owner seat here, so none is counted. Agents' nudges into those seats ("MAYOR, interrupt: ...") are plain typed text, which is why the default is the mayor only | 0 |
+| Stuck-asks (hand) | 30 days to 10-26 | 17 stuck-asks and 10 unjam turns among the 135; phrase rules found 17/17 and 10/10 there (written from them) and 4/15 and 1/9 on a holdout labelled first | not shipped, see "Owner turns" |
 | Friction | 10-20, 10-18, 10-22 | grep of the log: 12 mol-dog-compactor failures; 11 skipped ticks; 1 stalled reset in hivemind-ui; 1 dead-session reopen (hivemind-otruj) | 12, 11, 1, 1 (hivemind) |

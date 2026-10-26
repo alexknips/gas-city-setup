@@ -12,6 +12,7 @@ README.md defines each metric, its source and its blind spots.
     quality.py --dry-run       compute and print a summary; write nothing (caches included)
     quality.py --bead ID       show how one landed bead was counted (for spot checks)
     quality.py --cost DAY      show one day's cost per seat, session and model (for spot checks)
+    quality.py --owner DAY     list the turns the owner typed into the city that day, or 'all' (spot checks, labelling)
 """
 import argparse
 import gzip
@@ -92,6 +93,14 @@ PARKED_STATUSES = env_list("QUALITY_PARKED_STATUSES", "blocked,deferred")
 HOLD_KEYS = env_list("QUALITY_HOLD_KEYS", "hold_reason")
 ROUTE_KEYS = env_list("QUALITY_ROUTE_KEYS", "gc.routed_to")
 REPOS = dict(x.split("=", 1) for x in env_list("QUALITY_REPOS") if "=" in x)  # rig=owner/repo|none
+# Owner turns: the seats a person types into (hand sessions in the city or a rig directory count
+# too), and the text gc or Claude Code puts into a session as a user turn, which nobody typed.
+OWNER_SEATS = env_list("QUALITY_OWNER_SEATS", "mayor")
+INJECTED = re.compile(env("QUALITY_INJECTED_RE",
+                          r"^(<system-reminder>|<task-notification>|<command-(name|message|args)>|"
+                          r"<local-command-std(out|err)>|<bash-(input|stdout|stderr)>|<user-prompt-submit-hook>|"
+                          r"\[Request interrupted|Caveat: |This session is being continued|"
+                          r"\[[^\]\n]{1,80}\] \S+ • \d{4}-\d\d-\d\d)"))
 USE_GH = env("QUALITY_GH", "auto").lower() not in ("off", "no", "0", "false")
 POST_RENDER = env("QUALITY_POST_RENDER")
 GC = env("GC_BIN", shutil.which("gc") or "gc")
@@ -995,11 +1004,36 @@ def collect_friction(state, rigs, start):
 
 # ---------- cost: the agents' Claude Code transcripts ----------
 
-TRANSCRIPT_CACHE_VERSION = 1
+TRANSCRIPT_CACHE_VERSION = 2
 # per message: ts, model, speed, inference_geo, service_tier, input, cache write 5m, cache write 1h,
 # cache read, output, web searches
 M_TS, M_MODEL, M_SPEED, M_GEO, M_TIER, M_IN, M_CW5, M_CW1, M_CR, M_OUT, M_WS = range(11)
 TOKEN_KEYS = ("input", "cache_write", "cache_read", "output")
+TURN_CHARS = 400  # the start of each typed turn is kept, for --owner and hand labelling
+PASTE = re.compile(r"^<pasted_content id=\"[^\"]*\">\s*(.*?)\s*</pasted_content(?: id=\"[^\"]*\")?>\s*(.*)$", re.S)
+
+
+def typed_text(e):
+    """The text a person typed in one transcript line, else None. Not typed: tool results, meta
+    lines, compaction summaries, a subagent's prompt (sidechain), headless runs, and text gc or
+    Claude Code injected (INJECTED), also when it arrives as one paste (gc delivers queued
+    reminders that way)."""
+    if e.get("type") != "user" or e.get("isSidechain") or e.get("isMeta") or e.get("isCompactSummary"):
+        return None
+    if str(e.get("entrypoint") or "").startswith("sdk"):
+        return None
+    c = (e.get("message") or {}).get("content")
+    if isinstance(c, list):
+        if any(isinstance(x, dict) and x.get("type") == "tool_result" for x in c):
+            return None
+        c = "\n".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+    t = (c or "").strip() if isinstance(c, str) else ""
+    if not t or INJECTED.match(t):
+        return None
+    m = PASTE.match(t)
+    if m and not m.group(2) and INJECTED.match(m.group(1)):
+        return None
+    return t
 
 
 def collect_session_dirs(beads, stores, state):
@@ -1037,10 +1071,10 @@ def transcript_dirs():
 
 
 def read_transcript(path, rec):
-    """Read one transcript from rec['offset']: its launch cwd (the first line that has one) and
-    every assistant message with usage, by message id. Claude Code writes one line per content
-    block, so an id repeats; older versions put a partial output count on the earlier lines, so
-    the line with the largest output count is kept."""
+    """Read one transcript from rec['offset']: its launch cwd (the first line that has one), every
+    assistant message with usage, by message id, and the start of every typed user turn, by its
+    uuid. Claude Code writes one line per content block, so an id repeats; older versions put a
+    partial output count on the earlier lines, so the line with the largest output count is kept."""
     with open(path, "rb") as f:
         f.seek(rec["offset"])
         for line in f:
@@ -1048,7 +1082,8 @@ def read_transcript(path, rec):
                 break  # a line still being written: read it next time
             rec["offset"] += len(line)
             want_cwd = rec["cwd"] is None and b'"cwd"' in line
-            if not want_cwd and not (b'"usage"' in line and b'"assistant"' in line):
+            want_turn = b'"type":"user"' in line and b'"tool_result"' not in line and b'"isSidechain":true' not in line
+            if not want_cwd and not want_turn and not (b'"usage"' in line and b'"assistant"' in line):
                 continue
             try:
                 e = json.loads(line)
@@ -1056,6 +1091,11 @@ def read_transcript(path, rec):
                 continue
             if want_cwd and e.get("cwd"):
                 rec["cwd"] = e["cwd"]
+            if want_turn:
+                t, at = typed_text(e), as_utc(e.get("timestamp"))
+                if t and at and e.get("uuid"):
+                    rec["turns"][e["uuid"]] = [int(at.timestamp()), t[:TURN_CHARS]]
+                continue
             m = e.get("message") if e.get("type") == "assistant" else None
             u = m.get("usage") if isinstance(m, dict) else None
             if not u or not m.get("id") or m.get("model") == "<synthetic>":
@@ -1104,7 +1144,7 @@ def scan_transcripts(dirs, since, dry):
                 if rec and rec["ino"] == st.st_ino and rec["offset"] == st.st_size:
                     continue
                 if not rec or rec["ino"] != st.st_ino or rec["offset"] > st.st_size:
-                    rec = {"ino": st.st_ino, "offset": 0, "cwd": None, "msgs": {}}
+                    rec = {"ino": st.st_ino, "offset": 0, "cwd": None, "msgs": {}, "turns": {}}
                 start = rec["offset"]
                 try:
                     read_transcript(p, rec)
@@ -1116,7 +1156,8 @@ def scan_transcripts(dirs, since, dry):
     for p in list(files):  # drop what fell out of the window; keep deleted files' messages until then
         rec = files[p]
         rec["msgs"] = {k: v for k, v in rec["msgs"].items() if v[M_TS] >= cut}
-        if not rec["msgs"] and p not in live:
+        rec["turns"] = {k: v for k, v in rec["turns"].items() if v[0] >= cut}
+        if not rec["msgs"] and not rec["turns"] and p not in live:
             del files[p]
     if not dry:
         write_json(path, cache, compact=True)
@@ -1205,6 +1246,32 @@ def seat_of(cwd, dirs):
     return dirs[best]["seat"] if best else None
 
 
+def owner_where(cwd, sessions, roots):
+    """Where a person typed a transcript's turns: the seat, when it is one of OWNER_SEATS (by name,
+    with or without its rig or binding prefix); 'hand' for a session started by hand in the city or
+    a rig directory (not any gc session's work_dir); None for every other session."""
+    seat = seat_of(cwd, sessions)
+    if seat is not None:
+        return seat if any(seat == s or seat.endswith(("." + s, "/" + s)) for s in OWNER_SEATS) else None
+    cwd = (cwd or "").rstrip("/")
+    return "hand" if cwd and any(cwd == r or cwd.startswith(r + "/") for r in roots) else None
+
+
+def owner_turns(cache, sessions, roots):
+    """Every typed turn in the owner's sessions, once per uuid: (ts, where, transcript, uuid, text)."""
+    seen, out = set(), []
+    for p in sorted(cache["files"]):
+        rec = cache["files"][p]
+        where = owner_where(rec["cwd"], sessions, roots) if rec["turns"] else None
+        if where is None:
+            continue
+        for uid, (ts, text) in rec["turns"].items():
+            if uid not in seen:  # a resumed session repeats earlier lines in a new file
+                seen.add(uid)
+                out.append((ts, where, p, uid, text))
+    return sorted(out)
+
+
 def session_of(path):
     """A transcript's session id: its file name, or for a subagent's file its parent's."""
     parts = path.split(os.sep)
@@ -1216,19 +1283,20 @@ def empty_cost_day():
             "unpriced_tokens": 0, "unpriced": {}, "by_model": {}, "by_seat": {}}
 
 
-def collect_cost(state, beads, stores, start, day_list, dry):
+def collect_cost(state, beads, stores, roots, start, day_list, dry):
     """Per local day: the list-price dollars and the tokens of every assistant message in a
-    transcript this city's sessions wrote, each message counted once."""
+    transcript this city's sessions wrote, each message counted once; and the turns the owner
+    typed into the city (owner_turns)."""
     dirs_cfg = transcript_dirs()
     if not any(os.path.isdir(d) for d in dirs_cfg):
-        return None, {"source": f"no transcripts directory ({', '.join(dirs_cfg)})"}
+        return None, None, {"source": f"no transcripts directory ({', '.join(dirs_cfg)})"}
     prices, price_src = load_prices()
     if prices is None:
-        return None, {"source": price_src}
+        return None, None, {"source": price_src}
     sessions, sess_errors = collect_session_dirs(beads, stores, state)
     if not sessions:
-        return None, {"source": "no gc session beads to tell this city's transcripts from others",
-                      "errors": sess_errors}
+        return None, None, {"source": "no gc session beads to tell this city's transcripts from others",
+                            "errors": sess_errors}
     cache, read_bytes = scan_transcripts(dirs_cfg, start, dry)
     days = {d: empty_cost_day() for d in day_list}
     starts = [day_bounds(d)[0].timestamp() for d in day_list]
@@ -1295,11 +1363,25 @@ def collect_cost(state, beads, stores, start, day_list, dry):
         for x in list(d["by_model"].values()) + list(d["by_seat"].values()):
             x["usd"] = round(x["usd"], 2)
         out[day] = d
+    owner = {d: (None if first_day is not None and d <= first_day else {"turns": 0, "by_where": {}, "sessions": 0})
+             for d in day_list}
+    owner_sessions = defaultdict(set)
+    for ts, where, p, _, _ in owner_turns(cache, sessions, roots):
+        i = bisect_right(starts, ts) - 1
+        if i < 0 or ts >= end or owner[day_list[i]] is None:
+            continue
+        o = owner[day_list[i]]
+        o["turns"] += 1
+        o["by_where"][where] = o["by_where"].get(where, 0) + 1
+        owner_sessions[day_list[i]].add(session_of(p))
+    for day, s in owner_sessions.items():
+        owner[day]["sessions"] = len(s)
     src = {"source": f"Claude Code transcripts in {', '.join(dirs_cfg)} of {len(sessions)} gc session dir(s)",
            "prices": price_src, "files": sum(1 for r in cache["files"].values() if r["msgs"]),
            "read_mb": round(read_bytes / 1e6, 1), "duplicate_messages": dups,
-           "outside_city": skipped, "partial_first_day": first_day, "errors": sess_errors}
-    return out, src
+           "outside_city": skipped, "partial_first_day": first_day, "errors": sess_errors,
+           "owner_seats": OWNER_SEATS}
+    return out, owner, src
 
 
 # ---------- assembly ----------
@@ -1389,11 +1471,11 @@ def empty_rig_day():
             "friction": {}, "beads": [], "prs": []}
 
 
-def build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, now):
+def build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, owner, now):
     days = {}
     for day in day_list:
         rec = {"day": day, "partial": day == day_of(now), "rigs": {r.name: empty_rig_day() for r in rigs},
-               "city": {"cost": (cost or {}).get(day), "friction": {}}}
+               "city": {"cost": (cost or {}).get(day), "owner": (owner or {}).get(day), "friction": {}}}
         days[day] = rec
     for b in landed_all.values():
         if b["day"] not in days:
@@ -1500,6 +1582,11 @@ def summarize(rig_days, city_days, follow_days, today):
         for k, v in d["city"]["friction"].items():
             friction[k] += v
     cost_days = [d["city"]["cost"] for d in city_days if d["city"]["cost"] is not None]
+    owner_days = [d["city"].get("owner") for d in city_days if d["city"].get("owner") is not None]
+    where_counts = defaultdict(int)
+    for o in owner_days:
+        for k, v in o["by_where"].items():
+            where_counts[k] += v
     usd, cost_landed = sum(c["usd"] for c in cost_days), sum(c["landed"] for c in cost_days)
     tokens = {k: sum(c["tokens"][k] for c in cost_days) for k in TOKEN_KEYS}
     unpriced, by_model, by_seat = defaultdict(int), {}, {}
@@ -1533,6 +1620,8 @@ def summarize(rig_days, city_days, follow_days, today):
         "cost_unpriced_tokens": sum(unpriced.values()), "cost_unpriced": dict(unpriced),
         "cost_by_model": dict(sorted(by_model.items(), key=lambda x: -x[1]["tokens"])),
         "cost_by_seat": dict(sorted(by_seat.items(), key=lambda x: (-x[1]["usd"], -x[1]["tokens"]))),
+        "owner_turns": sum(o["turns"] for o in owner_days) if owner_days else None, "owner_days": len(owner_days),
+        "owner_by_where": dict(sorted(where_counts.items(), key=lambda x: -x[1])),
     }
 
 
@@ -1555,6 +1644,8 @@ def series_value(d, city, metric):
         return d["human"]["past_due_eod"]
     if metric == "friction":
         return sum(d["friction"].values()) + (sum(city["friction"].values()) if city is not None else 0)
+    if metric == "owner_turns":
+        return (((city or {}).get("owner")) or {}).get("turns")
     if metric in ("cost_per_landed", "tokens_per_landed", "cost_usd"):
         c = (city or {}).get("cost") or {}
         return c.get({"cost_per_landed": "per_landed", "cost_usd": "usd"}.get(metric, metric))
@@ -1565,7 +1656,7 @@ def series_value(d, city, metric):
 
 SERIES = ("landed", "bounce_rate", "post_merge_failure_rate", "fix_of_a_fix_rate", "first_pass_ci_rate",
           "claimed_merged_median_h", "created_merged_median_h", "human_open_eod", "human_past_due_eod",
-          "friction", "cost_per_landed", "tokens_per_landed", "cost_usd")
+          "friction", "cost_per_landed", "tokens_per_landed", "cost_usd", "owner_turns")
 
 
 def merge_rig_days(days_list):
@@ -1673,6 +1764,8 @@ def print_summary(q):
     print(f"cost per landed bead ({DAYS}d, city): {fmt(c['cost_per_landed'], ' $')} = ${c['cost_usd']} / {c['cost_landed']} "
           f"landed over {c['cost_days']} day(s) with transcripts; {fmt(c['tokens_per_landed'])} tokens per landed bead"
           + (f"; {c['cost_unpriced_tokens']} tokens unpriced ({', '.join(c['cost_unpriced'])})" if c["cost_unpriced_tokens"] else ""))
+    print(f"owner turns ({DAYS}d, city): {fmt(c['owner_turns'])} over {c['owner_days']} day(s) with transcripts "
+          f"{json.dumps(c['owner_by_where'])}")
     for k, v in q["sources"].items():
         print(f"source {k}: {json.dumps(v, default=str)[:300]}")
 
@@ -1740,17 +1833,35 @@ def explain_cost(day, state, beads, stores, start):
     return 0
 
 
+def explain_owner(day, state, beads, stores, roots, start):
+    """Every turn the owner typed into the city on one local day ('all': the whole window), with
+    where and the start of its text: the list a person labels by hand (README, "Owner turns")."""
+    sessions, _ = collect_session_dirs(beads, stores, state)
+    if not sessions:
+        print("no gc session beads", file=sys.stderr)
+        return 1
+    cache, _ = scan_transcripts(transcript_dirs(), start, True)
+    rows = [{"day": day_of(datetime.fromtimestamp(ts, UTC)), "at": iso(datetime.fromtimestamp(ts, UTC)), "where": where,
+             "transcript": p, "uuid": uid, "text": text}
+            for ts, where, p, uid, text in owner_turns(cache, sessions, roots)]
+    rows = [r for r in rows if day == "all" or r["day"] == day]
+    print(json.dumps({"day": day, "timezone": LOCAL_NAME, "owner_seats": OWNER_SEATS, "roots": roots,
+                      "turns": len(rows), "rows": rows}, indent=1, ensure_ascii=False))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="compute and print a summary; write nothing")
     ap.add_argument("--bead", help="print how one landed bead was counted and exit")
     ap.add_argument("--cost", metavar="DAY", help="print one local day's cost per seat, session and model and exit")
+    ap.add_argument("--owner", metavar="DAY", help="print the turns the owner typed on one local day (or 'all') and exit")
     ap.add_argument("--days", type=int, default=DAYS, help=f"window in local days (default {DAYS})")
     ap.add_argument("--no-gh", action="store_true", help="skip GitHub (first-pass CI and PR-opened times)")
     args = ap.parse_args()
     if not CITY:
         sys.exit("quality: no city (set GC_CITY_PATH or run inside a city)")
-    dry = args.dry_run or bool(args.bead) or bool(args.cost)
+    dry = args.dry_run or bool(args.bead) or bool(args.cost) or bool(args.owner)
     now = datetime.now(UTC)
     day_list = [day_of(now - timedelta(days=i)) for i in range(args.days - 1, -1, -1)]
     start = day_bounds(day_list[0])[0]
@@ -1760,8 +1871,11 @@ def main():
     rigs, hq = discover_rigs()
     log(f"{len(rigs)} rig(s): {', '.join(r.name for r in rigs)}")
     beads = Beads()
+    roots = list(dict.fromkeys([CITY] + [r.path for r in rigs + hq if r.path]))  # where hand sessions count
     if args.cost:
         return explain_cost(args.cost, state, beads, hq or rigs, start)
+    if args.owner:
+        return explain_owner(args.owner, state, beads, hq or rigs, roots, start)
     clock = EventClock(beads, rigs, start)
     log(f"beads via {beads.mode}; events.created_at timeline: {clock.note()}")
 
@@ -1822,9 +1936,9 @@ def main():
         return explain(args.bead, landed_all, beads, clock, rigs)
 
     friction, friction_src = collect_friction(state, rigs, start)
-    cost, cost_src = collect_cost(state, beads, hq or rigs, start, day_list, dry)
+    cost, owner, cost_src = collect_cost(state, beads, hq or rigs, roots, start, day_list, dry)
     log(f"cost: {cost_src.get('read_mb', 0)} MB of transcripts read, {cost_src.get('files', 0)} file(s) in the window")
-    days = build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, now)
+    days = build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, owner, now)
     sources = {"beads": beads.mode, "events_tz": clock.note(), "events_clock": clock.detail(), "github": gh_sources,
                "event_log": friction_src, "cost": cost_src, "stages": stage_src, "errors": errors, "runtime_s": None}
     q = build_quality(days, day_list, rigs, sources, now)
