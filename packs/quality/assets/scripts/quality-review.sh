@@ -14,7 +14,8 @@ city=${GC_CITY_PATH:-${GC_CITY:-$PWD}}
 state=${QUALITY_STATE_DIR:-$city/.gc/runtime/quality-cache}
 max=${QUALITY_MAX_LOAD:-15}
 here=$(cd "$(dirname "$0")" && pwd)
-gc=${GC_BIN:-gc}
+. "$here/gc-bin.sh"
+gc=$GC_BIN
 args="$*"
 # The metrics order records where it writes; use the same place unless this order says otherwise.
 if [ -z "${QUALITY_OUT_DIR:-}" ] && [ -s "$state/out-dir" ]; then

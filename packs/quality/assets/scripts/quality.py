@@ -210,22 +210,16 @@ def discover_rigs(listed=None):
     """The city's rigs with an initialized beads store, and its own store (hq). `listed` is a
     `gc rig list --json` answer the caller already has."""
     cmd = [GC, "rig", "list", "--json"] + (["--city", CITY] if CITY else [])
-    for attempt in (1, 2):
-        if listed is not None:
-            break
+    if listed is None:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if out.returncode != 0:
             sys.exit(f"quality: `{' '.join(cmd)}` failed: {out.stderr.strip()[:300]}")
         try:
             listed = json.loads(out.stdout).get("rigs", [])
-            break
         except (ValueError, AttributeError):
-            # once (2026-10-26) it exited 0 with nothing on stdout; it answered normally right after
-            if attempt == 2:
-                sys.exit(f"quality: `{' '.join(cmd)}` printed no JSON twice: stdout {out.stdout.strip()[:200]!r}, "
-                         f"stderr {out.stderr.strip()[-200:]!r}")
-            log(f"`{' '.join(cmd)}` printed no JSON; asking again in 5 s")
-            time.sleep(5)
+            # Graphviz's /usr/bin/gc answers so: empty stdout, exit 0 (README, "Traps")
+            sys.exit(f"quality: `{' '.join(cmd)}` printed no JSON (stdout {out.stdout.strip()[:200]!r}, stderr "
+                     f"{out.stderr.strip()[-200:]!r}); if {GC} is not Gas City's gc, set GC_BIN")
     rigs, hq = [], []
     for r in listed:
         if r.get("beads") != "initialized" or (ONLY_RIGS and r["name"] not in ONLY_RIGS and not r.get("hq")):

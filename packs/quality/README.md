@@ -98,6 +98,7 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_OWNER_SEATS` | `mayor` | comma list of seats a person types into; a seat matches with or without its rig or binding prefix (`mayor` matches `gastown.mayor`) |
 | `QUALITY_INJECTED_RE` | see `quality.py` | a user turn whose text matches was put there by gc or Claude Code, not typed |
 | `QUALITY_PRICES` | unset | a TOML price table in the shape of `assets/prices.toml`; its models replace the pack's one by one |
+| `GC_BIN` | the gc that started the order, else `gc` on PATH | the gc binary every order calls (see "Traps") |
 | `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
 | `QUALITY_EVENTS_TZ` | read per event from a timeline | one zone for every `events.created_at`, skipping the timeline (see the time trap below) |
@@ -676,9 +677,13 @@ cannot.
   The census calls `gc session list` every run and keeps the other answers until a config or
   suspension file changes. It runs `gc` in the city directory: `--city` cost the CLI about twice
   the CPU (1.5+1.0 s against 0.7+0.5 s for `gc agent list`, 2026-10-26).
-- Once (2026-10-26 07:32Z) `gc rig list --json` exited 0 with nothing on stdout; it answered
-  normally right after. The pack asks again after 5 s, and fails with one line if it gets no JSON
-  twice.
+- Graphviz installs its own `gc` at `/usr/bin/gc`. It prints nothing for `gc rig list --json` and
+  exits 0. A forced run started from systemd (2026-10-26 07:32Z and 09:23Z) called Gas City's gc by
+  its full path, but the script it ran had systemd's PATH, which leaves out `~/.local/bin`, so
+  `gc` meant Graphviz's. Every entry point sources `gc-bin.sh`, which sets `GC_BIN` to the gc
+  that started the order (the nearest ancestor process whose binary is named `gc`; Linux `/proc`)
+  and falls back to PATH only without one. A run with no JSON from `gc` fails with one line that
+  names the binary.
 - A bead's assignee can be a session name (`gastown__polecat-gc-wbnef`) and not an alias; the
   session id is its tail. gc names some of a pool slot's `session.woke`/`stopped` events after the
   pool (`hivemind/gastown.polecat`) and others after the slot (`hivemind/gastown.furiosa`), so the

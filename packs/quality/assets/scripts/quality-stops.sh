@@ -9,6 +9,7 @@ set -u
 city=${GC_CITY_PATH:-${GC_CITY:-$PWD}}
 state=${QUALITY_STATE_DIR:-$city/.gc/runtime/quality-cache}
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/gc-bin.sh"
 # The metrics order records where it writes; use the same place unless this order says otherwise.
 if [ -z "${QUALITY_OUT_DIR:-}" ] && [ -s "$state/out-dir" ]; then
   QUALITY_OUT_DIR=$(cat "$state/out-dir")

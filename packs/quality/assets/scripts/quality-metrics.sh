@@ -12,6 +12,7 @@ city=${GC_CITY_PATH:-${GC_CITY:-$PWD}}
 state=${QUALITY_STATE_DIR:-$city/.gc/runtime/quality-cache}
 max=${QUALITY_MAX_LOAD:-15}
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/gc-bin.sh"
 [ $# -eq 0 ] && mkdir -p "$state" 2>/dev/null
 note() {  # the order's runs only: --dry-run and --bead write nothing
   [ $# -gt 0 ] && [ -z "$args" ] && echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >>"$state/runs.log" 2>/dev/null
