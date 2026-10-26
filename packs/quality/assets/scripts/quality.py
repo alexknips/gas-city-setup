@@ -2,8 +2,8 @@
 """Quality metrics for a Gas City, per rig and per local day (the `quality` pack's order).
 
 Sources: each rig's beads database (plain SQL on the city's Dolt server), GitHub (`gh`), the
-city event log ($GC_CITY_PATH/.gc/events.jsonl plus its rotated archives) and, optionally, a
-scores.json that already prices tokens. Writes OUT_DIR/history/<day>.json (one file per local
+city event log ($GC_CITY_PATH/.gc/events.jsonl plus its rotated archives) and the agents' Claude
+Code transcripts, priced from assets/prices.toml. Writes OUT_DIR/history/<day>.json (one file per local
 day), OUT_DIR/quality.json (7- and 28-day windows and daily series) and OUT_DIR/index.html.
 Every setting is an environment variable (the order's [order.env], overridable per city);
 README.md defines each metric, its source and its blind spots.
@@ -11,6 +11,7 @@ README.md defines each metric, its source and its blind spots.
     quality.py                 compute the window and write the outputs
     quality.py --dry-run       compute and print a summary; write nothing (caches included)
     quality.py --bead ID       show how one landed bead was counted (for spot checks)
+    quality.py --cost DAY      show one day's cost per seat, session and model (for spot checks)
 """
 import argparse
 import gzip
@@ -86,7 +87,6 @@ FRICTION_EVENTS = env_list("QUALITY_FRICTION_EVENTS",
                            "order.failed,session.reset_stalled,session.cold_start_timeout,"
                            "session.work_query_failed,bead.dead_assignee_reopened,"
                            "supervisor.fs_pressure.skipped_tick")
-SCORES_JSON = env("QUALITY_SCORES_JSON")
 REPOS = dict(x.split("=", 1) for x in env_list("QUALITY_REPOS") if "=" in x)  # rig=owner/repo|none
 USE_GH = env("QUALITY_GH", "auto").lower() not in ("off", "no", "0", "false")
 POST_RENDER = env("QUALITY_POST_RENDER")
@@ -197,13 +197,16 @@ def discover_rigs():
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         sys.exit(f"quality: `{' '.join(cmd)}` failed: {out.stderr.strip()[:300]}")
-    rigs = []
+    rigs, hq = [], []
     for r in json.loads(out.stdout).get("rigs", []):
-        if r.get("beads") != "initialized" or (ONLY_RIGS and r["name"] not in ONLY_RIGS):
+        if r.get("beads") != "initialized" or (ONLY_RIGS and r["name"] not in ONLY_RIGS and not r.get("hq")):
             continue
-        rigs.append(Rig(r["name"], r["path"], r.get("prefix") or r["name"], bool(r.get("hq")),
-                        r.get("default_branch") or "main"))
-    return rigs
+        rig = Rig(r["name"], r["path"], r.get("prefix") or r["name"], bool(r.get("hq")), r.get("default_branch") or "main")
+        if rig.hq:
+            hq.append(rig)  # the city's own store holds the session beads, even when QUALITY_RIGS leaves it out
+        if not ONLY_RIGS or rig.name in ONLY_RIGS:
+            rigs.append(rig)
+    return rigs, hq
 
 
 def dolt_port():
@@ -751,27 +754,313 @@ def collect_friction(state, rigs, start):
     return merged, f"events.jsonl + {len(wanted)} archive(s)" + (f" (oldest rotated {covered})" if covered else "")
 
 
-# ---------- cost (reused, not recomputed) ----------
+# ---------- cost: the agents' Claude Code transcripts ----------
 
-def collect_cost():
-    if not SCORES_JSON:
-        return None, "QUALITY_SCORES_JSON not set"
+TRANSCRIPT_CACHE_VERSION = 1
+# per message: ts, model, speed, inference_geo, service_tier, input, cache write 5m, cache write 1h,
+# cache read, output, web searches
+M_TS, M_MODEL, M_SPEED, M_GEO, M_TIER, M_IN, M_CW5, M_CW1, M_CR, M_OUT, M_WS = range(11)
+TOKEN_KEYS = ("input", "cache_write", "cache_read", "output")
+
+
+def collect_session_dirs(beads, stores, state):
+    """work_dir -> seat (the session's template) of every gc session bead, open or closed, in the
+    city's own store (else every rig's). gc 1.5 keeps new session beads in the wisps table, which
+    can be purged, so every dir seen is kept in the state for good."""
+    known = state.setdefault("session_dirs", {})
+    # a session's work_dir never changes: read only the beads created since the newest one known
+    since = max((as_utc(v["seen"]) for v in known.values() if v.get("seen")), default=None)
+    since = sqlts(since - timedelta(days=1)) if since else "1970-01-01 00:00:00"
+    errors = []
+    for rig in stores:
+        for table in ("issues", "wisps"):
+            try:
+                rows = beads.rows(rig, f"SELECT id, title, created_at, CAST(metadata AS CHAR) AS metadata "
+                                       f"FROM {{T}}{table} WHERE issue_type = 'session' AND created_at >= %s", (since,))
+            except Exception as e:  # a bd without a wisps table
+                errors.append(f"{rig.name}.{table}: {str(e)[:120]}")
+                continue
+            for r in sorted(rows, key=lambda r: str(r["created_at"])):
+                m = jload(r["metadata"])
+                seat = m.get("template") or m.get("agent_name") or r["title"]
+                for k in ("work_dir", "gc.work_dir"):
+                    d = str(m.get(k) or "").rstrip("/")
+                    if d:
+                        known[d] = {"seat": seat, "seen": iso(as_utc(r["created_at"]))}
+    return known, errors
+
+
+def transcript_dirs():
+    if env("QUALITY_TRANSCRIPTS"):
+        return env_list("QUALITY_TRANSCRIPTS")
+    base = env("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return [os.path.join(base, "projects")]
+
+
+def read_transcript(path, rec):
+    """Read one transcript from rec['offset']: its launch cwd (the first line that has one) and
+    every assistant message with usage, by message id. Claude Code writes one line per content
+    block, so an id repeats; older versions put a partial output count on the earlier lines, so
+    the line with the largest output count is kept."""
+    with open(path, "rb") as f:
+        f.seek(rec["offset"])
+        for line in f:
+            if not line.endswith(b"\n"):
+                break  # a line still being written: read it next time
+            rec["offset"] += len(line)
+            want_cwd = rec["cwd"] is None and b'"cwd"' in line
+            if not want_cwd and not (b'"usage"' in line and b'"assistant"' in line):
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if want_cwd and e.get("cwd"):
+                rec["cwd"] = e["cwd"]
+            m = e.get("message") if e.get("type") == "assistant" else None
+            u = m.get("usage") if isinstance(m, dict) else None
+            if not u or not m.get("id") or m.get("model") == "<synthetic>":
+                continue
+            at = as_utc(e.get("timestamp"))
+            if at is None:
+                continue
+            cw = int(u.get("cache_creation_input_tokens") or 0)
+            split = u.get("cache_creation") or {}
+            cw1 = int(split.get("ephemeral_1h_input_tokens") or 0)
+            ws = int((u.get("server_tool_use") or {}).get("web_search_requests") or 0)
+            out = int(u.get("output_tokens") or 0)
+            prev = rec["msgs"].get(m["id"])
+            if prev and prev[M_OUT] > out:
+                continue
+            rec["msgs"][m["id"]] = [int(at.timestamp()), m.get("model") or "", u.get("speed"), u.get("inference_geo"),
+                                    u.get("service_tier"), int(u.get("input_tokens") or 0), cw - cw1, cw1,
+                                    int(u.get("cache_read_input_tokens") or 0), out, ws]
+
+
+def scan_transcripts(dirs, since, dry):
+    """Per-file cache of the transcripts' messages, read incrementally by byte offset. Messages
+    stay cached after Claude Code deletes old transcripts (cleanupPeriodDays) until they fall
+    out of the window, so the cache also holds history the files no longer have."""
+    path = os.path.join(STATE_DIR, "transcripts.json")
+    cache = load_json(path, {})
+    if cache.get("v") != TRANSCRIPT_CACHE_VERSION:
+        cache = {"v": TRANSCRIPT_CACHE_VERSION, "files": {}, "older": False}
+    files, cut = cache["files"], since.timestamp()
+    read_bytes, live = 0, set()
+    for d in dirs:
+        for dp, _, names in os.walk(d):
+            for n in names:
+                if not n.endswith(".jsonl"):
+                    continue
+                p = os.path.join(dp, n)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                if st.st_mtime < cut:
+                    cache["older"] = True  # transcripts reach back past the window
+                    continue
+                live.add(p)
+                rec = files.get(p)
+                if rec and rec["ino"] == st.st_ino and rec["offset"] == st.st_size:
+                    continue
+                if not rec or rec["ino"] != st.st_ino or rec["offset"] > st.st_size:
+                    rec = {"ino": st.st_ino, "offset": 0, "cwd": None, "msgs": {}}
+                start = rec["offset"]
+                try:
+                    read_transcript(p, rec)
+                except OSError as e:
+                    log(f"transcript {p}: {e}")
+                    continue
+                read_bytes += rec["offset"] - start
+                files[p] = rec
+    for p in list(files):  # drop what fell out of the window; keep deleted files' messages until then
+        rec = files[p]
+        rec["msgs"] = {k: v for k, v in rec["msgs"].items() if v[M_TS] >= cut}
+        if not rec["msgs"] and p not in live:
+            del files[p]
+    if not dry:
+        write_json(path, cache, compact=True)
+    return cache, read_bytes
+
+
+def load_prices():
     try:
-        with open(SCORES_JSON) as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        return None, f"{SCORES_JSON}: {e}"
-    out, prev_usd = {}, 0.0
-    for d in sorted(data.get("days", []), key=lambda d: d["day"]):
-        g = d.get("gc") or {}
-        usd, merged = float(g.get("usd") or 0), int(g.get("merged") or 0)
-        # a day the usage feed (re)started part-way reads too low: count a day only when the
-        # feed also had cost the day before
-        ok = usd > 0 and merged > 0 and prev_usd > 0
-        out[d["day"]] = {"usd": round(usd, 2), "merged": merged, "feed_restart": usd > 0 and prev_usd <= 0,
-                         "per_landed": round(usd / merged, 2) if ok else None}
-        prev_usd = usd
-    return out, f"{SCORES_JSON} (generated {data.get('generated_at', '?')})"
+        import tomllib
+    except ImportError:  # python < 3.11
+        return None, "reading the price table needs Python 3.11+ (tomllib)"
+    src = [os.path.join(PACK_DIR, "assets", "prices.toml")] + ([env("QUALITY_PRICES")] if env("QUALITY_PRICES") else [])
+    table = {"models": {}, "modifiers": {}}
+    for p in src:
+        try:
+            with open(p, "rb") as f:
+                t = tomllib.load(f)
+        except (OSError, ValueError) as e:
+            return None, f"price table {p}: {e}"
+        table["models"].update(t.get("models") or {})
+        table["modifiers"].update(t.get("modifiers") or {})
+    return table, " + ".join(src)
+
+
+def price_key(model):
+    return re.sub(r"-\d{8}$", "", re.sub(r"\[[^\]]*\]$", "", model.strip().lower()))
+
+
+RATE_KEYS = ("input", "cache_write_5m", "cache_write_1h", "cache_read", "output")
+
+
+def rates_for(model, speed, tier, geo, prices):
+    """(rates, long-context rates and threshold, geo multiplier) for one kind of message, or
+    (None, why) when it has no price."""
+    entry = prices["models"].get(price_key(model))
+    if entry is None:
+        return None, model or "unknown model"
+    rates = entry
+    if speed == "fast":
+        rates = entry.get("fast")
+        if rates is None:
+            return None, f"{model} fast"
+    mods = prices["modifiers"]
+    if tier not in (None, "") and tier not in mods.get("service_tiers", ["standard"]):
+        return None, f"{model} tier {tier}"
+    mult = 1.0
+    if geo not in (None, ""):
+        mult = (mods.get("inference_geo") or {"global": 1.0}).get(geo)
+        if mult is None:
+            return None, f"{model} geo {geo}"
+    lc = entry.get("long_context") if speed != "fast" else None
+    try:
+        main = tuple(float(rates[k]) for k in RATE_KEYS)
+        long = (float(lc["above"]), tuple(float(lc[k]) for k in RATE_KEYS)) if lc else None
+    except KeyError as e:
+        return None, f"{model}: no {e.args[0]} rate"
+    return (main, long, mult, float(mods.get("web_search_request", 0))), None
+
+
+def price_of(m, prices, memo):
+    """USD of one message, or (None, why) when its model, speed, tier or geo has no price."""
+    key = (m[M_MODEL], m[M_SPEED], m[M_TIER], m[M_GEO])
+    if key not in memo:
+        memo[key] = rates_for(*key, prices)
+    r, why = memo[key]
+    if r is None:
+        return None, why
+    rates, long, mult, ws = r
+    if long and m[M_IN] + m[M_CW5] + m[M_CW1] + m[M_CR] > long[0]:
+        rates = long[1]
+    usd = (m[M_IN] * rates[0] + m[M_CW5] * rates[1] + m[M_CW1] * rates[2] + m[M_CR] * rates[3]
+           + m[M_OUT] * rates[4]) / 1e6 * mult
+    return usd + m[M_WS] * ws, None
+
+
+def seat_of(cwd, dirs):
+    """The seat of a transcript launched in a session's work_dir or a directory below it (a
+    worktree an agent made); None for any other launch directory."""
+    if not cwd:
+        return None
+    cwd = cwd.rstrip("/")
+    best = None
+    for d in dirs:
+        if (cwd == d or cwd.startswith(d + "/")) and (best is None or len(d) > len(best)):
+            best = d
+    return dirs[best]["seat"] if best else None
+
+
+def session_of(path):
+    """A transcript's session id: its file name, or for a subagent's file its parent's."""
+    parts = path.split(os.sep)
+    return parts[-3] if len(parts) >= 3 and parts[-2] == "subagents" else os.path.basename(path)[:-6]
+
+
+def empty_cost_day():
+    return {"usd": 0.0, "messages": 0, "sessions": 0, "tokens": {k: 0 for k in TOKEN_KEYS}, "web_searches": 0,
+            "unpriced_tokens": 0, "unpriced": {}, "by_model": {}, "by_seat": {}}
+
+
+def collect_cost(state, beads, stores, start, day_list, dry):
+    """Per local day: the list-price dollars and the tokens of every assistant message in a
+    transcript this city's sessions wrote, each message counted once."""
+    dirs_cfg = transcript_dirs()
+    if not any(os.path.isdir(d) for d in dirs_cfg):
+        return None, {"source": f"no transcripts directory ({', '.join(dirs_cfg)})"}
+    prices, price_src = load_prices()
+    if prices is None:
+        return None, {"source": price_src}
+    sessions, sess_errors = collect_session_dirs(beads, stores, state)
+    if not sessions:
+        return None, {"source": "no gc session beads to tell this city's transcripts from others",
+                      "errors": sess_errors}
+    cache, read_bytes = scan_transcripts(dirs_cfg, start, dry)
+    days = {d: empty_cost_day() for d in day_list}
+    starts = [day_bounds(d)[0].timestamp() for d in day_list]
+    end = day_bounds(day_list[-1])[1].timestamp()
+    memo = {}
+    seen, skipped, dups, earliest = set(), {"files": 0, "messages": 0}, 0, None
+    day_sessions = defaultdict(set)
+    for p in sorted(cache["files"]):
+        rec = cache["files"][p]
+        msgs = rec["msgs"]
+        if msgs:
+            first = min(v[M_TS] for v in msgs.values())
+            earliest = first if earliest is None else min(earliest, first)
+        seat = seat_of(rec["cwd"], sessions)
+        if seat is None:
+            skipped["files"] += bool(msgs)
+            skipped["messages"] += len(msgs)
+            continue
+        session = session_of(p)
+        for mid, m in msgs.items():
+            if mid in seen:
+                dups += 1
+                continue
+            seen.add(mid)
+            i = bisect_right(starts, m[M_TS]) - 1
+            if i < 0 or m[M_TS] >= end:
+                continue
+            day = day_list[i]
+            d = days[day]
+            toks = {"input": m[M_IN], "cache_write": m[M_CW5] + m[M_CW1], "cache_read": m[M_CR], "output": m[M_OUT]}
+            total = sum(toks.values())
+            usd, why = price_of(m, prices, memo)
+            d["messages"] += 1
+            d["web_searches"] += m[M_WS]
+            for k, v in toks.items():
+                d["tokens"][k] += v
+            bm = d["by_model"].setdefault(m[M_MODEL] + (" (fast)" if m[M_SPEED] == "fast" else ""),
+                                          {"messages": 0, "tokens": 0, "output": 0, "usd": 0.0, "priced": True})
+            bs = d["by_seat"].setdefault(seat, {"messages": 0, "tokens": 0, "usd": 0.0, "unpriced_tokens": 0})
+            bm["messages"] += 1
+            bm["tokens"] += total
+            bm["output"] += m[M_OUT]
+            bs["messages"] += 1
+            bs["tokens"] += total
+            if usd is None:
+                d["unpriced_tokens"] += total
+                d["unpriced"][why] = d["unpriced"].get(why, 0) + total
+                bm["priced"] = False
+                bs["unpriced_tokens"] += total
+            else:
+                d["usd"] += usd
+                bm["usd"] += usd
+                bs["usd"] += usd
+            day_sessions[day].add(session)
+    # The first day the transcripts reach is only partly covered, unless they reach past the window.
+    first_day = None if cache["older"] or earliest is None else day_of(datetime.fromtimestamp(earliest, UTC))
+    out = {}
+    for day, d in days.items():
+        if first_day is not None and day <= first_day:
+            out[day] = None
+            continue
+        d["sessions"] = len(day_sessions[day])
+        d["usd"] = round(d["usd"], 2)
+        for x in list(d["by_model"].values()) + list(d["by_seat"].values()):
+            x["usd"] = round(x["usd"], 2)
+        out[day] = d
+    src = {"source": f"Claude Code transcripts in {', '.join(dirs_cfg)} of {len(sessions)} gc session dir(s)",
+           "prices": price_src, "files": sum(1 for r in cache["files"].values() if r["msgs"]),
+           "read_mb": round(read_bytes / 1e6, 1), "duplicate_messages": dups,
+           "outside_city": skipped, "partial_first_day": first_day, "errors": sess_errors}
+    return out, src
 
 
 # ---------- assembly ----------
@@ -916,6 +1205,11 @@ def build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, no
             target = rec["city"]["friction"] if rig == "city" or rig not in rec["rigs"] else rec["rigs"][rig]["friction"]
             for k, v in counts.items():
                 target[k] = target.get(k, 0) + v
+        c = rec["city"]["cost"]
+        if c is not None:  # divided by the beads this pack counts as landed that day, all rigs
+            c["landed"] = sum(r["landed"] for r in rec["rigs"].values())
+            c["per_landed"] = round(c["usd"] / c["landed"], 2) if c["landed"] else None
+            c["tokens_per_landed"] = round(sum(c["tokens"].values()) / c["landed"]) if c["landed"] else None
     return days
 
 
@@ -931,6 +1225,17 @@ def quantile(xs, q):
     lo = int(i)
     hi = min(lo + 1, len(xs) - 1)
     return round(xs[lo] + (xs[hi] - xs[lo]) * (i - lo), 2)
+
+
+def add_counts(dst, name, src):
+    """Add one day's breakdown row into a window's: numbers add up (dollars rounded), a flag
+    holds only when it holds every day."""
+    t = dst.setdefault(name, {})
+    for k, v in src.items():
+        if isinstance(v, bool):
+            t[k] = t.get(k, True) and v
+        else:
+            t[k] = round(t.get(k, 0) + v, 2) if k == "usd" else t.get(k, 0) + v
 
 
 def summarize(rig_days, city_days, follow_days, today):
@@ -953,8 +1258,17 @@ def summarize(rig_days, city_days, follow_days, today):
     for d in city_days:
         for k, v in d["city"]["friction"].items():
             friction[k] += v
-    cost_days = [d["city"]["cost"] for d in city_days if d["city"]["cost"] and d["city"]["cost"]["per_landed"] is not None]
-    usd, merged = sum(c["usd"] for c in cost_days), sum(c["merged"] for c in cost_days)
+    cost_days = [d["city"]["cost"] for d in city_days if d["city"]["cost"] is not None]
+    usd, cost_landed = sum(c["usd"] for c in cost_days), sum(c["landed"] for c in cost_days)
+    tokens = {k: sum(c["tokens"][k] for c in cost_days) for k in TOKEN_KEYS}
+    unpriced, by_model, by_seat = defaultdict(int), {}, {}
+    for c in cost_days:
+        for k, v in c["unpriced"].items():
+            unpriced[k] += v
+        for name, x in c["by_model"].items():
+            add_counts(by_model, name, x)
+        for name, x in c["by_seat"].items():
+            add_counts(by_seat, name, x)
     return {
         "landed": s["landed"],
         "bounce_rate": pct(s["bounced"], s["landed"]), "bounced": s["bounced"], "bounces": s["bounces"],
@@ -969,8 +1283,14 @@ def summarize(rig_days, city_days, follow_days, today):
         "human": {"open_now": last["open_eod"], "past_due_now": last["past_due_eod"], "answered": len(ans),
                   "answer_median_h": quantile(ans, 0.5), "answer_p90_h": quantile(ans, 0.9)},
         "friction_total": sum(friction.values()), "friction": dict(sorted(friction.items(), key=lambda x: -x[1])),
-        "cost_per_landed": round(usd / merged, 2) if merged else None, "cost_days": len(cost_days),
-        "cost_usd": round(usd, 2), "cost_merged": merged,
+        "cost_per_landed": round(usd / cost_landed, 2) if cost_landed else None, "cost_days": len(cost_days),
+        "cost_usd": round(usd, 2), "cost_landed": cost_landed, "cost_tokens": tokens,
+        "tokens_per_landed": round(sum(tokens.values()) / cost_landed) if cost_landed else None,
+        "output_per_landed": round(tokens["output"] / cost_landed) if cost_landed else None,
+        "cost_messages": sum(c["messages"] for c in cost_days),
+        "cost_unpriced_tokens": sum(unpriced.values()), "cost_unpriced": dict(unpriced),
+        "cost_by_model": dict(sorted(by_model.items(), key=lambda x: -x[1]["tokens"])),
+        "cost_by_seat": dict(sorted(by_seat.items(), key=lambda x: (-x[1]["usd"], -x[1]["tokens"]))),
     }
 
 
@@ -993,8 +1313,9 @@ def series_value(d, city, metric):
         return d["human"]["past_due_eod"]
     if metric == "friction":
         return sum(d["friction"].values()) + (sum(city["friction"].values()) if city is not None else 0)
-    if metric == "cost_per_landed":
-        return (city["cost"] or {}).get("per_landed") if city is not None else None
+    if metric in ("cost_per_landed", "tokens_per_landed", "cost_usd"):
+        c = (city or {}).get("cost") or {}
+        return c.get({"cost_per_landed": "per_landed", "cost_usd": "usd"}.get(metric, metric))
     if metric == "landed":
         return d["landed"]
     return None
@@ -1002,7 +1323,7 @@ def series_value(d, city, metric):
 
 SERIES = ("landed", "bounce_rate", "post_merge_failure_rate", "fix_of_a_fix_rate", "first_pass_ci_rate",
           "claimed_merged_median_h", "created_merged_median_h", "human_open_eod", "human_past_due_eod",
-          "friction", "cost_per_landed")
+          "friction", "cost_per_landed", "tokens_per_landed", "cost_usd")
 
 
 def merge_rig_days(days_list):
@@ -1056,11 +1377,14 @@ def build_quality(days, day_list, rigs, sources, now):
 
 # ---------- output ----------
 
-def write_json(path, data):
+def write_json(path, data, compact=False):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(data, f, indent=1, sort_keys=False, default=str)
+        if compact:
+            json.dump(data, f, separators=(",", ":"), default=str)
+        else:
+            json.dump(data, f, indent=1, sort_keys=False, default=str)
         f.write("\n")
     os.replace(tmp, path)
 
@@ -1103,7 +1427,9 @@ def print_summary(q):
                   f"{fmt(m['time_to_land']['claimed_merged']['median']):>7} {fmt(m['time_to_land']['claimed_merged']['p90']):>7} "
                   f"{m['human']['open_now']:>5} {m['human']['past_due_now']:>5} {m['friction_total']:>6}")
     c = w28["all"]
-    print(f"cost per landed bead ({DAYS}d, city): {fmt(c['cost_per_landed'], ' $')} over {c['cost_days']} day(s) with cost data")
+    print(f"cost per landed bead ({DAYS}d, city): {fmt(c['cost_per_landed'], ' $')} = ${c['cost_usd']} / {c['cost_landed']} "
+          f"landed over {c['cost_days']} day(s) with transcripts; {fmt(c['tokens_per_landed'])} tokens per landed bead"
+          + (f"; {c['cost_unpriced_tokens']} tokens unpriced ({', '.join(c['cost_unpriced'])})" if c["cost_unpriced_tokens"] else ""))
     for k, v in q["sources"].items():
         print(f"source {k}: {json.dumps(v, default=str)[:300]}")
 
@@ -1134,25 +1460,64 @@ def explain(bead_id, landed_all, beads, clock, rigs):
     return 0 if b else 1
 
 
+def explain_cost(day, state, beads, stores, start):
+    """One day's messages from this city's transcripts, per seat, session file and model, with
+    each message counted once: the numbers a hand check sums from the raw files."""
+    prices, price_src = load_prices()
+    sessions, _ = collect_session_dirs(beads, stores, state)
+    if prices is None or not sessions:
+        print(price_src if prices is None else "no gc session beads", file=sys.stderr)
+        return 1
+    cache, _ = scan_transcripts(transcript_dirs(), start, True)
+    seen, memo, rows = set(), {}, defaultdict(lambda: {"messages": 0, "input": 0, "cache_write_5m": 0, "cache_write_1h": 0,
+                                             "cache_read": 0, "output": 0, "web_searches": 0, "usd": 0.0,
+                                             "unpriced": None})
+    for p in sorted(cache["files"]):
+        rec = cache["files"][p]
+        seat = seat_of(rec["cwd"], sessions)
+        for mid, m in rec["msgs"].items():
+            if seat is None or mid in seen or day_of(datetime.fromtimestamp(m[M_TS], UTC)) != day:
+                continue
+            seen.add(mid)
+            r = rows[(seat, p, m[M_MODEL] + (" (fast)" if m[M_SPEED] == "fast" else ""))]
+            usd, why = price_of(m, prices, memo)
+            r["messages"] += 1
+            for k, i in (("input", M_IN), ("cache_write_5m", M_CW5), ("cache_write_1h", M_CW1), ("cache_read", M_CR),
+                         ("output", M_OUT), ("web_searches", M_WS)):
+                r[k] += m[i]
+            if usd is None:
+                r["unpriced"] = why
+            else:
+                r["usd"] += usd
+    out = [{"seat": k[0], "transcript": k[1], "cwd": cache["files"][k[1]]["cwd"], "model": k[2],
+            **{x: (round(y, 4) if x == "usd" else y) for x, y in v.items()}} for k, v in sorted(rows.items())]
+    print(json.dumps({"day": day, "timezone": LOCAL_NAME, "prices": price_src, "rows": out,
+                      "usd": round(sum(r["usd"] for r in out), 2), "messages": sum(r["messages"] for r in out)}, indent=1))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true", help="compute and print a summary; write nothing")
     ap.add_argument("--bead", help="print how one landed bead was counted and exit")
+    ap.add_argument("--cost", metavar="DAY", help="print one local day's cost per seat, session and model and exit")
     ap.add_argument("--days", type=int, default=DAYS, help=f"window in local days (default {DAYS})")
     ap.add_argument("--no-gh", action="store_true", help="skip GitHub (first-pass CI and PR-opened times)")
     args = ap.parse_args()
     if not CITY:
         sys.exit("quality: no city (set GC_CITY_PATH or run inside a city)")
-    dry = args.dry_run or bool(args.bead)
+    dry = args.dry_run or bool(args.bead) or bool(args.cost)
     now = datetime.now(UTC)
     day_list = [day_of(now - timedelta(days=i)) for i in range(args.days - 1, -1, -1)]
     start = day_bounds(day_list[0])[0]
     state_path = os.path.join(STATE_DIR, "state.json")
     state = load_json(state_path, {})
 
-    rigs = discover_rigs()
+    rigs, hq = discover_rigs()
     log(f"{len(rigs)} rig(s): {', '.join(r.name for r in rigs)}")
     beads = Beads()
+    if args.cost:
+        return explain_cost(args.cost, state, beads, hq or rigs, start)
     clock = EventClock(beads, rigs, start)
     log(f"beads via {beads.mode}; events.created_at timeline: {clock.note()}")
 
@@ -1193,7 +1558,8 @@ def main():
         return explain(args.bead, landed_all, beads, clock, rigs)
 
     friction, friction_src = collect_friction(state, rigs, start)
-    cost, cost_src = collect_cost()
+    cost, cost_src = collect_cost(state, beads, hq or rigs, start, day_list, dry)
+    log(f"cost: {cost_src.get('read_mb', 0)} MB of transcripts read, {cost_src.get('files', 0)} file(s) in the window")
     days = build_days(day_list, rigs, landed_all, prs_by_rig, gates, friction, cost, now)
     sources = {"beads": beads.mode, "events_tz": clock.note(), "events_clock": clock.detail(), "github": gh_sources,
                "event_log": friction_src, "cost": cost_src, "errors": errors, "runtime_s": None}

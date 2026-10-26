@@ -1,0 +1,173 @@
+# Token prices for "cost per landed bead", in USD per million tokens (MTok).
+# Source: https://platform.claude.com/docs/en/about-claude/pricing, read 2026-10-26 (Claude API,
+# first party). These are list prices: a city on a subscription pays a flat fee instead, so the
+# page shows tokens next to dollars.
+#
+# A city overrides or extends this table with its own file in the same shape, named by
+# QUALITY_PRICES: each [models."<id>"] there replaces the entry here as a whole, and each key of
+# [modifiers] replaces the one here.
+#
+# A message is priced by the exact model id its transcript records (a trailing -YYYYMMDD date is
+# dropped first). There is no prefix matching: "claude-opus-5" does not price "claude-opus-5-5".
+# A model, speed or service tier without an entry is shown as unpriced tokens, never as $0.
+#
+# Rates per entry: input, cache_write_5m, cache_write_1h, cache_read, output.
+#   fast          rates when the transcript says usage.speed = "fast" (caching multipliers are
+#                 already applied in the numbers below)
+#   long_context  rates for a request whose prompt (input + cache reads + cache writes) is over
+#                 `above` tokens
+
+[modifiers]
+# usage.inference_geo: US-only inference costs 1.1x on Claude 4.6 and later; global is the default.
+# "not_available" is what the API reported before it reported a geo (in the city this was built in,
+# every message until 2026-10-09, then "global" from the same sessions): read as the default.
+# A message whose geo is not listed here is unpriced.
+inference_geo = { global = 1.0, not_available = 1.0, us = 1.1 }
+# usage.server_tool_use.web_search_requests: $10 per 1,000 searches, on top of tokens.
+web_search_request = 0.01
+# usage.service_tier values priced at these rates; any other tier is unpriced.
+service_tiers = ["standard"]
+
+[models."claude-fable-5-1"]
+input = 10.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 0.25
+output = 50.0
+
+[models."claude-mythos-5-1"]
+input = 10.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 0.25
+output = 50.0
+
+[models."claude-fable-5"]
+input = 10.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 1.0
+output = 50.0
+
+[models."claude-mythos-5"]
+input = 10.0
+cache_write_5m = 12.5
+cache_write_1h = 20.0
+cache_read = 1.0
+output = 50.0
+
+[models."claude-opus-5-5"]
+input = 4.0
+cache_write_5m = 5.0
+cache_write_1h = 8.0
+cache_read = 0.20
+output = 20.0
+fast = { input = 8.0, cache_write_5m = 10.0, cache_write_1h = 16.0, cache_read = 0.40, output = 40.0 }
+
+[models."claude-opus-5"]
+input = 5.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.50
+output = 25.0
+fast = { input = 10.0, cache_write_5m = 12.5, cache_write_1h = 20.0, cache_read = 1.0, output = 50.0 }
+
+[models."claude-opus-4-8"]
+input = 5.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.50
+output = 25.0
+fast = { input = 10.0, cache_write_5m = 12.5, cache_write_1h = 20.0, cache_read = 1.0, output = 50.0 }
+
+[models."claude-opus-4-7"]
+input = 5.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.50
+output = 25.0
+
+[models."claude-opus-4-6"]
+input = 5.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.50
+output = 25.0
+
+[models."claude-opus-4-5"]
+input = 5.0
+cache_write_5m = 6.25
+cache_write_1h = 10.0
+cache_read = 0.50
+output = 25.0
+
+[models."claude-opus-4-1"]
+input = 15.0
+cache_write_5m = 18.75
+cache_write_1h = 30.0
+cache_read = 1.50
+output = 75.0
+
+[models."claude-opus-4"]
+input = 15.0
+cache_write_5m = 18.75
+cache_write_1h = 30.0
+cache_read = 1.50
+output = 75.0
+
+[models."claude-sonnet-5-5"]
+input = 2.0
+cache_write_5m = 2.5
+cache_write_1h = 4.0
+cache_read = 0.10
+output = 10.0
+
+[models."claude-sonnet-5"]
+input = 2.0
+cache_write_5m = 2.5
+cache_write_1h = 4.0
+cache_read = 0.20
+output = 10.0
+
+[models."claude-sonnet-4-6"]
+input = 3.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.30
+output = 15.0
+
+[models."claude-sonnet-4-5"]
+input = 3.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.30
+output = 15.0
+
+[models."claude-sonnet-4"]
+input = 3.0
+cache_write_5m = 3.75
+cache_write_1h = 6.0
+cache_read = 0.30
+output = 15.0
+
+[models."claude-haiku-5-5"]
+input = 0.10
+cache_write_5m = 0.125
+cache_write_1h = 0.20
+cache_read = 0.01
+output = 0.50
+long_context = { above = 100000, input = 0.50, cache_write_5m = 0.625, cache_write_1h = 1.0, cache_read = 0.05, output = 2.50 }
+
+[models."claude-haiku-4-5"]
+input = 1.0
+cache_write_5m = 1.25
+cache_write_1h = 2.0
+cache_read = 0.10
+output = 5.0
+
+[models."claude-haiku-3-5"]
+input = 0.80
+cache_write_5m = 1.0
+cache_write_1h = 1.60
+cache_read = 0.08
+output = 4.0

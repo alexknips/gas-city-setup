@@ -3,7 +3,8 @@
 A Gas City pack with one exec order, `quality-metrics`, that measures per rig and per local day
 whether work lands first time, holds after merge and how long it takes. It writes a per-day JSON
 history and a static page you can put next to any dashboard. Configuration only: no agents, no
-formulas, no changes to `gc` or `bd`.
+formulas, no changes to `gc` or `bd`. No API keys: cost comes from the transcripts the agents
+already write, priced from a table in the pack (`assets/prices.toml`).
 
 | Metric | One line |
 |---|---|
@@ -13,7 +14,7 @@ formulas, no changes to `gc` or `bd`.
 | First-pass CI | merged PRs whose first head passed every required check |
 | Time to land | created → claimed → PR opened → merged → verified, median and p90 |
 | Human wait | human-gate beads open, past due, and how long answered ones stayed open |
-| Cost per landed bead | dollars per merged bead, reused from an existing `scores.json` |
+| Cost per landed bead | list-price dollars (and tokens) of the agents' model calls per landed bead, from their transcripts |
 | Machine friction | stalls the city already logs (order failures, stalled sessions, ...) |
 
 ## Use it in a city
@@ -35,7 +36,7 @@ formulas, no changes to `gc` or `bd`.
    [orders.overrides.env]
    QUALITY_OUT_DIR = "/srv/dashboard/quality"     # where the page and the JSON go
    QUALITY_HUMAN_PREFIXES = "HUMAN:,ALEX:"        # title prefixes of human-gate beads
-   QUALITY_SCORES_JSON = "/srv/dashboard/scores.json"
+   QUALITY_PRICES = "/srv/city/prices.toml"        # your own token prices, merged over the pack's
    ```
 
 3. `gc import install` (fetches the pinned pack and records it in `packs.lock`), `gc reload`, then `gc order list` shows `quality-metrics` and `gc order run quality-metrics`
@@ -44,7 +45,8 @@ formulas, no changes to `gc` or `bd`.
 
 To see the numbers without writing anything: `$PACK_DIR/assets/scripts/quality-metrics.sh --dry-run`
 (the path is in `gc order show quality-metrics`). To see how one bead was counted:
-`... --bead <id>`.
+`... --bead <id>`. To see one day's cost per seat, transcript and model: `... --cost <YYYY-MM-DD>`
+(reads the transcript cache the order keeps; without it, all transcripts in the window).
 
 ## Settings
 
@@ -71,7 +73,8 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 | `QUALITY_HUMAN_PREFIXES` | `HUMAN:` | title prefixes of human-gate beads |
 | `QUALITY_HUMAN_DUE_KEY` | `human.due` | metadata key with a gate's due time (also marks a gate) |
 | `QUALITY_FRICTION_EVENTS` | six event types, see below | city event types counted as friction |
-| `QUALITY_SCORES_JSON` | unset | a `scores.json` with `days[].gc.usd` and `days[].gc.merged` |
+| `QUALITY_TRANSCRIPTS` | `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` | comma list of Claude Code transcript directories the agents write to |
+| `QUALITY_PRICES` | unset | a TOML price table in the shape of `assets/prices.toml`; its models replace the pack's one by one |
 | `QUALITY_POST_RENDER` | unset | shell command run after the page is written; `{page}` and `{out}` are substituted |
 | `QUALITY_TZ` | host zone | zone of the day buckets |
 | `QUALITY_EVENTS_TZ` | read per event from a timeline | one zone for every `events.created_at`, skipping the timeline (see the time trap below) |
@@ -82,14 +85,18 @@ sets or changes any of them with `[[orders.overrides]]` + `[orders.overrides.env
 `quality-metrics.sh` checks the load gate, then runs `quality.py` under `nice -n 10` and `ionice -c 3`.
 `quality.py` makes one `gc rig list --json` call, then reads each rig's beads with plain SQL on the
 city's Dolt server (`pymysql`; without it, `bd sql --json` per query), plus `dolt_log` around the
-few events whose zone the timeline leaves open (see the time trap). It reads GitHub with `gh`, the
-city event log incrementally from a byte offset, and the optional `scores.json`. Every run recomputes
-the whole window, so late signals (a reopen, a bug filed a week later) land on the right day.
+few events whose zone the timeline leaves open (see the time trap). It reads GitHub with `gh`, and
+the city event log and the agents' transcripts incrementally from a byte offset. Every run
+recomputes the whole window, so late signals (a reopen, a bug filed a week later) land on the right day.
 
 Measured in the city it was built in (8 rigs, 263 landed beads and 229 merged PRs in 28 days): the first
 run took 146 s, almost all of it 252 `gh` calls to backfill the PRs (442 s for the live first
 run at load 11.6); a daily run takes about 13-20 s wall and 4 s CPU, 17 `gh` calls. A merged PR's
-verdict never changes, so it is cached for good.
+verdict never changes, so it is cached for good. The transcripts are the other cold cost: the
+first run reads every transcript of the window, here 3.7 GB in 4,516 files, in 80-98 s wall and
+51-54 s CPU at load 13-19. After that a run reads only what was appended and the cost part takes
+4-7 s wall, about 3 s CPU, mostly loading and writing its 17 MB cache
+(`$QUALITY_STATE_DIR/transcripts.json`); a whole cached run took 14-16 s wall, 6-8 s CPU.
 
 ### When it runs
 
@@ -116,7 +123,8 @@ cron also has no ranges: `6-23` never matches (1.5.1 has them).
 Output (`QUALITY_OUT_DIR`):
 
 - `history/<day>.json`: one file per local day: per rig the counts, every landed bead with how it
-  was counted, the PRs merged that day, human gates and friction; city-level cost and friction.
+  was counted, the PRs merged that day, human gates and friction; city-level friction and cost
+  (dollars, tokens by kind, unpriced tokens, and the same per model and per seat).
 - `quality.json`: 7-day and 28-day windows per rig and for all rigs, daily series, sources.
 - `index.html`: the page. It reads `quality.json` and says "no data" (and why) where a source has none.
 
@@ -191,11 +199,50 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
 
 ### Cost per landed bead
 
-- **Definition**: city-wide dollars / merged beads over the days with cost data.
-- **Source**: `QUALITY_SCORES_JSON` (`days[].gc.usd`, `days[].gc.merged`), reused, not recomputed.
-- **Blind spots**: city-level only. A day counts only when the usage feed also had cost on the day
-  before, so a day on which the feed restarted part-way is left out; a day on which it stopped part-way
-  still reads too low.
+- **Definition**: per local day, the list-price dollars of every model call the city's agents
+  made / the beads this pack counts as landed that day (all rigs). The window value divides the
+  dollars of every covered day by the beads landed on those days. Tokens per landed bead (all four
+  kinds, and output alone) are shown next to it: on a subscription the dollars are what the same
+  calls would cost on the Claude API, not what the city pays.
+- **Source**: the agents' Claude Code transcripts (`QUALITY_TRANSCRIPTS`). Each assistant line
+  carries its message's `usage`: uncached input, cache writes split into 5-minute and 1-hour,
+  cache reads, output, `speed`, `inference_geo`, `service_tier` and web searches.
+  - **Which transcripts**: those whose launch directory (the first `cwd` in the file) is the
+    `work_dir` of a gc session bead, or a directory below one (a worktree an agent made). Session
+    beads are read from `issues` and, for gc 1.5 and later, `wisps`; every dir seen is kept in
+    the state, because wisps can be purged. A seat is the session bead's `template`. Subagent
+    transcripts (`<session>/subagents/*.jsonl`) count with their session.
+  - **Each message once**: Claude Code writes one line per content block, so an id repeats; older
+    versions wrote a partial output count on the earlier lines, so the line with the largest
+    output count is kept. An id seen in two files counts once. A message belongs to the local day
+    of that line's timestamp.
+  - **Prices** (`assets/prices.toml`, from the Claude API pricing page, read 2026-10-26): per
+    model, uncached input, 5-minute and 1-hour cache writes, cache reads and output, with the fast
+    mode and long-prompt rates where a model has them, US-only inference at 1.1x and web search at
+    $10 per 1,000. The model id must match exactly (a trailing date is dropped first): there is
+    no prefix matching, which once priced claude-opus-5-5 as claude-opus-5's $15/$75 elsewhere in
+    this town. A model, speed, tier or geo without a price is counted as unpriced tokens and shown
+    by name; it is never priced at $0.
+  - **Days covered**: a day counts when the transcripts reach back past it. If the oldest message
+    the pack has seen falls inside the window, that day and the days before it show no data. The
+    cache keeps every message until it leaves the window, so transcripts Claude Code deletes later
+    (`cleanupPeriodDays`, 30 by default) still count.
+- **Blind spots**:
+  - A lower bound. Claude Code's side calls (WebFetch summaries, compaction, session titles)
+    write no usage to the transcript: all 8,883 requests the transcripts logged from 10-24 on were
+    main-thread calls.
+  - Only Claude Code is read; sessions of another provider (gc's `provider`) are not counted.
+  - A `claude` an agent starts outside its work_dir (in a `/tmp` scratch dir) is not counted, and
+    nor is a session a person starts by hand, even in the city root to repair the city. Here 3,321
+    messages in 104 transcripts of the 28 days were left out: other projects on the host (a
+    second city, the dashboard repo, tools) 2,671; a person's sessions in the city root and a
+    worktree made from one 530; runs in `/tmp`, 101 of them in agents' scratch dirs, 120 (0.1% of
+    the city's 126,777).
+  - City-level only: the dogs, the deacon, the mayor and the witnesses work for every rig, so cost
+    is not split per rig. The page shows it per seat instead.
+  - With `QUALITY_RIGS` set, the dollars are still the whole city's, but only those rigs' beads
+    are counted as landed.
+  - List prices, not a bill: batch discounts, credits and negotiated rates are not known.
 
 ### Machine friction
 
@@ -237,6 +284,10 @@ belongs to the local day of its `closed_at`. Rates are shares of the beads that 
   anchors of one zone go unseen. Where Dolt history was squashed, the gap around a switch has no
   commits to match, and its events are guessed.
 - `metadata` is a JSON column: read it with `CAST(metadata AS CHAR)`; `LEFT()` on it fails in Dolt.
+- gc's own usage log (`.gc/usage.jsonl`) is not a cost source: it covers a gc session completely or
+  not at all (measured on 10-25: 2,985 of the 7,787 transcript messages since 10-24 00:00Z, missing
+  most dog sessions and every crew session), it was empty from 10-04 to 10-18 under gc 1.4.1, and gc 1.5.1 prices only
+  claude-opus-5-5, with every cache write at the 5-minute rate.
 - Every `gc` CLI call costs seconds of CPU, so the pack calls `gc` once and reads Dolt directly.
 
 ## Spot checks
@@ -272,5 +323,10 @@ the city it was built in. The cases:
 | Event time | hivemind-14zub (10-24, CEST) | events +2 h: bounce 20:14:50Z, merged 20:32:13Z, verified 21:14:44Z | same, by timeline |
 | Human wait | end of 10-23 | open gc-xroei (past due since 10-20) and gc-14ghu (due 10-25); gc-7ltuf answered after 13.7 h | 2 open, 1 past due, 13.7 h |
 | Human wait | end of 10-24, end of 10-20 | 1 open / 1 past due, gc-14ghu 27.8 h; 2 open / 1 past due, gc-c0z9g 25.0 h | same |
-| Cost | 09-28..10-03 | $335.69 / 82 merged = $4.09; 10-19 and 10-23 follow empty days (feed restarts) | $4.09, both left out |
+| Cost, day | 10-03 (CEST) | independent recount (grep, jq, awk with typed-in rates, every line whose own `cwd` is under the city's `.gc/`): 12,414 messages, $695.85; the 2 extra messages straddle midnight (lines 21:59:57Z, final line 22:00:04Z) and count on 10-04 | 12,412 messages, $695.68 |
+| Cost, day | 10-25 (25 h, DST ends) | same recount, 22:00Z to 23:00Z next day: 5,522 messages, $352.47; 7 messages ($0.21) are a person's session launched in the city root that later `cd`ed into a worktree | 5,515 messages, $352.26 |
+| Cost, session | cv-crew `a3f0bec6`, 10-25 | 5 Opus 5.5 messages (10 lines): input 10, 1-hour cache writes 29,957, cache reads 255,935, output 2,106 = $0.3330 | $0.3330 |
+| Cost, session | gas-city-setup polecat `f6e9fe55`, 10-25 | 6 Sonnet 5.5 messages (11 lines): input 12, 1-hour writes 14,808, reads 330,733, output 1,380 = $0.1061 | $0.1061 |
+| Cost, tokens | gc's `.gc/usage.jsonl` | its 5,337 records with a transcript message (by `upstream_req_id`) have identical tokens; its 2,363 priced Opus 5.5 records total $155.16, equal to the pack's price with every cache write at the 5-minute rate (gc ignores the 1-hour split) | same tokens; $196.79 with 1-hour writes at $8 |
+| Cost, geo | `inference_geo` per day | every message says `not_available` until 10-09 and `global` from then on, from the same sessions; none says `us` | `not_available` priced as global |
 | Friction | 10-20, 10-18, 10-22 | grep of the log: 12 mol-dog-compactor failures; 11 skipped ticks; 1 stalled reset in hivemind-ui; 1 dead-session reopen (hivemind-otruj) | 12, 11, 1, 1 (hivemind) |

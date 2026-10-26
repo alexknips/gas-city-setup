@@ -115,6 +115,15 @@
     </section>
   </div>
 
+  <section class="card" style="margin-top:16px" id="cost-card">
+    <h2>Cost, all rigs, <span id="cost-window"></span></h2>
+    <div class="grid2" style="margin-top:0">
+      <div class="scroll"><table id="cost-models"></table></div>
+      <div class="scroll"><table id="cost-seats"></table></div>
+    </div>
+    <p class="note" id="cost-note"></p>
+  </section>
+
   <section class="card" style="margin-top:16px">
     <h2>Landed beads, <span class="selname"></span></h2>
     <div class="scroll"><table id="beads"></table></div>
@@ -175,9 +184,9 @@ const DEFS = [
   ["Human wait", "Human-gate beads open at the end of each day, how many of those are past their due time, and how long answered gates stayed open.",
    "Beads whose title starts with QUALITY_HUMAN_PREFIXES or whose metadata has QUALITY_HUMAN_DUE_KEY (default human.due).",
    "Work blocked behind a gate is not linked to it in the bead graph, so the time other beads wait on a person is not measured, only the gate's own open time."],
-  ["Cost per landed bead", "Dollars per merged bead, city-wide, read from the existing scores.json (not recomputed).",
-   "QUALITY_SCORES_JSON: days[].gc.usd and days[].gc.merged.",
-   "City-level only. A day counts only when the usage feed also has cost on the day before, so a day on which the feed restarted part-way is left out; a day on which it stopped part-way still reads too low."],
+  ["Cost per landed bead", "List-price dollars of every model call the city's agents made, divided by the beads that landed (all rigs), over the days the transcripts cover. Tokens per landed bead next to it: on a subscription the dollars are what the same calls would cost on the API, not a bill.",
+   "The agents' Claude Code transcripts (one line per assistant message with its token usage), kept when the transcript was started in a gc session's work_dir or below it, each message counted once by its id; priced per model, speed and cache duration from the pack's price table (a city can override it).",
+   "Lower bound: Claude Code's side calls (WebFetch summaries, compaction, titles) leave no usage in the transcripts, and agents of other providers are not read. A model without a price is shown as unpriced tokens, not $0. City-level only. Sessions a person starts by hand outside the agents' directories are not counted."],
   ["Machine friction", "Stalls the town already logs, per day: order failures, stalled-session resets, cold-start timeouts, dead-assignee reopens, skipped supervisor ticks and gate-caused bounces.",
    "The city event log ($GC_CITY_PATH/.gc/events.jsonl and rotated archives), read incrementally.",
    "Counts events, not their cost. Events without a rig (most order failures) are city-level and appear under All rigs. Wake orders (a nudge to an idle seat) are not counted: gc keeps no record of delivered nudges, and a fired order only means it ran."],
@@ -191,6 +200,14 @@ function fmtH(v) {
   return (Math.round(v / 24 * 10) / 10) + " d";
 }
 function fmtUsd(v) { return v == null ? null : "$" + v.toFixed(2); }
+function fmtTok(v) {
+  if (v == null) return null;
+  if (v >= 1e9) return (Math.round(v / 1e8) / 10) + "G";
+  if (v >= 1e6) return (Math.round(v / 1e5) / 10) + "M";
+  if (v >= 1e3) return Math.round(v / 1e3) + "k";
+  return String(v);
+}
+function costSrc() { return (Q.sources && Q.sources.cost) || {}; }
 function nd(text) { return el("span", { class: "nd", text: text || "no data" }); }
 function cellVal(v, f) { const s = f(v); return s == null ? nd() : document.createTextNode(s); }
 
@@ -241,13 +258,14 @@ function tileDefs() {
     sub: `${m.human.past_due_now} past due at the latest day end; ${m.human.answered} answered in the window` + (m.human.answered ? `, median ${fmtH(m.human.answer_median_h)} open` : ""),
     fmt: (v) => v == null ? null : String(v) });
   if (rig === "all") {
+    const unpriced = m.cost_unpriced_tokens ? `; plus ${fmtTok(m.cost_unpriced_tokens)} tokens with no price (${Object.keys(m.cost_unpriced).join(", ")}), not counted` : "";
     t.push({ key: "cost_per_landed", label: "Cost per landed bead", value: fmtUsd(m.cost_per_landed),
-      nodata: m.cost_days ? null : (Q.sources.cost && Q.sources.cost.indexOf("not set") >= 0 ? "no cost source configured" : "no cost data in the window"),
-      sub: m.cost_days ? `$${m.cost_usd} over ${m.cost_merged} merged beads on ${m.cost_days} of ${days} days with a continuous usage feed (city-wide)` : "the usage feed behind scores.json has no complete days in this window",
+      nodata: m.cost_days ? (m.cost_landed ? null : "no landed beads") : (costSrc().source && !costSrc().files ? costSrc().source : "no transcripts cover this window"),
+      sub: m.cost_days ? `$${m.cost_usd.toFixed(2)} at API list price over ${m.cost_landed} landed beads, ${m.cost_days} of ${days} days; ${fmtTok(m.tokens_per_landed) || "no data"} tokens (${fmtTok(m.output_per_landed) || "no data"} output) per landed bead${unpriced}` : "",
       fmt: fmtUsd });
   } else {
     t.push({ key: "cost_per_landed", label: "Cost per landed bead", value: null, nodata: "city-level only: choose All rigs",
-      sub: "scores.json prices tokens per day for the whole city, not per rig", fmt: fmtUsd, noSeries: true });
+      sub: "dogs, the mayor and the witnesses work for every rig, so cost is not split per rig", fmt: fmtUsd, noSeries: true });
   }
   t.push({ key: "friction", label: "Machine friction", value: String(m.friction_total),
     nodata: null, sub: `logged stalls in ${sel}` + (rig === "all" ? ", city-level ones included" : ", rig-attributed only"),
@@ -404,13 +422,42 @@ function renderBeads() {
   tbl.append(body);
 }
 
+function renderCost() {
+  const m = Q.windows[win].all;
+  $("cost-window").textContent = "last " + win + " days";
+  const models = $("cost-models"), seats = $("cost-seats");
+  models.replaceChildren(el("thead", {}, el("tr", {}, ...["Model", "Messages", "Tokens", "Output", "List price"].map((h, i) => el("th", { text: h, class: i ? "" : "l" })))));
+  seats.replaceChildren(el("thead", {}, el("tr", {}, ...["Seat", "Messages", "Tokens", "List price"].map((h, i) => el("th", { text: h, class: i ? "" : "l" })))));
+  const mb = el("tbody"), sb = el("tbody");
+  for (const [name, x] of Object.entries(m.cost_by_model || {})) {
+    mb.append(el("tr", {}, el("td", { class: "l", text: name }), el("td", { text: String(x.messages) }), el("td", { text: fmtTok(x.tokens) }),
+      el("td", { text: fmtTok(x.output) }), el("td", {}, x.priced ? document.createTextNode(fmtUsd(x.usd)) : nd("no price"))));
+  }
+  const seatList = Object.entries(m.cost_by_seat || {});
+  for (const [name, x] of seatList.slice(0, 12)) {
+    sb.append(el("tr", {}, el("td", { class: "l", text: name }), el("td", { text: String(x.messages) }), el("td", { text: fmtTok(x.tokens) }),
+      el("td", { text: fmtUsd(x.usd) + (x.unpriced_tokens ? " + unpriced" : "") })));
+  }
+  if (seatList.length > 12) {
+    const rest = seatList.slice(12).reduce((a, [, x]) => ({ messages: a.messages + x.messages, tokens: a.tokens + x.tokens, usd: a.usd + x.usd }), { messages: 0, tokens: 0, usd: 0 });
+    sb.append(el("tr", {}, el("td", { class: "l nd", text: (seatList.length - 12) + " more seats" }), el("td", { text: String(rest.messages) }), el("td", { text: fmtTok(rest.tokens) }), el("td", { text: fmtUsd(rest.usd) })));
+  }
+  if (!m.cost_days) {
+    mb.append(el("tr", {}, el("td", { colspan: "5" }, nd(costSrc().source || "no cost data"))));
+  }
+  models.append(mb); seats.append(sb);
+  const t = m.cost_tokens || {};
+  $("cost-note").textContent = m.cost_days ? `${m.cost_messages} model calls on ${m.cost_days} days. Tokens: ${fmtTok(t.cache_read)} cache reads, ${fmtTok(t.cache_write)} cache writes, ${fmtTok(t.input)} uncached input, ${fmtTok(t.output)} output. ` +
+    "A seat is the session template that ran the calls (all polecat slots of a rig are one seat). List price = what the calls would cost on the Claude API; the town may pay a subscription instead." : "";
+}
+
 function renderDaily() {
   const s = Q.series[rig];
   const cols = [["landed", "Landed", (v) => v == null ? null : String(v)], ["bounce_rate", "Bounce", fmtPct], ["post_merge_failure_rate", "Post-merge fail", fmtPct],
     ["fix_of_a_fix_rate", "Fix-of-a-fix", fmtPct], ["first_pass_ci_rate", "First-pass CI", fmtPct], ["claimed_merged_median_h", "Claimed→merged", fmtH],
     ["human_open_eod", "Gates open", (v) => v == null ? null : String(v)], ["human_past_due_eod", "Past due", (v) => v == null ? null : String(v)],
     ["friction", "Friction", (v) => v == null ? null : String(v)]];
-  if (rig === "all") cols.push(["cost_per_landed", "$/landed", fmtUsd]);
+  if (rig === "all") cols.push(["cost_usd", "Cost", fmtUsd], ["cost_per_landed", "$/landed", fmtUsd], ["tokens_per_landed", "Tokens/landed", fmtTok]);
   const tbl = $("daily");
   tbl.replaceChildren(el("thead", {}, el("tr", {}, el("th", { text: "Day" }), ...cols.map((c) => el("th", { text: c[1] })))));
   const body = el("tbody");
@@ -429,9 +476,10 @@ function renderDefs() {
       el("dd", {}, el("span", { class: "k", text: "Source: " }), document.createTextNode(src)),
       el("dd", {}, el("span", { class: "k", text: "Blind spots: " }), document.createTextNode(blind)));
   }
-  const s = Q.sources;
+  const s = Q.sources, c = costSrc();
+  const cost = c.files ? `${c.source}, ${c.files} transcript file(s); prices ${c.prices}; ${c.outside_city ? c.outside_city.messages + " message(s) in " + c.outside_city.files + " transcript(s) started outside the city's session dirs left out" : ""}` : (c.source || "none");
   const gh = Q.rigs.map((r) => r.name + ": " + (r.github && r.github.repo ? r.github.repo + (r.github.required_source ? " (required checks: " + r.github.required_source + ")" : "") + (r.github.error ? " error" : "") : "no GitHub")).join("; ");
-  $("sources").textContent = `Beads read via ${s.beads}; event times read as ${s.events_tz}. GitHub: ${gh}. Event log: ${s.event_log || "none"}. Cost: ${s.cost}. ` +
+  $("sources").textContent = `Beads read via ${s.beads}; event times read as ${s.events_tz}. GitHub: ${gh}. Event log: ${s.event_log || "none"}. Cost: ${cost}. ` +
     `Follow-up window ${Q.follow_days} days. Run took ${s.runtime_s}s.` + (s.errors && s.errors.length ? " Errors: " + s.errors.join("; ") : "");
 }
 
@@ -440,7 +488,7 @@ function render() {
   $("w7").setAttribute("aria-pressed", String(win === "7"));
   $("w28").setAttribute("aria-pressed", String(win !== "7"));
   for (const s of document.querySelectorAll(".selname")) s.textContent = (rig === "all" ? "all rigs" : rig) + ", last " + win + " days";
-  renderTiles(); renderRigs(); renderTtl(); renderFriction(); renderBeads(); renderDaily();
+  renderTiles(); renderRigs(); renderTtl(); renderFriction(); renderCost(); renderBeads(); renderDaily();
 }
 
 function init(data) {
