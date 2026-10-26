@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0}</style>
+</head>
+<body>
+<title>Gas City Today</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: one reading column, decisions first; two panels side by side below, trends as a strip of small multiples. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #e2e5ea;
+  --fg: #1b1f24;
+  --muted: #5d6673;
+  --accent: #2563c9;
+  --accent-soft: #e5edfb;
+  --crit: #c2341f;
+  --crit-soft: #fbe9e5;
+  --warn: #a8670a;
+  --warn-soft: #fbf0dc;
+  --ok: #2c7a3f;
+  --ok-soft: #e3f2e6;
+  --note: #6b4fbb;
+  --note-soft: #efeafb;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-num: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171b; --panel: #1c2026; --line: #2d333b; --fg: #e6e9ee; --muted: #9aa4b1;
+    --accent: #6d9cf0; --accent-soft: #1f2b40; --crit: #f07a66; --crit-soft: #3a1f1a;
+    --warn: #e0a64a; --warn-soft: #362a14; --ok: #6cc283; --ok-soft: #1a3022;
+    --note: #b49cf5; --note-soft: #2a2340; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14171b; --panel: #1c2026; --line: #2d333b; --fg: #e6e9ee; --muted: #9aa4b1;
+  --accent: #6d9cf0; --accent-soft: #1f2b40; --crit: #f07a66; --crit-soft: #3a1f1a;
+  --warn: #e0a64a; --warn-soft: #362a14; --ok: #6cc283; --ok-soft: #1a3022;
+  --note: #b49cf5; --note-soft: #2a2340; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font-ui); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+.nav { background: var(--panel); border-bottom: 1px solid var(--line); }
+.nav-in, main { max-width: 1120px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.nav-in { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding-block: 10px; }
+.brand { font-weight: 700; letter-spacing: .01em; }
+.tabs { display: flex; gap: 16px; flex-wrap: wrap; }
+.tabs a { color: var(--muted); padding-block: 4px; }
+.tabs a[aria-current] { color: var(--fg); font-weight: 650; box-shadow: inset 0 -2px 0 var(--accent); }
+.nav .live { margin-left: auto; font-size: 13px; }
+main { padding-block: 22px 48px; display: grid; gap: 18px; }
+
+.head { display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: end; justify-content: space-between; }
+h1 { font-size: 26px; margin: 0; letter-spacing: -.01em; }
+.verdict { margin: 4px 0 0; font-size: 16px; max-width: 68ch; text-wrap: pretty; }
+.fresh { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 2px 10px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.chip.ok::before, .chip.warn::before, .chip.crit::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.chip.warn::before { background: var(--warn); }
+.chip.crit::before { background: var(--crit); }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; min-width: 0; }
+.panel h2 { font-size: 15px; margin: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; text-wrap: balance; }
+.panel h2 .count { color: var(--muted); font-weight: 500; }
+.job { font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--note); background: var(--note-soft); border-radius: 4px; padding: 1px 6px; }
+.note { font-size: 12px; color: var(--note); margin: 6px 0 0; }
+body.hide-notes .note, body.hide-notes .job { display: none; }
+.sub { color: var(--muted); font-size: 12.5px; }
+
+.decisions { display: grid; gap: 10px; margin-top: 12px; }
+.dec { display: grid; grid-template-columns: 4px 1fr auto; gap: 0 14px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.dec .stripe { background: var(--warn); }
+.dec.crit .stripe { background: var(--crit); }
+.dec .body { padding: 12px 0; min-width: 0; }
+.dec .title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.dec .why { color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.dec .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+.tag { font-size: 12px; border-radius: 4px; padding: 1px 7px; background: var(--warn-soft); color: var(--warn); font-weight: 600; }
+.dec.crit .tag { background: var(--crit-soft); color: var(--crit); }
+.bead { font-family: var(--font-num); font-size: 12px; color: var(--muted); }
+.behind { font-size: 12.5px; color: var(--muted); }
+.behind a { font-family: var(--font-num); font-size: 12px; }
+.dec .act { padding: 12px 14px 12px 0; display: flex; align-items: start; }
+.btn { display: inline-block; border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font-size: 13px; white-space: nowrap; background: var(--panel); }
+.empty { color: var(--ok); margin-top: 12px; }
+
+.two { display: grid; grid-template-columns: 1.15fr 1fr; gap: 18px; }
+.who { display: grid; gap: 10px; margin-top: 12px; }
+.who-row { display: grid; grid-template-columns: minmax(0, 11rem) 1fr auto; gap: 10px; align-items: center; }
+.who-name { overflow-wrap: anywhere; font-weight: 550; }
+.who-name small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; }
+.bar { display: flex; height: 10px; border-radius: 3px; overflow: hidden; background: var(--bg); }
+.bar span { display: block; height: 100%; }
+.who-n { font-family: var(--font-num); text-align: right; min-width: 2.5ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 12px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.foot { margin-top: 12px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+
+.health { display: grid; gap: 0; margin-top: 8px; }
+.hrow { display: grid; grid-template-columns: 16px minmax(0, 8.5rem) 1fr; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line); align-items: baseline; }
+.hrow:first-child { border-top: 0; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); align-self: center; }
+.dot.warn { background: var(--warn); } .dot.crit { background: var(--crit); } .dot.none { background: var(--line); }
+.hrow b { font-weight: 550; }
+.hrow .v { min-width: 0; overflow-wrap: anywhere; }
+
+.trends { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.tile { border: 1px solid var(--line); border-radius: var(--r); padding: 10px 12px; min-width: 0; display: grid; gap: 2px; }
+.tile .k { font-size: 12px; color: var(--muted); }
+.tile .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.tile .v small { font-size: 12px; font-weight: 500; color: var(--muted); font-family: var(--font-ui); }
+.delta { font-size: 12px; font-weight: 600; }
+.delta.good { color: var(--ok); } .delta.bad { color: var(--crit); } .delta.flat { color: var(--muted); }
+.tile svg { width: 100%; height: 34px; display: block; margin-top: 4px; }
+.review { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 12px; display: grid; gap: 4px; }
+.review .q { font-weight: 600; }
+
+.cost { display: flex; flex-wrap: wrap; gap: 10px 36px; margin-top: 10px; align-items: baseline; }
+.big { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cost .lbl { color: var(--muted); font-size: 12.5px; }
+.toggle { font: inherit; font-size: 12px; color: var(--note); background: var(--note-soft); border: 0; border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+
+@media (max-width: 900px) {
+  .two { grid-template-columns: 1fr; }
+  .trends { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 520px) {
+  .dec { grid-template-columns: 4px 1fr; }
+  .dec .act { grid-column: 2; padding: 0 0 12px; }
+  .who-row { grid-template-columns: minmax(0, 7.5rem) 1fr auto; }
+  .hrow { grid-template-columns: 16px 1fr; }
+  .hrow .v { grid-column: 2; }
+}
+</style>
+
+<nav class="nav" aria-label="Dashboard pages">
+  <div class="nav-in">
+    <span class="brand">Gas City</span>
+    <div class="tabs">
+      <a href="#" aria-current="page">Today</a>
+      <a href="#">Quality</a>
+      <a href="#">Daily</a>
+      <a href="#">Roadmap</a>
+    </div>
+    <a class="live" id="live-link" href="#">Live agents, beads and mail in gc's dashboard ↗</a>
+  </div>
+</nav>
+
+<main>
+  <section class="head" aria-label="Summary">
+    <div>
+      <h1>Today</h1>
+      <p class="verdict" id="verdict"></p>
+    </div>
+    <div class="fresh" id="fresh"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-needs">
+    <h2 id="h-needs"><span class="job">Job 1</span>Needs you <span class="count" id="needs-count"></span></h2>
+    <p class="note">From stops.json: every stop whose next actor is the city's configured human, one card per root decision. Beads waiting behind the same root are listed under it. "Open in gc" deep-links to gc's own bead view (<code>/city/&lt;city&gt;/beads?bead=&lt;id&gt;</code>), where the claim, close and nudge actions already exist.</p>
+    <div class="decisions" id="needs"></div>
+  </section>
+
+  <div class="two">
+    <section class="panel" aria-labelledby="h-who">
+      <h2 id="h-who"><span class="job">Job 2</span>Waiting, and who clears it <span class="count" id="who-count"></span></h2>
+      <p class="note">From stops.json, grouped by who has to move next instead of by reason. The reason breakdown and every stop stay on the Quality page.</p>
+      <div class="who" id="who"></div>
+      <div class="legend" id="legend"></div>
+      <div class="foot" id="who-foot"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="h-health">
+      <h2 id="h-health"><span class="job">Job 3</span>Is the town healthy?</h2>
+      <p class="note">Supervisor from gc's API (<code>/v0/city/&lt;city&gt;/health</code>); seats and host from stops.json; friction from quality.json.</p>
+      <div class="health" id="health"></div>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="h-better">
+    <h2 id="h-better"><span class="job">Job 4</span>Is it getting better? <span class="count">last 7 days against last 28</span></h2>
+    <p class="note">From quality.json (daily) and the weekly review. Sparklines show 28 days; the colour says whether the 7-day value is better or worse than the 28-day one.</p>
+    <div class="trends" id="trends"></div>
+    <div class="review" id="review"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-cost">
+    <h2 id="h-cost"><span class="job">Job 5</span>What it costs</h2>
+    <p class="note">One source only: session transcripts priced at API list price (the pack's prices.toml), spot-checked by hand. The other figures the town shows today are listed so the gap is visible, not averaged in.</p>
+    <div class="cost" id="cost"></div>
+    <p class="sub" id="cost-note"></p>
+  </section>
+
+  <p class="sub" id="foot-note"></p>
+  <div><button class="toggle" id="notes-toggle" type="button" aria-pressed="true">Hide design notes</button></div>
+</main>
+
+<script type="application/json" id="model">{"census_at": "2026-10-26T16:38:56Z", "census_every_min": 30.0, "metrics_at": "2026-10-26T09:31:44Z", "today": "2026-10-26", "moving": 2, "backlog": 4, "friction_7d": 286, "trends": [{"key": "landed", "label": "Beads landed", "unit": "per day", "better": "up", "now": 11.3, "base": 9.4, "spark": [17, 3, 6, 8, 11, 4, 0, 0, 2, 12, 11, 8, 9, 16, 13, 5, 0, 0, 0, 24, 34, 23, 12, 8, 16, 1, 15, 4]}, {"key": "bounce_rate", "label": "Bounce rate", "unit": "%", "better": "down", "now": 26.6, "base": 27.1, "spark": [41.2, 0.0, 16.7, 37.5, 18.2, 25.0, null, null, 0.0, 25.0, 27.3, 37.5, 22.2, 12.5, 23.1, 40.0, null, null, null, 25.0, 35.3, 26.1, 8.3, 25.0, 37.5, 100.0, 33.3, 0.0]}, {"key": "claimed_merged_median_h", "label": "Claimed to merged", "unit": "h median", "better": "down", "now": 1.15, "base": 1.47, "spark": [3.97, 66.11, 34.57, 3.97, 2.17, 1.65, null, null, 45.45, 1.54, 0.63, 2.48, 1.83, 0.81, 1.18, 1.15, null, null, null, 1.19, 1.24, 0.69, 1.24, 3.87, 1.22, 28.07, 1.0, 1.11]}, {"key": "post_merge_failure_rate", "label": "Post-merge failures", "unit": "%", "better": "down", "now": 3.8, "base": 3.8, "spark": [0.0, 33.3, 16.7, 0.0, 0.0, 0.0, null, null, 0.0, 16.7, 0.0, 25.0, 11.1, 0.0, 0.0, 0.0, null, null, null, 0.0, 0.0, 0.0, 8.3, 12.5, 6.2, 0.0, 0.0, 0.0]}, {"key": "cost_per_landed", "label": "Cost per landed bead", "unit": "$", "better": "down", "now": 25.43, "base": 29.36, "spark": [45.39, 79.85, 71.89, 81.36, 63.24, 28.18, null, null, 85.11, 14.57, 14.52, 13.4, 22.57, 16.97, 19.34, 47.29, null, null, null, 18.98, 12.13, 16.0, 26.34, 34.53, 22.79, 135.86, 23.48, 48.97]}], "days": ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17", "2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24", "2026-10-25", "2026-10-26"], "cost": {"usd_7d": 2008.87, "per_landed_7d": 25.43, "per_landed_28d": 29.36, "landed_7d": 79, "today_usd": 195.87, "unpriced": {}}, "human_gates": {"open_now": 1, "past_due_now": 1, "answered": 16, "answer_median_h": 24.4, "answer_p90_h": 128.95}, "city": "example-city", "human": "operator", "gc_dashboard": "http://<host>:8372", "router": "mayor", "router_label": "mayor", "needs_you": [{"root": "ops-41k", "behind": [], "head": {"kind": "bead", "id": "ops-41k", "rig": "ops", "class": "human_gate_due", "label": "waiting for a person, past due", "age_h": 153.4, "title": "HUMAN: approve the backup bucket's retention, 30 or 90 days", "why": "due 2026-10-20T07:16:36Z (153.4 h ago)"}}, {"root": "api-m30", "head": {"kind": "bead", "id": "api-m30", "rig": "api", "class": "parked", "label": "parked on purpose", "age_h": 855.0, "title": "HUMAN (DEFERRED): choose the auth provider before the hosted beta", "why": "status deferred, set by mayor"}, "behind": [{"id": "api-f4q", "title": "Login page for hosted mode"}, {"id": "api-5r6", "title": "Session store on Postgres"}, {"id": "web-o6i", "title": "Settings screen for single sign-on"}]}], "actors": [{"actor": "mayor", "n": 42, "oldest_h": 904.4, "classes": [["parked on purpose", 31], ["blocked by another bead", 10], ["routed, not picked up", 1]]}, {"actor": "operator", "n": 5, "oldest_h": 1190.2, "classes": [["blocked by another bead", 3], ["parked on purpose", 1], ["waiting for a person, past due", 1]]}, {"actor": "dog-y2", "n": 1, "oldest_h": 420.9, "classes": [["parked on purpose", 1]]}, {"actor": "polecat-x1", "n": 1, "oldest_h": 285.4, "classes": [["parked on purpose", 1]]}, {"actor": "host", "n": 1, "oldest_h": 0, "classes": [["host load over the threshold", 1]]}], "names": {"mayor": "Mayor", "operator": "Operator (you)", "dog-y2": "dog session y2", "polecat-x1": "polecat session x1", "host": "Host load"}, "seats": {"total": 19, "up": 14, "asleep": ["docs/witness", "docs/refinery", "bench/witness", "bench/refinery", "site/refinery"], "always_on_down": 0, "unread": 3}, "host": {"load1": 35.35, "cores": 12, "threshold": 15.0, "top": [{"who": "node", "cores": 3.8}, {"who": "dolt", "cores": 2.8}]}, "friction_top": [["supervisor.fs_pressure.skipped_tick", 134], ["order.failed:mol-dog-compactor", 72], ["session.reset_stalled", 53]], "friction_names": {"supervisor.fs_pressure.skipped_tick": "supervisor ticks skipped (disk pressure)", "order.failed:mol-dog-compactor": "mol-dog-compactor failed", "session.reset_stalled": "stalled sessions reset"}, "review": {"week": "2026-W43", "stage": "routed", "change": "Raise the api polecat pool cap from 1 to 2", "slowdown": "One burst of 38 beads filed on 2026-10-18 waited for the single api polecat: 1,144 h in total, median 32 h. The slot never sat idle."}, "review_outcome": "The operator chose to raise the cap. The next weekly review measures whether routed waits in api got shorter.", "gc": {"health": {"status": "ok", "version": "1.5.1", "city": "example-city", "uptime_sec": 63961}}, "cost_elsewhere": "A town can show other cost figures for the same day (gc's own Home leaves out model calls it has no price for; a token page may use its own price table). This page names them and shows one figure only.", "footnote": "Example data. The numbers come from a real city's quality-pack output on 2026-10-26; every bead, title, rig and seat name is invented. Nothing on this page writes anything."}</script>
+<script>
+(function () {
+  var m = JSON.parse(document.getElementById('model').textContent);
+  var $ = function (id) { return document.getElementById(id); };
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function age(h) {
+    if (h == null) return 'no data';
+    if (h >= 48) return (h / 24).toFixed(1) + ' days';
+    if (h >= 1) return h.toFixed(1) + ' h';
+    return Math.round(h * 60) + ' min';
+  }
+  function hhmm(iso) { if (!iso) return 'no data'; var d = new Date(iso); return d.toISOString().slice(11, 16) + ' UTC'; }
+  function money(v) { return v == null ? 'no data' : '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  var gcBase = (m.gc_dashboard || '') + '/city/' + encodeURIComponent(m.city);
+  function beadLink(id) { return gcBase + '/beads?bead=' + encodeURIComponent(id); }
+  $('live-link').href = gcBase + '/';
+
+  // Summary line and freshness.
+  var decisions = m.needs_you.length;
+  var mayor = m.actors.filter(function (a) { return a.actor === m.router; })[0];
+  var host = m.host || {};
+  var over = host.load1 != null && host.threshold != null && host.load1 > host.threshold;
+  var t0 = m.trends[0];
+  var parts = [];
+  parts.push(decisions === 0 ? 'Nothing waits on you.' : decisions + (decisions === 1 ? ' decision waits' : ' decisions wait') + ' on you.');
+  if (mayor) parts.push(mayor.n + ' beads wait on the ' + m.router_label + '.');
+  parts.push(over ? 'Host load is over the gate, so orders are skipping runs.' : 'Host load is under the gate.');
+  if (t0 && t0.now != null) parts.push(t0.now + ' beads landed per day this week (' + t0.base + ' over 28 days).');
+  $('verdict').textContent = parts.join(' ');
+  [['census ' + hhmm(m.census_at) + ', every ' + Math.round(m.census_every_min || 30) + ' min', ''],
+   ['metrics ' + hhmm(m.metrics_at) + ', daily', ''],
+   [m.review ? 'review ' + m.review.week : 'no review yet', ''],
+   ['supervisor ' + ((m.gc.health || {}).status || 'no data'), (m.gc.health || {}).status === 'ok' ? 'ok' : 'warn']
+  ].forEach(function (c) { $('fresh').appendChild(el('span', 'chip ' + c[1], c[0])); });
+
+  // Job 1: decisions.
+  $('needs-count').textContent = decisions ? decisions + (decisions === 1 ? ' decision' : ' decisions') : '';
+  if (!decisions) $('needs').appendChild(el('p', 'empty', 'Nothing waits on you right now.'));
+  m.needs_you.forEach(function (g) {
+    var h = g.head, crit = h['class'] === 'human_gate_due';
+    var d = el('article', 'dec' + (crit ? ' crit' : ''));
+    d.appendChild(el('div', 'stripe'));
+    var b = el('div', 'body');
+    b.appendChild(el('div', 'title', h.title));
+    b.appendChild(el('div', 'why', h.why));
+    var meta = el('div', 'meta');
+    meta.appendChild(el('span', 'tag', crit ? 'past due ' + age(h.age_h) : h.label + ', ' + age(h.age_h)));
+    meta.appendChild(el('span', 'bead', h.id + ' · ' + h.rig));
+    b.appendChild(meta);
+    if (g.behind.length) {
+      var w = el('div', 'behind');
+      w.appendChild(document.createTextNode('Answering it unblocks ' + g.behind.length + (g.behind.length === 1 ? ' bead: ' : ' beads: ')));
+      g.behind.forEach(function (x, i) {
+        var a = el('a', null, x.id); a.href = beadLink(x.id); a.title = x.title; w.appendChild(a);
+        if (i < g.behind.length - 1) w.appendChild(document.createTextNode(', '));
+      });
+      b.appendChild(w);
+    }
+    d.appendChild(b);
+    var act = el('div', 'act'); var a = el('a', 'btn', 'Open in gc ↗'); a.href = beadLink(h.id); act.appendChild(a);
+    d.appendChild(act);
+    $('needs').appendChild(d);
+  });
+
+  // Job 2: who clears it.
+  var palette = { 'parked on purpose': 'var(--accent)', 'blocked by another bead': 'var(--warn)', 'waiting for a person, past due': 'var(--crit)', 'host load over the threshold': 'var(--muted)' };
+  var fallback = ['var(--note)', 'var(--ok)', 'var(--crit)'];
+  var seen = {}, total = 0, maxN = 0;
+  m.actors.forEach(function (a) { total += a.n; maxN = Math.max(maxN, a.n); });
+  $('who-count').textContent = total + ' stops';
+  m.actors.forEach(function (a) {
+    var row = el('div', 'who-row');
+    var nm = el('div', 'who-name', m.names[a.actor] || a.actor);
+    nm.appendChild(el('small', null, 'oldest ' + age(a.oldest_h)));
+    row.appendChild(nm);
+    var bar = el('div', 'bar'); bar.setAttribute('role', 'img');
+    bar.setAttribute('aria-label', a.classes.map(function (c) { return c[1] + ' ' + c[0]; }).join(', '));
+    var wrap = el('div'); wrap.style.width = (100 * a.n / maxN) + '%'; wrap.style.display = 'flex'; wrap.style.height = '100%';
+    a.classes.forEach(function (c) {
+      if (!palette[c[0]]) palette[c[0]] = fallback.shift() || 'var(--muted)';
+      seen[c[0]] = (seen[c[0]] || 0) + c[1];
+      var s = el('span'); s.style.width = (100 * c[1] / a.n) + '%'; s.style.background = palette[c[0]]; s.title = c[1] + ' ' + c[0];
+      wrap.appendChild(s);
+    });
+    bar.appendChild(wrap); row.appendChild(bar);
+    row.appendChild(el('div', 'who-n', String(a.n)));
+    $('who').appendChild(row);
+  });
+  Object.keys(seen).forEach(function (k) {
+    var s = el('span'); var i = el('i'); i.style.background = palette[k]; s.appendChild(i);
+    s.appendChild(document.createTextNode(k + ' ' + seen[k])); $('legend').appendChild(s);
+  });
+  var f = $('who-foot');
+  f.appendChild(el('span', 'sub', m.moving + ' moving (in work or review) · ' + m.backlog + ' in the backlog, not routed'));
+  var q = el('a', null, 'Every stop, longest first →'); q.href = '#'; f.appendChild(q);
+
+  // Job 3: health.
+  var hl = m.gc.health;
+  var seats = m.seats;
+  var rows = [
+    [hl ? (hl.status === 'ok' ? '' : 'crit') : 'none', 'Supervisor', hl ? hl.status + ', gc ' + hl.version + ', up ' + age(hl.uptime_sec / 3600) : 'no data: gc API not reachable'],
+    [seats.always_on_down ? 'crit' : '', 'Seats', seats.up + ' of ' + seats.total + ' running; ' + (seats.always_on_down || 0) + ' always-on seats down' + (seats.asleep.length ? '; ' + seats.asleep.length + ' asleep on demand' : '')],
+    [over ? 'warn' : '', 'Host load', host.load1 != null ? host.load1.toFixed(1) + ' on ' + host.cores + ' cores, gate ' + host.threshold + (over ? '. Over the gate: orders skip. Top: ' + (host.top || []).slice(0, 2).map(function (t) { return t.who + ' ' + t.cores.toFixed(1) + ' cores'; }).join(', ') : '') : 'no data'],
+    [m.seats.unread ? 'warn' : '', 'Seat mail', m.seats.unread + ' unread in agent inboxes'],
+    [m.friction_7d > 200 ? 'warn' : '', 'Friction, 7 days', m.friction_7d != null ? m.friction_7d + ' events. ' + m.friction_top.map(function (x) { return (m.friction_names[x[0]] || x[0]) + ' ' + x[1]; }).join(', ') : 'no data']
+  ];
+  rows.forEach(function (r) {
+    var row = el('div', 'hrow'); row.appendChild(el('span', 'dot ' + r[0]));
+    row.appendChild(el('b', null, r[1])); row.appendChild(el('span', 'v', r[2])); $('health').appendChild(row);
+  });
+
+  // Job 4: trends with 28-day sparklines.
+  function spark(vals, color) {
+    var W = 160, H = 34, pad = 3, pts = [], max = 0;
+    vals.forEach(function (v) { if (v != null) max = Math.max(max, v); });
+    if (!max) max = 1;
+    vals.forEach(function (v, i) { if (v != null) pts.push([pad + i * (W - 2 * pad) / (vals.length - 1), H - pad - (v / max) * (H - 2 * pad)]); });
+    var ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('preserveAspectRatio', 'none'); svg.setAttribute('aria-hidden', 'true');
+    var base = document.createElementNS(ns, 'line');
+    base.setAttribute('x1', 0); base.setAttribute('x2', W); base.setAttribute('y1', H - pad); base.setAttribute('y2', H - pad);
+    base.setAttribute('stroke', 'var(--line)'); svg.appendChild(base);
+    if (pts.length > 1) {
+      var d = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+      var area = document.createElementNS(ns, 'path');
+      area.setAttribute('d', d + ' L' + pts[pts.length - 1][0].toFixed(1) + ' ' + (H - pad) + ' L' + pts[0][0].toFixed(1) + ' ' + (H - pad) + ' Z');
+      area.setAttribute('fill', color); area.setAttribute('fill-opacity', '0.12'); svg.appendChild(area);
+      var line = document.createElementNS(ns, 'path');
+      line.setAttribute('d', d); line.setAttribute('fill', 'none'); line.setAttribute('stroke', color);
+      line.setAttribute('stroke-width', '1.5'); line.setAttribute('vector-effect', 'non-scaling-stroke'); svg.appendChild(line);
+      var last = pts[pts.length - 1], c = document.createElementNS(ns, 'circle');
+      c.setAttribute('cx', last[0]); c.setAttribute('cy', last[1]); c.setAttribute('r', 2.5); c.setAttribute('fill', color); svg.appendChild(c);
+    }
+    return svg;
+  }
+  m.trends.forEach(function (t) {
+    var tile = el('div', 'tile');
+    tile.appendChild(el('div', 'k', t.label));
+    var v = el('div', 'v'); v.textContent = t.now == null ? 'no data' : (t.unit === '$' ? money(t.now) : t.now);
+    if (t.now != null && t.unit !== '$') v.appendChild(el('small', null, ' ' + t.unit));
+    tile.appendChild(v);
+    var cls = 'flat', txt = 'same as 28 days';
+    if (t.now != null && t.base != null && t.now !== t.base) {
+      var up = t.now > t.base, good = (up && t.better === 'up') || (!up && t.better === 'down');
+      cls = good ? 'good' : 'bad';
+      var diff = Math.abs(t.now - t.base);
+      var unit = t.unit === '%' ? ' pt' : t.unit === '$' ? '' : t.unit === 'per day' ? '' : ' h';
+      txt = (up ? '▲ ' : '▼ ') + (t.unit === '$' ? money(diff) : diff.toFixed(diff < 10 ? 1 : 0) + unit) + ' vs ' + (t.unit === '$' ? money(t.base) : t.base) + ' over 28 days';
+    }
+    tile.appendChild(el('div', 'delta ' + cls, txt));
+    tile.appendChild(spark(t.spark, cls === 'bad' ? 'var(--crit)' : cls === 'good' ? 'var(--ok)' : 'var(--accent)'));
+    $('trends').appendChild(tile);
+  });
+  var r = $('review');
+  if (m.review) {
+    r.appendChild(el('div', 'sub', 'Weekly review ' + m.review.week + ': the biggest wait was "' + m.review.stage + '". ' + m.review.slowdown));
+    r.appendChild(el('div', 'q', 'Proposed: ' + m.review.change));
+    if (m.review_outcome) r.appendChild(el('div', 'sub', m.review_outcome));
+  } else {
+    r.appendChild(el('div', 'sub', 'No weekly review yet.'));
+  }
+
+  // Job 5: cost.
+  var c = m.cost;
+  [[money(c.per_landed_7d), 'per landed bead, last 7 days (' + money(c.per_landed_28d) + ' over 28)'],
+   [money(c.usd_7d), 'over 7 days, ' + c.landed_7d + ' beads landed'],
+   [money(c.today_usd), 'today up to ' + hhmm(m.metrics_at)]
+  ].forEach(function (x) {
+    var d = el('div'); d.appendChild(el('div', 'big', x[0])); d.appendChild(el('div', 'lbl', x[1])); $('cost').appendChild(d);
+  });
+  $('cost-note').textContent = 'List price, not an invoice. ' + (m.cost_elsewhere || '');
+  $('foot-note').textContent = m.footnote || '';
+
+  var tg = $('notes-toggle');
+  tg.addEventListener('click', function () {
+    var hide = document.body.classList.toggle('hide-notes');
+    tg.textContent = hide ? 'Show design notes' : 'Hide design notes';
+    tg.setAttribute('aria-pressed', String(!hide));
+  });
+})();
+</script>
+
+</body>
+</html>
