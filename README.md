@@ -89,3 +89,7 @@ Rig repositories are left alone; each has a `.beads/` directory you can delete.
 Built on [Gas City](https://github.com/gastownhall/gascity) and [beads](https://github.com/gastownhall/beads),
 in the spirit of [agentic_coding_flywheel_setup](https://github.com/Dicklesworthstone/agentic_coding_flywheel_setup).
 DCG and CAAM are by Jeffrey Emanuel (Dicklesworthstone). Maintained by [alexknips](https://github.com/alexknips).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
