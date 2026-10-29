@@ -12,6 +12,12 @@
    ],
    "recommendation": "Review that part yourself; the link opens where it starts.",
    "why": "Money rules are outside what these agents check, so only a person can clear them.",
+   "where": [
+    {
+     "path": "src/notify/send.ts",
+     "line": 13
+    }
+   ],
    "area": "not checked",
    "link": {
     "kind": "code",

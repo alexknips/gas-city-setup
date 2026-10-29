@@ -31,6 +31,7 @@ MARKERS = ('Automated review', 'Automated approval')
 WORDS = {'escalate': 'Needs you', 'changes': 'Changes requested', 'questions': 'Questions', 'low-risk': 'Low risk'}
 APPROVED = 'Approved as low risk'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
+MAX_WHERE = 5  # files a not-checked decision links to (R20)
 
 # R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
 FILLER = [r'\bmake sure\b', r'\bconsider (reviewing|checking|adding)\b', r'\bplease (review|check|verify)\b',
@@ -211,8 +212,14 @@ def render(repo, pr, rv, name, author):
     if rv['decisions']:
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
-            lines += [f"{k}. **{d['question']}** · {d['area']} · [open {link_text(d)}]({decision_link(repo, pr, d)})",
-                      f"   **Why you:** {d['why']}",
+            lines.append(f"{k}. **{d['question']}** · {d['area']} · [open {link_text(d)}]({decision_link(repo, pr, d)})")
+            if d.get('where'):
+                w = d['where']
+                links = [f"[`{x['path']}` L{x['line']}]({diff_link(repo, pr['number'], x['path'], 'new', x['line'], x['line'])})"
+                         for x in w[:MAX_WHERE]]
+                more = f', and {plural(len(w) - MAX_WHERE, "more file", "more files")}' if len(w) > MAX_WHERE else ''
+                lines.append(f"   **Where:** {', '.join(links)}{more}")
+            lines += [f"   **Why you:** {d['why']}",
                       f"   **Options:** {'; '.join(d['options'])}",
                       f"   **Recommended:** {d['recommendation']}"]
         lines.append('')
@@ -261,13 +268,15 @@ def inline_comments(items, author):
 def not_checked_decision(located, words, author):
     """R20: the PR touches an area no agent checks, so the reviewer decides whether to look. `located`:
     [{path, line}] where the not-checked rule matched; the decision links the first."""
-    first = located[0]
-    files = len({x['path'] for x in located})
-    more = f' {files} files touch it; the link is the first.' if files > 1 else ''
+    first, where = located[0], []
+    for x in located:  # the first line of each file, in order
+        if x['path'] not in {w['path'] for w in where}:
+            where.append({'path': x['path'], 'line': x['line']})
     return {'question': f'This PR touches {words}, which no agent checks: will you review that part yourself before it merges?',
             'options': ['Review that part yourself before it merges', f'Let {author} merge it without that review'],
             'recommendation': 'Review that part yourself; the link opens where it starts.',
-            'why': f'Money rules are outside what these agents check, so only a person can clear them.{more}',
+            'why': 'Money rules are outside what these agents check, so only a person can clear them.',
+            'where': where,
             'area': NOT_CHECKED_AREA,
             'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line'], 'line_end': first['line']},
             'verified': 'zero-token rule', 'confidence': 10, 'auto': True}
