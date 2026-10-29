@@ -1,0 +1,22 @@
+# PR review run (README.md, "Review"): first every queued PR whose CI is red, missing or all skipped
+# (escalated without a model), then the next queued PR within PR_REVIEW_DAILY_CAP, in priority order
+# (the reviewer was asked > a serious rule > the rest; PR_REVIEW_RESERVE slots kept for the first two).
+# One headless `claude -p` per PR, in a worktree at the PR head under PR_REVIEW_WORK_DIR: Read, Grep and
+# Glob only, no hooks, no MCP, no repository settings, reads outside the worktree denied, no GitHub or
+# Slack credential, LOOMTRACER_INGEST_DISABLE=1. It returns JSON; this script decides the outcome, scans
+# for credentials and posts. PR_REVIEW_MODE = "shadow": a PENDING review only the reviewer sees, and
+# "would approve / would ask / would request changes / needs you" plus the link in Slack. "live": the
+# review is submitted (approve, comment, request changes; escalations stay pending).
+# Manual run: gc order run pr-review-run
+# Dry run:    $PACK_DIR/assets/scripts/pr-review-run.sh --dry-run [--pr owner/repo#N]  (no model, no post)
+[order]
+description = "PR review run: one capped, read-only model review per run; posts pending reviews and Slack links"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/pr-review-run.sh"
+trigger = "cooldown"
+interval = "15m"
+timeout = "25m"
+
+[order.env]
+PR_REVIEW = "off"
+PR_REVIEW_MODE = "shadow"

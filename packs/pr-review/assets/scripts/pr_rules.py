@@ -35,7 +35,7 @@ BUILTIN = {
 }
 
 PR_FIELDS = """
-  number url state isDraft createdAt mergedAt closedAt
+  number url title state isDraft createdAt updatedAt mergedAt closedAt
   author { login }
   additions deletions changedFiles body
   headRefOid baseRefName baseRefOid mergeable
@@ -45,7 +45,7 @@ PR_FIELDS = """
     nodes { ... on ReviewRequestedEvent { requestedReviewer { ... on User { login } } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state
     contexts(first: 100) { totalCount nodes { __typename
-      ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }
+      ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
 """
 
 
@@ -86,19 +86,36 @@ def search_prs(query, page=25):
 
 
 def open_prs(repo, page=25):
+    """Open PRs with PR_FIELDS, and {default branch: head oid}."""
     owner, name = repo.split('/')
     q = ('query($o: String!, $r: String!, $n: Int!, $after: String) { repository(owner: $o, name: $r) {'
          ' defaultBranchRef { name target { oid } }'
          ' pullRequests(states: OPEN, first: $n, after: $after) { pageInfo { hasNextPage endCursor }'
          ' nodes {' + PR_FIELDS + '} } } }')
-    after, prs, main = None, [], None
+    after, prs, heads = None, [], {}
     while True:
         r = graphql(q, o=owner, r=name, n=page, after=after)['repository']
-        main = r['defaultBranchRef']['target']['oid']
+        heads[r['defaultBranchRef']['name']] = r['defaultBranchRef']['target']['oid']
         prs += r['pullRequests']['nodes']
         if not r['pullRequests']['pageInfo']['hasNextPage']:
-            return prs, main
+            return prs, heads
         after = r['pullRequests']['pageInfo']['endCursor']
+
+
+def get_pr(repo, number):
+    owner, name = repo.split('/')
+    q = ('query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) {'
+         ' pullRequest(number: $n) {' + PR_FIELDS + '} } }')
+    return graphql(q, o=owner, r=name, n=number)['repository']['pullRequest']
+
+
+def base_for(pr, branch_heads):
+    """The commit a PR's new migrations must sort after: main just before the merge for a merged PR,
+    the base branch's head now for an open one."""
+    if pr['state'] == 'MERGED' and pr.get('mergeCommit'):
+        parents = pr['mergeCommit']['parents']['nodes']
+        return parents[0]['oid'] if parents else None
+    return branch_heads.get(pr['baseRefName']) or pr['baseRefOid']
 
 
 def branch_oid(repo, branch):

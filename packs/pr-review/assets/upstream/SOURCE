@@ -1,0 +1,5 @@
+security-review.md and LICENSE are copied unchanged from
+https://github.com/anthropics/claude-code-security-review at commit 0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+(.claude/commands/security-review.md, the prompt behind Claude Code's built-in /security-review).
+MIT License, Copyright (c) 2025 Anthropic: see LICENSE. pr_review.py adapts the text at run time
+(README.md, "The review prompt"); this copy stays as published.

@@ -1,0 +1,20 @@
+# PR review sweep (README.md, "Sweep"): open non-draft PRs and PRs merged since the last sweep, in
+# PR_REVIEW_REPOS. Each new head goes through the zero-token rules (assets/rules.toml or PR_REVIEW_RULES):
+# changed paths, added lines, CI, migrations, review requests. One bead per PR in its rig, holding only the
+# repo, number, link, head SHA and outcome; selected PRs join the review queue in the state file.
+# No model, no tokens, nothing posted. Above PR_REVIEW_MAX_LOAD it skips and logs.
+# Every run appends one JSON line to $PR_REVIEW_STATE_DIR/pr-review.jsonl.
+# Manual run: gc order run pr-review-sweep
+# Dry run:    $PACK_DIR/assets/scripts/pr-review-sweep.sh --dry-run    (writes nothing, creates nothing)
+# Backtest:   $PACK_DIR/assets/scripts/pr-review-sweep.sh --backtest 7 (what each rule flags in a week)
+[order]
+description = "PR review sweep: which PRs need a review, from zero-token rules"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/pr-review-sweep.sh"
+trigger = "cooldown"
+interval = "30m"
+timeout = "5m"
+
+[order.env]
+PR_REVIEW = "off"
+PR_REVIEW_MODE = "shadow"
