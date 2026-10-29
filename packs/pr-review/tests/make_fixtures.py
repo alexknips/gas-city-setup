@@ -86,6 +86,12 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R0'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
         'safe_to_skip': '1 test file.',
         'delivery': {'pr_state': 'OPEN', 'page_url': 'https://github.com/example/repo/pull/1#pullrequestreview-1'}},
+    # R18 (20:42Z, the mayor: two runs of the same head both posted to Slack): one message per head.
+    'case16-second-slack-post-for-the-same-head': {
+        'expect': 'fail', 'expect_reasons': ['R18'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
+        'safe_to_skip': '1 test file.',
+        'delivery': {'pr_state': 'OPEN', 'page_url': PAGE, 'post_slack': True, 'head': 'a' * 40,
+                     'slack_heads': ['a' * 40]}},
     'case06-needs-you-with-a-linked-decision': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
         'items': [GOOD_ITEM], 'safe_to_skip': '1 test file: a happy-path test.',

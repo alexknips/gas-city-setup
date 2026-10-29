@@ -343,10 +343,20 @@ def deliver(cfg, key, entry, pr, outcome, page_html, body, extra):
     os.chmod(path + '.tmp', 0o600)
     os.replace(path + '.tmp', path)
     pr_state.keep_posted(cfg, entry, pr['headRefOid'], body, [])
-    slack, ts = pr_state.slack_post(cfg, outcome, entry['url'], url)
-    extra.update(page=url, body_sha=body_sha(body), delivered_at=pr_state.iso(pr_state.now()), slack=slack)
+    # R18: one Slack message per (PR, head). A re-review of a head already posted only updates the page.
+    heads = list(entry.get('slack_heads') or ([entry['head']] if entry.get('slack_ts') and entry.get('head') else []))
+    if pr['headRefOid'] in heads:
+        slack, ts = 'skipped-same-head', None
+    else:
+        slack, ts = pr_state.slack_post(cfg, outcome, entry['url'], url)
+        if slack == 'ok':
+            heads.append(pr['headRefOid'])
+    extra.update(page=url, body_sha=body_sha(body), delivered_at=pr_state.iso(pr_state.now()), slack=slack,
+                 slack_heads=heads[-20:])
     if ts:
         extra['slack_ts'] = ts
+    elif entry.get('slack_ts'):
+        extra['slack_ts'] = entry['slack_ts']
     finish(cfg, key, dict(entry, head=pr['headRefOid']), outcome, extra)
     write_index(cfg)
 

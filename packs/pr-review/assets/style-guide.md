@@ -62,6 +62,7 @@ CI passed · no merge conflict · open
 | R15 | Never deliver for a merged or closed PR. The sweep takes open PRs only, the queue drops a PR once it merges or closes, and the run re-checks the state right before delivery. | [gate] (delivery) | v2: "was merged. we don't need to review it" |
 | R16 | "Needs you" means one or more decisions only the reviewer can make: a product, risk or compliance trade-off, never a code fix the author can make. Each is ONE question ending in "?", with 2-4 options and a recommendation, linked to where it lives: lines of a file at the head commit (the path exists, the lines are within the file) or the PR description or a ticket URL in it. With no decision, the outcome is never "Needs you". Rule flags alone never route to the reviewer. | [gate] | v2: "otherwise you do not need me!" |
 | R17 | Every review has its own URL (the private page), and Slack posts it with the PR link. | [gate] (delivery) | v2: "I need a link to the review comment" |
+| R18 | One Slack message per (PR, head commit). A re-review of a head already posted updates the page in place and posts nothing; a new head posts once. | [gate] (delivery) | v2: two runs of the same head both posted |
 
 R12 of v1 (every flagged hunk becomes an item for the reviewer) is withdrawn by R16: flags are hints for
 the model, not findings for the reviewer.

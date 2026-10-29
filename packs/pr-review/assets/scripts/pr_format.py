@@ -334,10 +334,13 @@ def gate_body(body, n_decisions, n_items, outcome, single_line=False):
     return why
 
 
-def gate_delivery(pr_state, page_url):
+def gate_delivery(pr_state, page_url, post_slack=False, head=None, slack_heads=()):
     """R15: never deliver for a merged or closed PR. R17: a delivered review has its own URL. R0: that
-    URL is the private page, never a GitHub review in the reviewer's name."""
+    URL is the private page, never a GitHub review in the reviewer's name. R18: one Slack message per
+    (PR, head): a re-review of a head already posted updates the page and posts nothing."""
     why = []
+    if post_slack and head and head in slack_heads:
+        why.append('R18: a second Slack message for the same head')
     if pr_state != 'OPEN':
         why.append(f'R15: the PR is {pr_state.lower()}')
     if not page_url or not re.match(r'^https?://', page_url):
@@ -380,7 +383,9 @@ def regress(dirs):
                 reasons = gate(fx.get('decisions', []), fx['items'], idx, fx['outcome'], body, fx.get('tree_lines'),
                                fx.get('pr_text', ''), bool(single))
             if 'delivery' in fx:
-                reasons += gate_delivery(fx['delivery'].get('pr_state', 'OPEN'), fx['delivery'].get('page_url'))
+                dl = fx['delivery']
+                reasons += gate_delivery(dl.get('pr_state', 'OPEN'), dl.get('page_url'), dl.get('post_slack', False),
+                                         dl.get('head'), dl.get('slack_heads', []))
             verdict = 'fail' if reasons else 'pass'
             need = set(fx.get('expect_reasons', []))
             got = {r.split(':')[0] for r in reasons}
