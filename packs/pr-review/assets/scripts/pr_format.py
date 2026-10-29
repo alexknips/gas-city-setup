@@ -217,7 +217,7 @@ def render(repo, pr, rv, name, author):
             lines.append(f"{k}. **{d['question']}**{area}{opener}")
             if d.get('where'):
                 w = d['where']
-                links = [f"[`{x['path']}` L{x['line']}]({diff_link(repo, pr['number'], x['path'], 'new', x['line'], x['line'])})"
+                links = [f"[`{x['path']}` L{x['line']}]({code_link(repo, pr['headRefOid'], x['path'], x['line'], x['line'])})"
                          for x in w[:MAX_WHERE]]
                 more = f', and {plural(len(w) - MAX_WHERE, "more file", "more files")}' if len(w) > MAX_WHERE else ''
                 lines.append(f"   **Where:** {', '.join(links)}{more}")

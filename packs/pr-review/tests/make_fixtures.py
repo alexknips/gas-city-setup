@@ -203,6 +203,11 @@ CASES = {
     'case32-reader-test-below-the-bar': {
         'expect': 'fail', 'expect_reasons': ['R26'], **LOW,
         'judge': {'scan': 5, 'markers': 3, 'decisions': 0, 'plain': 4, 'length': 4, 'useful': 2}},
+    # 2026-10-29 21:57Z (the mayor, R20 vs R26): a billing PR whose review the reader test held twice gets
+    # the minimal review: line 2, the money decision, the facts line, nothing the model wrote. R28.
+    'case37-billing-minimal-after-reader-holds': {
+        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
+        'decisions': [dict(MONEY, what='')], 'not_checked': NOT_CHECKED},
     # 2026-10-29 21:01Z (Alex: "actually approve low risk PRs not just say you do"): the approval bar, R27.
     'case33-approve-with-an-uncleared-flag': {
         'expect': 'fail', 'expect_reasons': ['R19', 'R27'], **dict(LOW, cleared=[], approve=True), 'approve_check': GREEN},

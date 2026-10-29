@@ -621,6 +621,25 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_
     return rv
 
 
+def minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author):
+    """R28 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
+    reader test held the full one twice: line 2, the money decision (each file linked at the head) and the
+    facts line, nothing the model wrote."""
+    rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, nc, ruleset, author, model=False)
+    rv['decisions'] = [dict(d, what='') for d in rv['decisions']]
+    return rv, pr_format.render(repo, pr, rv, NAME, author), []
+
+
+def keep_reader(cfg, entry, head, attempt, scores, problems):
+    """The reader test's reasons for a held attempt, host-local (they can describe the repository's
+    code), to tune the review and the reader."""
+    p = os.path.join(pr_state.private_dir(cfg, 'feedback'), 'reader.jsonl')
+    with open(p, 'a') as f:
+        f.write(json.dumps({'pr': entry['url'], 'head': head, 'attempt': attempt, 'scores': scores,
+                            'problems': problems, 'at': pr_state.iso(pr_state.now())}) + '\n')
+    os.chmod(p, 0o600)
+
+
 def ci_escalation(cfg, key, entry, dry, rereview=False):
     """CI red, missing or skipped with no content rule: the blockers for the author, no model (R11). With
     a content rule the PR goes to the model. Closed PRs are dropped (R15)."""
@@ -713,6 +732,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra['judge_cost_usd'] += jm.get('cost_usd') or 0
                 extra['judge'] = scores
                 reasons = pr_judge.below_bar(scores)
+                if reasons and scores is not None:
+                    keep_reader(cfg, entry, pr['headRefOid'], attempt, scores, problems)
                 if scores is None:  # the reader test did not run: hold without a second model run
                     break
             if not reasons:
@@ -725,6 +746,14 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      kinds=sorted(i['kind'] for i in items), severity=sorted(i['severity'] for i in items),
                      checks=model['checks'], flagged_hunks=len(flagged), flags_cut=flags_cut, ci=ci,
                      gate=sorted({r.split(':')[0] for r in reasons}))
+        if reasons and rv['not_checked'] and extra.get('judge') and all(r.startswith('R26') for r in reasons):
+            # The reader test held it twice, but a PR that touches a not-checked area is never silent (R20):
+            # deliver only line 2, the money decision and the facts line, with no model findings (R28).
+            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author)
+            reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
+                                     pr.get('body') or '', [], comments)
+            extra.update(fallback='not-checked-minimal', reader_held=extra.get('judge'), decisions=1, items=0,
+                         cleared=0, gate=sorted({r.split(':')[0] for r in reasons}))
         if reasons:
             finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-gate', extra)
             return

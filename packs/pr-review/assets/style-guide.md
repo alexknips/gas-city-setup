@@ -15,6 +15,7 @@ and a regression case (README.md, "Quality loop").
   review it".
 - v3, 2026-10-29 20:45Z: "no, don't link to the dashboard but actually leave a review comment every
   single time on the PR and then link to that". Pages are gone; every review is a submitted comment.
+- v4.1, 2026-10-29 21:57Z: R28, after a real billing PR was held by the reader test three times.
 - v4, 2026-10-29 21:01-21:05Z: "actually approve low risk PRs not just say you do", and "review our
   reviews again. are they easy to read". A reader test of the 7 delivered reviews: they scan fast, but
   "nothing to check" hid fired rules and a PR that touches billing, findings were said three times, and
@@ -86,6 +87,7 @@ plans, credits or pricing: line 2 says so, a decision for Alex asks him to look,
 | R24 | ONE review of ours per PR head: an approval carries the whole review in its body, with no separate comment. | [gate] (delivery) | v4: a comment plus an approval on one head |
 | R25 | No "[link removed]" fragments: a sentence that needed a link to another site is rewritten without it. | [gate] | v4 |
 | R26 | Reader test: after the zero-token checks, a second, cheap model scores the review 1-5 on scan, markers, decisions, plain, length and useful. Below markers 4 or useful 3 it is regenerated once with the reader's problems, then held. The same test runs over every delivered review for the weekly numbers. | [gate] (model) | v4: "are they easy to read" |
+| R28 | A PR that touches a not-checked area is never silent: when the reader test holds its review twice, it gets the minimal review instead: line 2, the money decision (each file linked at the head, no model text) and the facts line, with the not-checked footer. | [gate] | the mayor, 21:57Z: a held billing review left the PR silent |
 | R27 | APPROVE only under the bar, checked right before posting: the PR is open and on the reviewed head; CI is green (at least one check SUCCESS, every check SUCCESS, NEUTRAL or SKIPPED); no decision, item or blocker and no not-checked area; every flagged hunk cleared with a line in its hunk. Anything short of the bar asks the author for what is missing instead. | [gate] (delivery) | v4: "actually approve low risk PRs not just say you do" |
 
 R12 of v1 (every flagged hunk becomes an item for the reviewer) is withdrawn by R16: flags are hints for

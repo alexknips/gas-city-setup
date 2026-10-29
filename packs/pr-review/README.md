@@ -216,7 +216,10 @@ updated in place when it can be (same event, no inline comments), else cut to a 
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
 review was delivered, R15), `held-gate` (the gate or the reader test failed twice; nothing delivered),
-`held-secret` (the text held a credential shape), `held-inline` (GitHub refused an inline comment;
+`held-secret` (the text held a credential shape; a PR that touches a not-checked area whose review the
+reader test held twice is not held: it gets the minimal review of R28, logged `fallback:
+not-checked-minimal`, and the reader's reasons for each held attempt go to
+`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`), `held-inline` (GitHub refused an inline comment;
 nothing delivered, since a review without its markers breaks R4), `error` (the run failed, or a
 delivered review broke a delivery rule; see the log). A PR whose head or CI changed between the review
 and the post goes back to the queue (`requeued`).
@@ -230,7 +233,7 @@ reviews in his name blocking his own; then "that review comment needs to link to
 measure is the reviewer's effort: time from the Slack post to his own decision on the PR, what he
 opened, his thumbs on the Slack link. Not review volume.
 
-1. **Style guide** (`assets/style-guide.md`, versioned, v4). Rules R0 to R27, each with the complaint it
+1. **Style guide** (`assets/style-guide.md`, versioned, v4.1). Rules R0 to R28, each with the complaint it
    came from: never a pending review (R0); the honesty line, then the outcome and who acts (R1, R22);
    "needs you" only for decisions only the reviewer can make, each linked to the code or text (R16); at
    most 5 items for the author, each linked to the exact diff lines, with what changed, why it matters
@@ -282,7 +285,7 @@ decision (R16). Case 4: a delivered review without its own URL (R17); case 5: de
 its hunk (R19), billing called low risk (R20), a finding said twice, a suggested reply, an unanchored
 inline comment (R21), line 2 without who acts or a blocker only in the facts line (R22), a rule-codes
 section or a stray not-checked footer (R23), a comment plus an approval (R24), a "[link removed]"
-fragment (R25), a reader score below the bar (R26). Cases 33-36: an approval with an uncleared flag,
+fragment (R25), a reader score below the bar (R26). Case 37: the minimal billing review (R28). Cases 33-36: an approval with an uncleared flag,
 with CI not green, on a changed head (all fail, R27), and a clean one (passes).
 
 The regression covers the gate and the renderer, not the model: it cannot show that a prompt change
