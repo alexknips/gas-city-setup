@@ -52,10 +52,10 @@ SCHEMA = {
             'type': 'object', 'additionalProperties': False,
             'required': ['question', 'options', 'recommendation', 'why', 'area', 'link', 'verified', 'confidence'],
             'properties': {
-                'question': {'type': 'string', 'description': 'One question ending in "?".'},
+                'question': {'type': 'string', 'maxLength': 280, 'description': 'One question ending in "?", at most 280 characters.'},
                 'options': {'type': 'array', 'minItems': 2, 'maxItems': 4, 'items': _TEXT},
-                'recommendation': _TEXT,
-                'why': {'type': 'string', 'description': 'One sentence: why only the reviewer can decide this.'},
+                'recommendation': {'type': 'string', 'maxLength': 280},
+                'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why only the reviewer can decide this.'},
                 'area': {'type': 'string', 'enum': pr_format.AREAS},
                 'link': {'type': 'object', 'additionalProperties': False, 'required': ['kind'], 'properties': {
                     'kind': {'type': 'string', 'enum': ['code', 'description', 'ticket'],
@@ -79,12 +79,12 @@ SCHEMA = {
                          'description': 'question = ask the author; change = the author must fix.'},
                 'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
                 'area': {'type': 'string', 'enum': pr_format.AREAS},
-                'what': {'type': 'string', 'description': 'One sentence: what these lines change.'},
-                'why': {'type': 'string', 'description': 'One sentence: why it matters, naming the area in words.'},
-                'ask': {'type': 'string', 'description': 'The exact change, or the exact question or evidence to ask for.'},
+                'what': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: what these lines change.'},
+                'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why it matters, naming the area in words.'},
+                'ask': {'type': 'string', 'maxLength': 280, 'description': 'At most 280 characters: the exact change, or the exact question or evidence to ask for.'},
                 'verified': {'type': 'string', 'description': 'The files you opened to confirm it.'},
                 'confidence': {'type': 'integer', 'minimum': 1, 'maximum': 10}}}},
-        'safe_to_skip': {'type': 'string', 'description': 'One line: what the rest of the diff is, e.g. "14 files: tests, UI copy, types".'},
+        'safe_to_skip': {'type': 'string', 'maxLength': 220, 'description': 'One line, at most 220 characters: what the rest of the diff is, e.g. "14 files: tests, UI copy, types".'},
         'reply_to_author': {'type': 'string', 'description': 'A short reply the reviewer could post to the author as is: the changes and questions, plainly. Empty for low risk.'},
         'checks': {'type': 'object', 'additionalProperties': False,
                    'required': ['description_matches_diff', 'behaviour_changes_have_tests',
@@ -208,7 +208,18 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged):
     hunks = '\n'.join(f"- {f['path']} near line {f['line']} (new side): {f['label']}" for f in flagged) or '- none'
     return (f'{head}{checklist}\n\nSTYLE GUIDE (how your answer will be rendered and checked):\n\n{style}\n\n'
             f'FLAGGED HUNKS (pattern matches on the diff, not findings; open each one, step 1):\n'
-            f'{hunks}\n\n{FINAL}')
+            f'{hunks}\n\nVALID ITEM RANGES (an item\'s line_start and line_end must both fall inside ONE of these '
+            f'ranges on its side, or the review is rejected):\n{hunk_ranges(diff)}\n\n{FINAL}')
+
+
+def hunk_ranges(diff, max_files=80):
+    """Each file's hunks as line ranges per side, so the model anchors items inside the diff (R3)."""
+    out = []
+    for path, f in list(pr_format.diff_index(diff).items())[:max_files]:
+        new = [f'{min(h[0])}-{max(h[0])}' for h in f['hunks'] if h[0]]
+        old = [f'{min(h[1])}-{max(h[1])}' for h in f['hunks'] if h[1]]
+        out.append(f"- {path}: new {', '.join(new) or 'none'}; old {', '.join(old) or 'none'}")
+    return '\n'.join(out) or '- none'
 
 
 def claude_bin():
