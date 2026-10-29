@@ -8,9 +8,10 @@ them. It is three orders and a few scripts: no agents, no formulas, nothing in t
   PRs are never reviewed (R15).
 - **`pr-review-run`** (every 5 min): reviews the next queued PR with one headless, read-only `claude -p`
   run, within a daily cap. The script, not the model, renders the review in the style guide's shape,
-  gates it, and delivers it as a **private page** on the town's dashboard. Slack gets the outcome word,
-  the PR link and the page link. **Nothing is posted under the reviewer's GitHub identity** (R0). A PR
-  whose only problem is CI gets one question for its author, without a model.
+  gates it, and posts it as a **submitted COMMENT review** under the reviewer's login: an honesty line
+  first, the items as inline comments, never a pending review (R0). Slack gets the outcome word and that
+  review's URL, once per PR head (R17, R18). A PR whose only problem is CI gets one question for its
+  author, without a model.
 - **`pr-review-feedback`** (hourly, no model): reads what the reviewer did with each review (submitted
   unchanged, edited, discarded; a thumbs-up or thumbs-down and replies in Slack) and keeps the score.
 
@@ -31,8 +32,8 @@ GitHub ──sweep (rules, no model)──► bead per PR + queue ──run─�
                                                                claude -p: Read/Grep/Glob only → line-anchored items (JSON)
                                                                script: outcome, render, GATE (fail: regenerate once, then hold)
                                                                ├─► re-check: still open? (R15)
-                                                               ├─► private page per PR (R0, R17); nothing on GitHub
-                                                               ├─► Slack: "<word>: <PR link> · <page link>", nothing else
+                                                               ├─► GitHub: a SUBMITTED COMMENT review, inline comments (R0, R4)
+                                                               ├─► Slack: "<word>: <review URL>", once per head (R17, R18)
                                                                └─► bead: outcome, closed
 feedback (hourly) ◄── the reviewer's actions on GitHub and Slack ──► score, Today card, regression inbox
 ```
@@ -44,12 +45,10 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PR_REVIEW` | `off` | Master switch. `on` runs the orders; `off` makes every fire exit at once. |
-| `PR_REVIEW_MODE` | `shadow` | Only changes the Slack words ("Would …" in shadow). Reviews are private pages in both modes: posting on GitHub, as a separate bot identity, is a later explicit change (R0). |
-| `PR_REVIEW_PAGES_DIR` | (none) | Where the private review pages go (mode 600 files, plus an `index.html`). Without it nothing is delivered (R17). |
-| `PR_REVIEW_PAGES_URL` | (none) | The URL that directory is served at, for the Slack link. Keep it on a private network. |
+| `PR_REVIEW_MODE` | `shadow` | `shadow`: every review is posted with event COMMENT. `live` (only on the reviewer's word) would use APPROVE and REQUEST_CHANGES; not built yet. |
 | `PR_REVIEW_EFFORT` | `high` | `claude --effort` for the review run. |
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
-| `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR. Nothing is posted as them. |
+| `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR, and whose `gh` login posts the reviews. |
 | `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
 | `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for Nils"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
@@ -86,8 +85,6 @@ pack keeps the repository's text on GitHub and in the work dir, and nowhere else
   ingest hook ships its session anywhere.
 - **What the scripts print** (what an order log or an agent's transcript sees) is ids, links,
   outcomes, counts, sizes and cost. Error messages keep only the scripts' own text.
-- **The review pages** (`PR_REVIEW_PAGES_DIR`) hold the review's text, mode 600, on the host, served on
-  the private network only. The script writes nothing else outside the work dir.
 - **The work dir** holds the code while a review runs. Its context files and worktree are deleted
   afterwards. The bare mirror stays, like any clone. It also keeps, mode 700, what was posted, the
   reviewer's edits and Slack replies (`feedback/`) and the real regression cases (`regression/`).
@@ -199,8 +196,9 @@ One per reviewed PR, derived by the script (`pr_format.decide`), not chosen by t
 | `questions` | only questions for the author; or CI red, missing or skipped with nothing else | **N questions for <author>** | "Would ask" |
 | `low-risk` | nothing for anyone, and CI passed | **Low risk: nothing to check** | "Would approve" |
 
-Rule flags alone never route a PR to the reviewer: they tell the model where to look first. Each page
-also has a suggested reply to the author, as text to copy; nothing is posted.
+Rule flags alone never route a PR to the reviewer: they tell the model where to look first. Each
+review ends with a suggested reply to the author that the reviewer can reuse. `pr_review.py --redeliver
+REPO#N` posts the stored result for the current head again without a model run (once per head, R18).
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
 review was delivered, R15), `held-gate` (the gate failed twice; nothing delivered), `held-secret` (the

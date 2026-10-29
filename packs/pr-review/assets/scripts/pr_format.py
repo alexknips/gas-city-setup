@@ -3,14 +3,13 @@
 
   diff_index(diff)              which lines of which file an item may point at
   decide(decisions, items, ci)  the outcome
-  render(...)                   the review as markdown (what the gate reads) ...
-  render_page(...)              ... and as the private HTML page that is delivered (R0, R17)
+  render(...)                   the review body (markdown), honesty line first ...
+  inline_comments(...)          ... and one inline comment per item, on its lines (R4)
   gate(...)                     the reasons a review breaks the style guide ([] = it may be delivered)
 
 `pr_format.py --regress DIR...` runs the gate over regression fixtures (README.md, "Quality loop").
 """
 import hashlib
-import html
 import json
 import os
 import re
@@ -19,8 +18,10 @@ import sys
 AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'behaviour patients notice',
          'product', 'compliance', 'other']
 KINDS = {'question': 'Ask {author}', 'change': 'Change'}
-FOOTER = ('Automated review (Claude Code); {name} has not read this PR. '
-          'Not checked: billing, plans, credits, pricing.')
+# Line 1 of every review (it is posted under the reviewer's login, so the author must see it is automated).
+HONEST = "Automated review by {name}'s review agents (Claude Code); {name} hasn't read this PR yet."
+HONEST_RE = re.compile(r"^Automated review by .+'s review agents \(Claude Code\); .+ hasn't read this PR yet\.$")
+FOOTER = 'Not checked: billing, plans, credits, pricing.'
 MARKER = 'Automated review'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
 
@@ -150,8 +151,10 @@ def headline(outcome, decisions, items, author, single_line=None):
 
 def render(repo, pr, outcome, decisions, items, safe_to_skip, reply, facts, rule_ids, name, author,
            single_line=None):
-    """The review as markdown: what the gate checks, and the text of the page."""
-    lines = [headline(outcome, decisions, items, author, single_line), '']
+    """The review body (markdown): the honesty line, then the outcome and count, the decisions with their
+    links, the items with links to their lines (each is also an inline comment), safe to skip, the
+    suggested reply, the facts line, and the footer."""
+    lines = [HONEST.format(name=name), '', headline(outcome, decisions, items, author, single_line), '']
     for k, d in enumerate(decisions, 1):
         lines += [f"{k}. **{d['question']}** · {d['area']} · [open {link_text(d)}]({decision_link(repo, pr, d)})",
                   f"   **Why you:** {d['why']}",
@@ -174,53 +177,24 @@ def render(repo, pr, outcome, decisions, items, safe_to_skip, reply, facts, rule
         lines += [f'**Safe to skip:** {safe_to_skip}', '']
     if reply:
         lines += [f'**Suggested reply to {author}:** {reply}', '']
-    lines += [facts, '', f"<sub>{FOOTER.format(name=name)}</sub>"]
+    lines += [facts, '', f"<sub>{FOOTER}</sub>"]
     if rule_ids:
         lines += ['', f"<details><summary>rules</summary>{', '.join(rule_ids)}</details>"]
     return '\n'.join(lines)
 
 
-def render_page(repo, pr, outcome, decisions, items, safe_to_skip, reply, facts, rule_ids, name, author,
-                reviewed_at, single_line=None):
-    """The private page (R0, R17): the same content as render(), as self-contained HTML (no external
-    resources), with the suggested reply in a copyable box."""
-    e = html.escape
-    out = [f"<h1>{e(headline(outcome, decisions, items, author, single_line).replace('**', ''))}</h1>",
-           f"<p class=meta><a href=\"{e(pr['url'])}\">{e(repo)}#{pr['number']}</a> · head "
-           f"<code>{e(pr['headRefOid'][:10])}</code> · reviewed {e(reviewed_at)}</p>"]
-    if decisions:
-        out.append('<h2>Your decisions</h2><ol>')
-        for d in decisions:
-            out.append(f"<li><p class=q>{e(d['question'])}</p><p class=meta>{e(d['area'])} · "
-                       f"<a href=\"{e(decision_link(repo, pr, d))}\">open {e(link_text(d).replace('`', ''))}</a></p>"
-                       f"<p><b>Why you:</b> {e(d['why'])}</p><p><b>Options:</b> {e('; '.join(d['options']))}</p>"
-                       f"<p><b>Recommended:</b> {e(d['recommendation'])}</p></li>")
-        out.append('</ol>')
-    if items:
-        out.append(f"<h2>{'For ' + e(author) if decisions else 'What to look at'}</h2><ol>")
-        for it in items:
-            rng = f"L{it['line_start']}" + ('' if it['line_start'] == it['line_end'] else f"-L{it['line_end']}")
-            url = diff_link(repo, pr['number'], it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
-            label = KINDS[it['kind']].format(author=author)
-            out.append(f"<li><p class=meta><a href=\"{e(url)}\">open line: {e(it['path'])} {rng}</a> · {e(it['area'])}</p>"
-                       f"<p><b>Changed:</b> {e(it['what'])}</p><p><b>Why it matters:</b> {e(it['why'])}</p>"
-                       f"<p><b>{e(label)}:</b> {e(it['ask'])}</p></li>")
-        out.append('</ol>')
-    if safe_to_skip:
-        out.append(f'<p><b>Safe to skip:</b> {e(safe_to_skip)}</p>')
-    if reply:
-        out.append(f'<h2>Suggested reply to {e(author)}</h2><textarea readonly rows=6>{e(reply)}</textarea>'
-                   '<p class=meta>Copy it into the PR yourself if you want; nothing was posted.</p>')
-    out.append(f'<p>{e(facts)}</p><p class=meta>{e(FOOTER.format(name=name))}</p>')
-    if rule_ids:
-        out.append(f"<details><summary>rules</summary>{e(', '.join(rule_ids))}</details>")
-    style = ('body{font:15px/1.45 system-ui,sans-serif;max-width:860px;margin:24px auto;padding:0 16px;color:#1d2125;'
-             'background:#fff}@media(prefers-color-scheme:dark){body{background:#16181b;color:#e3e5e8}a{color:#8ab4f8}}'
-             'h1{font-size:22px}h2{font-size:17px;margin-top:22px}li{margin:0 0 14px}.q{font-weight:600}'
-             '.meta{color:#777;font-size:13px}textarea{width:100%;font:inherit}')
-    return (f'<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
-            f'<meta name=robots content=noindex><title>Review {e(repo)}#{pr["number"]}</title><style>{style}</style>'
-            f'<body>{"".join(out)}</body></html>')
+def inline_comments(items, author):
+    """One inline comment per item, on its exact lines (R4); a range becomes a multi-line comment."""
+    out = []
+    for k, it in enumerate(items, 1):
+        side = 'RIGHT' if it.get('side', 'new') == 'new' else 'LEFT'
+        label = KINDS[it['kind']].format(author=author)
+        c = {'path': it['path'], 'line': it['line_end'], 'side': side,
+             'body': f"**{k}. {it['area']}**: {it['what']} {it['why']}\n\n**{label}:** {it['ask']}"}
+        if it['line_start'] != it['line_end']:
+            c.update(start_line=it['line_start'], start_side=side)
+        out.append(c)
+    return out
 
 
 def field_reasons(p, f, v):
@@ -294,12 +268,16 @@ def gate_entries(decisions, items, idx, outcome, tree_lines, pr_text, single_lin
     return why
 
 
-def gate_body(body, n_decisions, n_items, outcome, single_line=False):
-    """Reasons the rendered markdown breaks the style guide (also runs on bodies delivered earlier)."""
+def gate_body(body, n_decisions, n_items, outcome, single_line=False, comments=None):
+    """Reasons the rendered body breaks the style guide (also runs on bodies delivered earlier). With
+    `comments`, each item must have its inline comment (R4)."""
     why = []
     main = body.split('<details>')[0]
     lines = main.splitlines()
-    first = lines[0] if lines else ''
+    if not lines or not HONEST_RE.match(lines[0]):
+        why.append('R1: line 1 is not the honesty line')
+    rest = [l for l in lines[1:] if l.strip()]
+    first = rest[0] if rest else ''
     pat = LINE1.get(outcome)
     m = pat.match(first) if pat else None
     if not m:
@@ -321,11 +299,13 @@ def gate_body(body, n_decisions, n_items, outcome, single_line=False):
     if not re.search(r'^(CI passed|CI red|No CI ran|CI skipped|CI still running).* · (no )?merge conflict · \w+$', main, re.M):
         why.append('R8: no facts line')
     tail = [l for l in lines if l.strip()]
-    if not tail or not tail[-1].startswith('<sub>' + MARKER) or 'Not checked: billing, plans, credits, pricing.' not in tail[-1]:
+    if not tail or FOOTER not in tail[-1]:
         why.append('R9: the footer is not the last line')
-    if re.search(r'(?i)shadow mode|review agents', main):
+    if re.search(r'(?i)shadow mode|review agents', '\n'.join(lines[1:])):
         why.append('R9: boilerplate in the body')
-    prose = re.sub(r'\]\([^)]*\)', ']', main)  # link targets carry R40-R52 anchors, not rule codes
+    if comments is not None and not single_line and len(comments) != n_items:
+        why.append(f'R4: {len(comments)} inline comments for {n_items} items')
+    prose = re.sub(r'\]\([^)]*\)', ']', '\n'.join(lines[1:]))  # link targets carry R40-R52 anchors
     c = CODES_RE.search(prose.replace(tail[-1] if tail else '', ''))
     if c:
         why.append(f'R10: rule code "{c.group(0)}" in the body')
@@ -334,32 +314,35 @@ def gate_body(body, n_decisions, n_items, outcome, single_line=False):
     return why
 
 
-def gate_delivery(pr_state, page_url, post_slack=False, head=None, slack_heads=()):
-    """R15: never deliver for a merged or closed PR. R17: a delivered review has its own URL. R0: that
-    URL is the private page, never a GitHub review in the reviewer's name. R18: one Slack message per
-    (PR, head): a re-review of a head already posted updates the page and posts nothing."""
+REVIEW_URL = re.compile(r'^https://github\.com/[\w.-]+/[\w.-]+/pull/\d+#pullrequestreview-\d+$')
+
+
+def gate_delivery(pr_state, review_url, review_state=None, post_slack=False, head=None, slack_heads=()):
+    """R15: never deliver for a merged or closed PR. R17: a delivered review has its own GitHub review URL.
+    R0: never a pending review (it takes the reviewer's own review slot). R18: one Slack message per
+    (PR, head); the same head is never reviewed twice."""
     why = []
     if post_slack and head and head in slack_heads:
         why.append('R18: a second Slack message for the same head')
     if pr_state != 'OPEN':
         why.append(f'R15: the PR is {pr_state.lower()}')
-    if not page_url or not re.match(r'^https?://', page_url):
-        why.append('R17: the review has no URL of its own')
-    elif re.search(r'github\.com/', page_url):
-        why.append("R0: the review's URL is on GitHub, not the private page")
+    if not review_url or not REVIEW_URL.match(review_url):
+        why.append('R17: the review has no GitHub review URL of its own')
+    if review_state == 'PENDING':
+        why.append('R0: a pending review was created')
     return why
 
 
-def gate(decisions, items, idx, outcome, body, tree_lines=None, pr_text='', single_line=False):
+def gate(decisions, items, idx, outcome, body, tree_lines=None, pr_text='', single_line=False, comments=None):
     return (gate_entries(decisions, items, idx, outcome, tree_lines, pr_text, single_line)
-            + gate_body(body, len(decisions), len(items), outcome, single_line))
+            + gate_body(body, len(decisions), len(items), outcome, single_line, comments))
 
 
 def regress(dirs):
     """Run the gate over every fixture (*.json) in dirs. A fixture holds `expect` ("pass" or "fail"),
     optionally `expect_reasons` (rule ids that must be among the reasons), and either `body` (+ outcome,
     n_items, n_decisions) for a delivered body, or `decisions` + `items` + `diff` + `outcome` to render
-    and gate; `delivery` ({pr_state, page_url}) adds the delivery checks. Returns the mismatches."""
+    and gate; `delivery` ({pr_state, review_url, review_state, ...}) adds the delivery checks. Returns the mismatches."""
     bad = total = 0
     for d in dirs:
         if not os.path.isdir(d):
@@ -381,11 +364,11 @@ def regress(dirs):
                               fx.get('facts', 'CI passed · no merge conflict · open'), fx.get('rule_ids', []),
                               'Reviewer', 'the author', single)
                 reasons = gate(fx.get('decisions', []), fx['items'], idx, fx['outcome'], body, fx.get('tree_lines'),
-                               fx.get('pr_text', ''), bool(single))
+                               fx.get('pr_text', ''), bool(single), inline_comments(fx['items'], 'the author'))
             if 'delivery' in fx:
                 dl = fx['delivery']
-                reasons += gate_delivery(dl.get('pr_state', 'OPEN'), dl.get('page_url'), dl.get('post_slack', False),
-                                         dl.get('head'), dl.get('slack_heads', []))
+                reasons += gate_delivery(dl.get('pr_state', 'OPEN'), dl.get('review_url'), dl.get('review_state'),
+                                         dl.get('post_slack', False), dl.get('head'), dl.get('slack_heads', []))
             verdict = 'fail' if reasons else 'pass'
             need = set(fx.get('expect_reasons', []))
             got = {r.split(':')[0] for r in reasons}

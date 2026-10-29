@@ -7,16 +7,19 @@ only read; this script renders, gates and delivers the result.
   pr_review.py --dry-run [--pr REPO#N]
                                 pick, prepare and build the prompt; run no model, deliver nothing
 
-R0: nothing is ever posted under the reviewer's GitHub identity. A review is a private page per PR on the
-town dashboard (PR_REVIEW_PAGES_DIR, served at PR_REVIEW_PAGES_URL), and Slack gets the outcome word, the
-PR link and the page link (R17). The model runs in a git worktree at the PR head with Read, Grep and Glob
-only, no hooks, no MCP, no settings from the repository, reads outside the worktree denied, no GitHub or
-Slack credential in its environment, and LOOMTRACER_INGEST_DISABLE=1. It returns decisions for the
-reviewer (R16) and line-anchored items for the author as JSON. This script derives the outcome, renders
-the review in the style guide's shape (assets/style-guide.md) and runs the gate (pr_format.py): a review
-that fails is regenerated once with the gate's reasons, and if it fails again nothing is delivered
-("held-gate"). Right before delivery it re-checks that the PR is still open (R15). What it prints and
-keeps in the runtime is ids, links, outcomes, counts, gate reasons and cost: never the repository's text.
+Delivery (Alex, 2026-10-29 20:45Z): every reviewed open PR gets a SUBMITTED review on GitHub under the
+reviewer's login, event COMMENT (APPROVE and REQUEST_CHANGES need the reviewer's word), never a pending
+one (R0). Its first line says it is automated and not yet read by the reviewer; the items are inline
+comments on their exact lines. Slack gets the outcome word and that review's own URL (R17), once per PR
+head (R18). Right before posting the script re-checks that the PR is still open (R15). The model runs in
+a git worktree at the PR head with Read, Grep and Glob only, no hooks, no MCP, no settings from the
+repository, reads outside the worktree denied, no GitHub or Slack credential, LOOMTRACER_INGEST_DISABLE=1,
+and returns decisions for the reviewer (R16) and line-anchored items for the author as JSON. This script
+derives the outcome, renders it (assets/style-guide.md) and gates it (pr_format.py): a review that fails
+is regenerated once with the gate's reasons, then held. What it prints and keeps in the runtime is ids,
+links, outcomes, counts, gate reasons and cost: never the repository's text.
+
+  pr_review.py --redeliver REPO#N   deliver the stored result for the PR's current head again (no model)
 """
 import argparse
 import datetime as dt
@@ -325,60 +328,115 @@ def tree_lines(tree, paths):
     return out
 
 
-def deliver(cfg, key, entry, pr, outcome, page_html, body, extra):
-    """R0, R15, R17: re-check that the PR is open, write the private page, post '<word>: <PR> · <page>' to
-    Slack. Nothing goes to GitHub."""
+def post_comment_review(repo, pr, body, comments):
+    """A SUBMITTED review with event COMMENT (never pending, R0), its items as inline comments. Returns
+    (status, review url, review state, review id)."""
+    payload = {'commit_id': pr['headRefOid'], 'body': body, 'event': 'COMMENT'}
+    for with_comments in ((True, False) if comments else (False,)):
+        p = dict(payload, comments=comments) if with_comments else payload
+        r = subprocess.run(['gh', 'api', '-X', 'POST', f"repos/{repo}/pulls/{pr['number']}/reviews", '--input', '-'],
+                           input=json.dumps(p), capture_output=True, text=True, timeout=120)
+        if r.returncode == 0:
+            out = json.loads(r.stdout)
+            return ('ok' if with_comments or not comments else 'ok-no-inline'), out.get('html_url'), out.get('state'), out.get('id')
+    code = re.search(r'HTTP (\d{3})', r.stderr)
+    return f"error:{code.group(1) if code else r.returncode}", None, None, None
+
+
+def deliver(cfg, key, entry, pr, outcome, body, comments, result, extra):
+    """R15, R18, R0, R17: re-check that the PR is open and this head was not reviewed yet, post the COMMENT
+    review, delete it at once if GitHub made it pending, and post '<word>: <review URL>' to Slack."""
+    head = pr['headRefOid']
     fresh = pr_rules.get_pr(entry['repo'], entry['number'])
-    name = f"{entry['repo'].split('/')[1]}-{entry['number']}-{pr['headRefOid'][:7]}.html"
-    url = f"{cfg['pages_url'].rstrip('/')}/{name}" if cfg['pages_url'] and cfg['pages_dir'] else None
-    reasons = pr_format.gate_delivery(fresh['state'], url)
-    if reasons:
-        out = 'closed' if fresh['state'] != 'OPEN' else 'held-gate'
-        finish(cfg, key, dict(entry, head=pr['headRefOid']), out, {**extra, 'gate': [r.split(':')[0] for r in reasons]})
+    if fresh['state'] != 'OPEN':
+        finish(cfg, key, dict(entry, head=head), 'closed', {**extra, 'gate': ['R15']})
         return
-    os.makedirs(cfg['pages_dir'], mode=0o700, exist_ok=True)
-    path = os.path.join(cfg['pages_dir'], name)
-    with open(path + '.tmp', 'w') as f:
-        f.write(page_html)
-    os.chmod(path + '.tmp', 0o600)
-    os.replace(path + '.tmp', path)
-    pr_state.keep_posted(cfg, entry, pr['headRefOid'], body, [])
-    # R18: one Slack message per (PR, head). A re-review of a head already posted only updates the page.
-    heads = list(entry.get('slack_heads') or ([entry['head']] if entry.get('slack_ts') and entry.get('head') else []))
-    if pr['headRefOid'] in heads:
-        slack, ts = 'skipped-same-head', None
-    else:
-        slack, ts = pr_state.slack_post(cfg, outcome, entry['url'], url)
-        if slack == 'ok':
-            heads.append(pr['headRefOid'])
-    extra.update(page=url, body_sha=body_sha(body), delivered_at=pr_state.iso(pr_state.now()), slack=slack,
-                 slack_heads=heads[-20:])
+    if fresh['headRefOid'] != head:
+        finish(cfg, key, dict(entry, status='queued'), 'requeued', {**extra, 'note': 'a new head arrived during the review'})
+        return
+    heads = list(entry.get('review_heads') or [])
+    if head in heads:
+        finish(cfg, key, dict(entry, head=head), entry.get('outcome') or outcome, {**extra, 'posted': 'skipped-same-head'})
+        return
+    posted, url, state, rid = post_comment_review(entry['repo'], pr, body, comments)
+    if posted.startswith('ok') and state == 'PENDING':  # R0: never leave one in the reviewer's slot
+        subprocess.run(['gh', 'api', '-X', 'DELETE', f"repos/{entry['repo']}/pulls/{entry['number']}/reviews/{rid}"],
+                       capture_output=True, text=True, timeout=60)
+    reasons = pr_format.gate_delivery(fresh['state'], url, state)
+    if not posted.startswith('ok') or reasons:
+        finish(cfg, key, dict(entry, head=head), 'error', {**extra, 'posted': posted, 'gate': [r.split(':')[0] for r in reasons]})
+        return
+    heads.append(head)
+    pr_state.keep_posted(cfg, entry, head, body, comments, result)
+    slack, ts = pr_state.slack_post(cfg, outcome, entry['url'], url)
+    extra.update(review_url=url, review_id=rid, review_heads=heads[-20:], body_sha=body_sha(body), posted=posted,
+                 delivered_at=pr_state.iso(pr_state.now()), slack=slack)
     if ts:
         extra['slack_ts'] = ts
-    elif entry.get('slack_ts'):
-        extra['slack_ts'] = entry['slack_ts']
-    finish(cfg, key, dict(entry, head=pr['headRefOid']), outcome, extra)
-    write_index(cfg)
+    finish(cfg, key, dict(entry, head=head), outcome, extra)
 
 
-def write_index(cfg):
-    """The pages dir's index: one link per delivered review, newest first (links and outcomes only)."""
-    if not cfg['pages_dir']:
-        return
+def redeliver(cfg, key):
+    """Deliver the stored result for the PR's current head again, without a model run."""
     with pr_state.locked(cfg['state']) as st:
-        rows = sorted((e for e in st['prs'].values() if e.get('page')), key=lambda e: e.get('delivered_at') or '',
-                      reverse=True)[:200]
-    import html as _h
-    lis = ''.join(f"<li>{_h.escape(e.get('delivered_at') or '')} · {_h.escape(pr_state.OUTCOMES.get(e.get('outcome'), ('', ''))[0] or e.get('outcome') or '')}"
-                  f" · <a href=\"{_h.escape(e['page'].rsplit('/', 1)[-1])}\">{_h.escape(e['repo'])}#{e['number']}</a></li>" for e in rows)
-    doc = ('<!doctype html><meta charset=utf-8><meta name=robots content=noindex><title>PR reviews</title>'
-           '<style>body{font:15px system-ui,sans-serif;max-width:860px;margin:24px auto;padding:0 16px}</style>'
-           f'<h1>PR reviews</h1><ul>{lis}</ul>')
-    p = os.path.join(cfg['pages_dir'], 'index.html')
-    with open(p + '.tmp', 'w') as f:
-        f.write(doc)
-    os.chmod(p + '.tmp', 0o600)
-    os.replace(p + '.tmp', p)
+        entry = dict(st['prs'][key])
+    pr = pr_rules.get_pr(entry['repo'], entry['number'])
+    p = os.path.join(cfg['work'], 'feedback', 'posted',
+                     f"{entry['repo'].replace('/', '__')}-{entry['number']}-{pr['headRefOid'][:10]}.json")
+    if not os.path.exists(p):
+        print(json.dumps({'pr': entry['url'], 'redeliver': 'no stored result for this head'}))
+        return
+    stored = json.load(open(p))
+    res = stored.get('result') or result_from_body(stored['body'])
+    author = author_of(pr)
+    ci = pr_rules.ci_state(pr)
+    facts = pr_format.facts_line(pr, ci, ci_detail(pr))
+    args = (entry['repo'], pr, res['outcome'], res['decisions'], res['items'], res['safe_to_skip'], res['reply'],
+            facts, res['rule_ids'], NAME, author)
+    body = pr_format.render(*args, single_line=res.get('single_line'))
+    comments = pr_format.inline_comments(res['items'], author)
+    reasons = pr_format.gate(res['decisions'], res['items'], pr_format.diff_index(pr_diff(entry['repo'], pr['number'])),
+                             res['outcome'], body, None, pr.get('body') or '', bool(res.get('single_line')), comments)
+    if reasons:
+        finish(cfg, key, entry, 'held-gate', {'model': False, 'redeliver': True, 'gate': [r.split(':')[0] for r in reasons]})
+        return
+    deliver(cfg, key, entry, pr, res['outcome'], body, comments, res, {'model': False, 'redeliver': True, 'gate': []})
+
+
+def pr_diff(repo, number):
+    r = subprocess.run(['gh', 'api', f'repos/{repo}/pulls/{number}', '-H', 'Accept: application/vnd.github.diff'],
+                       capture_output=True, text=True, timeout=120)
+    return r.stdout if r.returncode == 0 else ''
+
+
+def result_from_body(body):
+    """Decisions and items back from a body this pack rendered (results stored before they kept JSON)."""
+    lines = body.splitlines()
+    head = next((l for l in lines if l.startswith('**') and ('Changes requested' in l or 'question' in l
+                                                             or 'Needs you' in l or 'Low risk' in l)), '')
+    outcome = ('escalate' if 'Needs you' in head else 'changes' if 'Changes requested' in head
+               else 'questions' if 'question' in head else 'low-risk')
+    items, decisions, cur = [], [], None
+    for l in lines:
+        m = re.match(r'^(?:\d+\.|-) \[`([^`]+)` L(\d+)(?:-L(\d+))?( \(removed lines\))?\]\([^)]*\) · (.+)$', l)
+        if m:
+            cur = {'path': m.group(1), 'line_start': int(m.group(2)), 'line_end': int(m.group(3) or m.group(2)),
+                   'side': 'old' if m.group(4) else 'new', 'area': m.group(5), 'severity': 'medium', 'confidence': 9}
+            items.append(cur)
+            continue
+        if cur is not None:
+            for label, field in (('Changed', 'what'), ('Why it matters', 'why')):
+                if l.strip().startswith(f'**{label}:**'):
+                    cur[field] = l.split(':**', 1)[1].strip()
+            m2 = re.match(r'^\s+\*\*(Ask [^:]+|Change):\*\* (.+)$', l)
+            if m2:
+                cur['kind'] = 'change' if m2.group(1) == 'Change' else 'question'
+                cur['ask'] = m2.group(2).strip()
+    skip = next((l.split(':**', 1)[1].strip() for l in lines if l.startswith('**Safe to skip:**')), '')
+    reply = next((l.split(':**', 1)[1].strip() for l in lines if l.startswith('**Suggested reply')), '')
+    rules = re.search(r'<summary>rules</summary>([^<]*)</details>', body)
+    return {'outcome': outcome, 'decisions': decisions, 'items': items, 'safe_to_skip': skip, 'reply': reply,
+            'rule_ids': [x.strip() for x in rules.group(1).split(',')] if rules else []}
 
 
 def finish(cfg, key, entry, outcome, extra):
@@ -424,6 +482,9 @@ def ci_escalation(cfg, key, entry, dry):
     if pr['state'] != 'OPEN':
         finish(cfg, key, entry, 'closed', {'model': False})
         return
+    if pr['headRefOid'] in (entry.get('review_heads') or []):  # R18: this head was reviewed already
+        finish(cfg, key, entry, entry.get('outcome') or 'skipped', {'model': False, 'posted': 'skipped-same-head'})
+        return
     ci = pr_rules.ci_state(pr)
     files = pr_rules.pr_files(entry['repo'], pr['number'])
     base = pr_rules.base_for(pr, {pr['baseRefName']: pr_rules.branch_oid(entry['repo'], pr['baseRefName'])})
@@ -444,8 +505,9 @@ def ci_escalation(cfg, key, entry, dry):
     if reasons:
         finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-gate', {'model': False, 'gate': reasons})
         return
-    page = pr_format.render_page(*args, pr_state.iso(pr_state.now()), single_line=line)
-    deliver(cfg, key, entry, pr, 'questions', page, body, {'model': False, 'ci': ci, 'gate': []})
+    result = {'outcome': 'questions', 'decisions': [], 'items': [], 'safe_to_skip': '', 'reply': '',
+              'rule_ids': rule_ids(hits), 'single_line': line}
+    deliver(cfg, key, entry, pr, 'questions', body, [], result, {'model': False, 'ci': ci, 'gate': []})
 
 
 def model_review(cfg, key, entry, dry):
@@ -493,8 +555,10 @@ def model_review(cfg, key, entry, dry):
             reply = model['reply_to_author'] if outcome != 'low-risk' else ''
             args = (repo, pr, outcome, decisions, items, model['safe_to_skip'], reply, facts, rule_ids(hits), NAME, author)
             body = pr_format.render(*args)
+            comments = pr_format.inline_comments(items, author)
             links = [(d.get('link') or {}).get('path') for d in decisions if (d.get('link') or {}).get('kind') == 'code']
-            reasons = pr_format.gate(decisions, items, idx, outcome, body, tree_lines(tree, links), pr.get('body') or '')
+            reasons = pr_format.gate(decisions, items, idx, outcome, body, tree_lines(tree, links), pr.get('body') or '',
+                                     comments=comments)
             if not reasons:
                 break
             extra.setdefault('gate_first', [r.split(':')[0] for r in reasons])
@@ -507,11 +571,12 @@ def model_review(cfg, key, entry, dry):
         if reasons:
             finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-gate', extra)
             return
-        page = pr_format.render_page(*args, pr_state.iso(pr_state.now()))
-        if leaks([page]):
+        if leaks([body] + [c['body'] for c in comments]):
             finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-secret', extra)
             return
-        deliver(cfg, key, entry, pr, outcome, page, body, extra)
+        result = {'outcome': outcome, 'decisions': decisions, 'items': items, 'safe_to_skip': model['safe_to_skip'],
+                  'reply': reply, 'rule_ids': rule_ids(hits)}
+        deliver(cfg, key, entry, pr, outcome, body, comments, result, extra)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         # Only our own RuntimeError texts are kept; an OSError can name a file of the repository.
         detail = str(e)[:120] if isinstance(e, RuntimeError) else getattr(e, 'errno', None)
@@ -566,8 +631,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--pr', metavar='REPO#N')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--redeliver', metavar='REPO#N')
     a = ap.parse_args()
     cfg = pr_state.config()
+    if a.redeliver:
+        redeliver(cfg, a.redeliver)
+        return
     if not cfg['on'] and not a.dry_run and not a.pr:
         print(json.dumps({'skipped': 'PR_REVIEW is off'}))
         return

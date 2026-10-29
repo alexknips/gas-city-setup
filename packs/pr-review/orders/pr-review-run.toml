@@ -6,12 +6,12 @@
 # reads outside the worktree denied, no GitHub or Slack credential, LOOMTRACER_INGEST_DISABLE=1.
 # It returns decisions for the reviewer and items for the author as JSON; this script derives the outcome,
 # renders it (assets/style-guide.md), gates it (regenerate once, then hold), re-checks that the PR is
-# still open, and delivers a PRIVATE PAGE in PR_REVIEW_PAGES_DIR. Slack gets "<word>: <PR> · <page>".
-# Nothing is ever posted under the reviewer's GitHub identity (R0).
+# still open, and posts a SUBMITTED COMMENT review (never pending, R0): an honesty line first, the items as
+# inline comments. Slack gets "<word>: <review URL>", once per PR head (R17, R18).
 # Manual run: gc order run pr-review-run
 # Dry run:    $PACK_DIR/assets/scripts/pr-review-run.sh --dry-run [--pr owner/repo#N]  (no model, no delivery)
 [order]
-description = "PR review run: one capped, read-only model review per run, delivered as a private page + a Slack link"
+description = "PR review run: one capped, read-only model review per run, posted as a COMMENT review + a Slack link"
 scope = "city"
 exec = "$PACK_DIR/assets/scripts/pr-review-run.sh"
 trigger = "cooldown"

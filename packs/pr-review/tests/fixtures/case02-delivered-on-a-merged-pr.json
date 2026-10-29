@@ -24,6 +24,7 @@
  "safe_to_skip": "1 test file.",
  "delivery": {
   "pr_state": "MERGED",
-  "page_url": "http://dash.example/pr-review/repo-1-aaaaaaa.html"
+  "review_url": "https://github.com/example/repo/pull/1#pullrequestreview-1001",
+  "review_state": "COMMENTED"
  }
 }

@@ -24,6 +24,6 @@
  "safe_to_skip": "1 test file.",
  "delivery": {
   "pr_state": "OPEN",
-  "page_url": null
+  "review_url": null
  }
 }

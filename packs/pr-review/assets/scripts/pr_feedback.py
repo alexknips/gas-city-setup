@@ -37,11 +37,13 @@ VERDICTS = {'good', 'bad', 'rejected'}
 
 def reviews_by(repo, number, reviewer):
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq',
-                        '.[] | {state, login: .user.login, submitted_at}'], capture_output=True, text=True, timeout=120)
+                        '.[] | {id, state, login: .user.login, submitted_at, ours: (.body | startswith("Automated review"))}'],
+                       capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return None
     rows = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
-    return [x for x in rows if x['login'].lower() == reviewer.lower() and x['state'] != 'PENDING']
+    # Our own automated reviews are posted under the same login; they are not the reviewer's decision.
+    return [x for x in rows if x['login'].lower() == reviewer.lower() and x['state'] != 'PENDING' and not x['ours']]
 
 
 def decision(entry, reviewer):

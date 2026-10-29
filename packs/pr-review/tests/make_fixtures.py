@@ -49,6 +49,7 @@ DECISION = {
     'area': 'compliance', 'link': {'kind': 'code', 'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 14},
     'verified': 'read remind() and the smsClient wrapper', 'confidence': 9}
 TREE = {'src/notify/send.ts': 40, 'test/notify.test.ts': 4}
+REVIEW = 'https://github.com/example/repo/pull/1#pullrequestreview-1001'
 PAGE = 'http://dash.example/pr-review/repo-1-aaaaaaa.html'
 QUESTION = dict(GOOD_ITEM, kind='question', ask='Does the SMS text need the full name at all?')
 
@@ -71,32 +72,36 @@ CASES = {
     # Case 2 (20:19Z, on a merged PR: "was merged. we don't need to review it"): R15.
     'case02-delivered-on-a-merged-pr': {
         'expect': 'fail', 'expect_reasons': ['R15'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'MERGED', 'page_url': PAGE}},
+        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'MERGED', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     # Case 3 (20:21Z: "that review comment needs to link to the human decisions ... otherwise you do not
     # need me!"): needs you without a linked decision for the reviewer. R16.
     'case03-needs-you-without-decisions': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'items': [GOOD_ITEM],
         'safe_to_skip': '1 test file.'},
-    # Case 4 (20:21Z): a delivered review without its own URL; a pending GitHub review has none. R17.
+    # Case 4 (20:21Z, 20:45Z): a delivered review without its own GitHub review URL. R17.
     'case04-delivered-without-own-url': {
         'expect': 'fail', 'expect_reasons': ['R17'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'page_url': None}},
-    # R0 (20:08Z: our pending reviews took the reviewer's own review slot): never a GitHub review.
-    'case05-delivered-as-a-github-review': {
+        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': None}},
+    # 20:45Z ("don't link to the dashboard but actually leave a review comment every single time on the PR
+    # and then link to that"): a page instead of a review comment. R17.
+    'case05-delivered-as-a-page': {
+        'expect': 'fail', 'expect_reasons': ['R17'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
+        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': PAGE}},
+    # Case 6 (20:08Z: pending reviews took the reviewer's own review slot): a pending review created. R0.
+    'case17-pending-review-created': {
         'expect': 'fail', 'expect_reasons': ['R0'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
-        'safe_to_skip': '1 test file.',
-        'delivery': {'pr_state': 'OPEN', 'page_url': 'https://github.com/example/repo/pull/1#pullrequestreview-1'}},
+        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'PENDING'}},
     # R18 (20:42Z, the mayor: two runs of the same head both posted to Slack): one message per head.
     'case16-second-slack-post-for-the-same-head': {
         'expect': 'fail', 'expect_reasons': ['R18'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
         'safe_to_skip': '1 test file.',
-        'delivery': {'pr_state': 'OPEN', 'page_url': PAGE, 'post_slack': True, 'head': 'a' * 40,
+        'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED', 'post_slack': True, 'head': 'a' * 40,
                      'slack_heads': ['a' * 40]}},
     'case06-needs-you-with-a-linked-decision': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
         'items': [GOOD_ITEM], 'safe_to_skip': '1 test file: a happy-path test.',
         'reply': 'Thanks. Please drop the body from the log line; I will decide what the SMS may say.',
-        'delivery': {'pr_state': 'OPEN', 'page_url': PAGE}},
+        'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     'case07-decision-links-a-missing-file': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
         'decisions': [dict(DECISION, link={'kind': 'code', 'path': 'src/notify/gone.ts', 'line_start': 1, 'line_end': 2})],
@@ -118,7 +123,7 @@ CASES = {
         'safe_to_skip': '1 test file.'},
     'case12-low-risk-clean': {
         'expect': 'pass', 'outcome': 'low-risk', 'diff': DIFF, 'items': [],
-        'safe_to_skip': 'all 2 files: a queue call and a test.', 'delivery': {'pr_state': 'OPEN', 'page_url': PAGE}},
+        'safe_to_skip': 'all 2 files: a queue call and a test.', 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     'case13-ci-only-one-line': {
         'expect': 'pass', 'outcome': 'questions', 'diff': DIFF, 'items': [],
         'single_line': 'No CI ran on this commit and nothing else is flagged; can you run it?',
