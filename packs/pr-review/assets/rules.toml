@@ -1,0 +1,107 @@
+# Zero-token sweep rules (README.md, "Rules"). Each rule names the criterion it serves (`area`) and
+# matches on a PR's changed paths (`paths`), on its added lines (`added`), or both; `in_paths` limits
+# `added` to files whose path matches, `not_paths` skips files whose path matches. Patterns are Python
+# regexes, searched (not anchored); keep one term per pattern, so a backtest can say which term flags
+# what (markers p<i> and a<i> are indexes into `paths` and `added`). A city replaces this file with
+# PR_REVIEW_RULES = "<path>". The code-defined rules (requested, ci-*, migration*, conflicts, untested,
+# no-description) are always on and are described in the README.
+#
+# Areas: A1 PHI, A2 security and SOC 2, A4 cannot be undone, A5 behaviour people notice, A7 CI.
+# A PR that trips any rule in a `select` area is reviewed (within the daily cap); other rules only tell
+# the reviewer what to ask about. A3 (money) has no rules: it is not checked, and every review says so.
+select_areas = ["A1", "A2", "A4", "A7"]
+# Test files: a rule skips them unless it says `tests = "also"` or `tests = "only"`. In the first
+# backtest most DROP, auth-path and token hits were in tests only (README, "Calibration").
+test_paths = ['(?i)(^|/)(tests?|__tests__|spec|e2e|cypress|playwright|fixtures?|mocks?|seeds?|factories)/', '(?i)\.(test|spec)\.|_test\.|(^|/)test_[^/]*$']
+# Docs and lockfiles say nothing about behaviour; their added lines are not matched.
+not_paths = ['(?i)\.(md|mdx|txt|rst|lock|snap|svg|png|jpe?g|gif|ico|pdf)$', '(?i)(^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|CHANGELOG[^/]*)$']
+
+[[rule]]
+id = "phi-schema"
+area = "A1"
+label = "schema, model or migration lines that name patient data"
+in_paths = ['(?i)(migrations?/|migrate/|alembic/|drizzle/|schema|models?/|entities/|\.prisma$|\.sql$)']
+added = ['(?i)\b(patients?|members?)\b', '(?i)\b(dob|date_?of_?birth|birth_?date)\b', '(?i)\b(ssn|social_?security)\b', '(?i)\b(mrn|medical_?record\w*)\b', '(?i)\b(diagnos\w*|icd_?10|conditions?)\b', '(?i)\b(medications?|prescriptions?)\b', '(?i)\b(insurance\w*|member_?id|policy_?number|payer\w*)\b', '(?i)\b(first_?name|last_?name|full_?name)\b', '(?i)\b(phone\w*|address\w*|zip_?code|postal_?code)\b']
+
+[[rule]]
+id = "phi-logs"
+area = "A1"
+label = "a log, error or print call that passes patient data"
+# A log call whose arguments interpolate or pass a patient-data field: `${patient.email}`, `, dob)`,
+# `patient.phone`. A message that only says the word ("patient sync done") does not count.
+added = ['(?i)(console\.(log|info|warn|error|debug)|logger\.\w+|\blog\.(info|warn|warning|error|debug|exception)|logging\.\w+|\bprint\(|capture(Exception|Message)|new \w*Error\(|raise \w+\().*(\$\{[^}]*|[(,]\s*|\b(patient|member|user|contact|lead)\??\.)(patients?|dob|birth\w*|ssn|mrn|diagnos\w*|medications?|insurance\w*|phone\w*|address\w*|email\w*|first_?name|last_?name|full_?name)\b']
+
+[[rule]]
+id = "phi-third-party"
+area = "A1"
+label = "analytics, export or a third party that could receive patient data"
+paths = ['(?i)(analytics|telemetry|tracking)', '(?i)\bexports?\b', '(?i)webhooks?', '(?i)integrations?/']
+added = ['(?i)\b(posthog|segment|mixpanel|amplitude|gtag|google-analytics)\b', '(?i)\b(datadog|sentry)\b', '(?i)\b(intercom|hubspot|salesforce|zapier)\b', '(?i)\b(openai|anthropic|gemini)\b', '(?i)\bwebhooks?\b', '(?i)\b(to_csv|csv\.writer|createObjectCsvWriter|exportTo\w+|putObject|upload_file)\b']
+
+[[rule]]
+id = "phi-ehr"
+area = "A1"
+label = "code of an EHR integration (Athena, Epic, MyChart, FHIR, HL7 and similar)"
+paths = ['(?i)athena', '(?i)(mychart|\bepic\b)', '(?i)(fhir|hl7)', '(?i)\b(ehr|emr)s?\b', '(?i)(redox|healthie|elation|drchrono|cerner)']
+
+[[rule]]
+id = "phi-ehr-write"
+area = "A1"
+label = "a line that writes, sends or syncs to an EHR"
+# A write verb called on the same line as an EHR name, in either order. Mentions alone (UI text,
+# types, reads) do not count: in the first backtest the bare names flagged 30% of all PRs.
+added = ['(?i)\b(athena\w*|epic|mychart|fhir|ehr|emr|redox|healthie|elation)\b.*\b(post|put|patch|create|update|upsert|write|push|send|sync|delete|cancel|book)\w*\(', '(?i)\b(post|put|patch|create|update|upsert|write|push|send|sync|delete|cancel|book)\w*\(.*\b(athena\w*|epic|mychart|fhir|ehr|emr|redox|healthie|elation)\b', '''(?i)method:\s*['"](POST|PUT|PATCH|DELETE)['"].*\b(athena|epic|mychart|fhir|ehr|emr)''']
+
+[[rule]]
+id = "phi-fixtures"
+area = "A1"
+label = "a test, fixture or seed line that looks like real personal data"
+tests = "only"
+# An SSN shape, a phone number outside the fictional 555 exchange, an email outside test domains.
+added = ['\b\d{3}-\d{2}-\d{4}\b', '\(?\b\d{3}\)?[-. ](?!555)\d{3}[-. ]\d{4}\b', '(?i)[\w.+-]+@(?!(example|test|localhost|acme|foo|bar)\b)[\w-]+\.(com|org|net|io|us|health)\b']
+
+[[rule]]
+id = "sec-auth"
+area = "A2"
+label = "sign-in, sessions, roles or permissions"
+paths = ['(?i)(auth(?!or)|login|signin|sign-in|signup|logout)', '(?i)session', '(?i)(oauth|sso|saml|oidc|jwt)', '(?i)(passw(or)?d|mfa|2fa|\botp\b)', '(?i)(permission|rbac|\broles?\b|\bacl\b|guards?/)', '(?i)polic(y|ies)', '(?i)(^|/)middleware\.\w+$']
+
+[[rule]]
+id = "sec-secrets"
+area = "A2"
+label = "a secret, key or credential file or value"
+paths = ['(?i)((^|/)\.env(\.|$)|\.pem$|\.key$|\.p12$|\.pfx$)', '(?i)(secrets?(/|\.)|credentials)']
+added = ['AKIA[0-9A-Z]{16}', '-----BEGIN [A-Z ]*PRIVATE KEY-----', '\bxox[abposr]-[A-Za-z0-9-]{10,}', '\bgh[pousr]_[A-Za-z0-9]{20,}', '\bsk-[A-Za-z0-9_-]{20,}', '''(?i)(secret|api_?key|passw(or)?d|token)\w*\s*[:=]\s*['"][A-Za-z0-9+/_=-]{24,}['"]''']
+
+[[rule]]
+id = "sec-infra"
+area = "A2"
+label = "infrastructure: IAM, WAF, Kubernetes, CDK, Terraform, containers"
+paths = ['(?i)(\.tf$|\.tfvars$|terraform/|pulumi)', '(?i)((^|/)cdk|cloudformation|serverless\.ya?ml)', '(?i)(\bk8s\b|kubernetes|helm/|kustomiz|(^|/)charts/[^/]+/(Chart\.ya?ml|values[^/]*\.ya?ml|templates/))', '(?i)((^|/)iam\b|waf)', '(?i)(^|/)infra(structure)?/', '(?i)(dockerfile|docker-compose)', '(?i)(nginx|vercel\.json|netlify\.toml|firebase\.json|\.rules$)']
+added = ['(?i)(iam:|PolicyStatement|AssumeRole|wafv2|SecurityGroup|0\.0\.0\.0/0)']
+
+[[rule]]
+id = "sec-ci"
+area = "A2"
+label = "CI workflows, actions or code owners"
+paths = ['^\.github/(workflows|actions)/', '(?i)(^|/)(CODEOWNERS|\.gitlab-ci\.ya?ml|\.circleci/|buildkite|azure-pipelines)']
+
+[[rule]]
+id = "sec-audit"
+area = "A2"
+label = "audit logging"
+paths = ['(?i)audit']
+added = ['(?i)\baudit[_ -]?(log|trail|events?)\w*']
+
+[[rule]]
+id = "irrev-destructive"
+area = "A4"
+label = "a drop, delete, truncate, rename or backfill, or a data-migration script"
+paths = ['(?i)(^|/)scripts?/[^/]*(migrat|backfill|purge|cleanup|dedupe|repair|delete)']
+added = ['(?i)\bdrop\s+(table|column|index|schema|database|type|constraint|view)\b', '\bTRUNCATE(\s+TABLE)?\s+\w', '(?i)\bdelete\s+from\b', '(?i)\balter\s+table\s+\S+\s+(drop|rename)\b|\brename\s+column\b', '(?i)\b(dropTable|dropColumn|removeColumn|remove_column|drop_table|renameColumn|rename_column)\b', '(?i)\b(deleteMany|destroy_all|delete_all|bulk_delete|batchDelete|recursiveDelete)\b', '(?i)\bback-?fill\w*']
+
+[[rule]]
+id = "irrev-messages"
+area = "A4"
+label = "a message sent to people (SMS, email, push)"
+added = ['(?i)\bsend_?(sms|text)\w*', '(?i)\bsend_?(email|mail)\w*', '(?i)\bsend_?(message|notification|push)\w*', '(?i)\b(twilio|sendgrid|postmark|mailgun|resend)\b', '(?i)\bmessages\.create\b']
