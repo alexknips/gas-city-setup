@@ -1,6 +1,6 @@
 # quality: how good a Gas City's work is
 
-A Gas City pack with three exec orders and one formula. `quality-metrics` measures per rig and per
+A Gas City pack with four exec orders and one formula. `quality-metrics` measures per rig and per
 local day whether work lands first time, holds after merge, how long it takes and where that time
 went. It writes a per-day JSON history and a static page you can put next to any dashboard.
 `quality-stops` is a census every 30 minutes: why each bead in flight and each seat is waiting, who
@@ -10,7 +10,8 @@ trends and one cost figure, every row linking into gc's own dashboard (see "Toda
 `quality-review` turns the history into a
 weekly review: a script writes the week's facts, and one agent session (formula
 `mol-quality-review`) proposes one config change by mail, as a decision with a default (see
-"Weekly review"). Configuration only: no changes to `gc` or `bd`. No API keys: cost comes from the
+"Weekly review"). `quality-patrol-gate`, off until a city turns it on, wakes a patrol seat only
+when there is something for it to find (see "Patrol gate"). Configuration only: no changes to `gc` or `bd`. No API keys: cost comes from the
 transcripts the agents already write, priced from a table in the pack (`assets/prices.toml`).
 
 | Metric | One line |
@@ -29,6 +30,7 @@ transcripts the agents already write, priced from a table in the pack (`assets/p
 | Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
 | Today | after every census, one page: the decisions waiting on the human with what each unblocks, who clears the other waits, health, 7-day trends, cost |
 | Patrol census | on demand (`patrols.py`): per patrol seat, how many wakes ran, what each cost, and how many did something besides reading |
+| Patrol gate | every 10 minutes, off until a city turns it on: wakes a witness only for a stop it clears (or a 6 h heartbeat), submits gc's own stuck prompts, tells the deacon about dialogs and the disk |
 
 ## Use it in a city
 
@@ -758,6 +760,81 @@ Spot checks, 2026-10-29, local days 10-22..10-28 in the city it was built in:
 - The 22 deacon wakes first counted as acted, read by hand: 21 real; 1 was a `gc session nudge`
   quoted in a note appended to its handoff file (now skipped). Of the 21, one is the deacon
   resetting its own session at 81% context, not a catch.
+
+## Patrol gate
+
+`quality-patrol-gate` (every 10 minutes, no model, no tokens) wakes a patrol seat only when there
+is something for it to find. It exists because a patrol costs the same whether it finds something
+or not: in the city it was built in, 578 witness wakes in a week cost $517 at list price and 9 of
+them acted (see "What patrols cost and find"). The order ships **off** (`QUALITY_GATE = "off"`).
+
+| Part | Looks for | Does (when live) |
+|---|---|---|
+| witness | a census stop on a bead in an awake rig whose class is in `QUALITY_GATE_WITNESS_CLASSES` (an assignee down or idle, a reviewer down or idle, a bounce nobody reworks, a route nobody claimed) | nudges that rig's watcher seat once per stop with gc's wake prompt and the stops; otherwise nudges each watcher every `QUALITY_GATE_HEARTBEAT_H` hours, the longest idle first, one per run |
+| enter | gc's own wake or start prompt (`QUALITY_GATE_PROMPT_RE`) left unsent in the box of a seat in `QUALITY_GATE_ENTER_ROLES`, idle and the same as on the previous run | presses Enter, looks again 3 s later and presses once more if it is still there; never more than twice per prompt |
+| deacon | a dialog open in one of those panes, unsent text that is not gc's, a prompt two Enters did not clear, free disk under `QUALITY_GATE_DISK_MIN_GB` or falling `QUALITY_GATE_DISK_DROP_GBH` or faster over 30+ minutes | nudges the deacon with the findings: when a new one appears, else at most every `QUALITY_GATE_DEACON_EVERY_MIN` |
+
+Each part is `off`, `shadow` (log what it would do; the default) or `live`:
+`QUALITY_GATE_WITNESS`, `QUALITY_GATE_ENTER`, `QUALITY_GATE_DEACON`. A trial turns the order on
+with every part in shadow next to the city's usual patrols, then compares its log with what the
+patrols caught (`patrols.py`). Each run appends one JSON line to `$QUALITY_STATE_DIR/patrol-gate.jsonl`
+(what each part found and did); `patrol-gate-state.json` holds what was already woken or pressed.
+
+Safety rules:
+- Enter goes only to a pane whose box text matches gc's own prompts, of a seat whose role is in
+  `QUALITY_GATE_ENTER_ROLES` (patrol and merge seats, never a crew seat or the mayor), only while
+  the pane is idle, only when the same text was there one run earlier.
+- Any other text in a box is never touched; it goes to the deacon as a finding.
+- When gc lists no session as up (it cannot reach tmux), the witness part wakes nobody, since every
+  assignee would read as down and every witness as due.
+- The census part waits above `QUALITY_GATE_MAX_LOAD` (40). The quality-stops order skips its bead
+  part above 15, and on 2026-10-26 it did so for nearly four hours, so the gate runs its own census
+  pass (reading, never writing, that order's state).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUALITY_GATE` | `off` | `on` runs the order; `off` makes each fire exit at once |
+| `QUALITY_GATE_WITNESS`, `_ENTER`, `_DEACON` | `shadow` | per part: `off`, `shadow` or `live` |
+| `QUALITY_GATE_WITNESS_CLASSES` | `assignee_down,assignee_idle,review_idle,review_down,bounced,routed_unclaimed` | census classes that wake a rig's watcher |
+| `QUALITY_GATE_HEARTBEAT_H` | `6` | a watcher idle this long is woken anyway |
+| `QUALITY_GATE_HEARTBEATS_PER_RUN` | `1` | heartbeat wakes per run (patrols that start together load the host) |
+| `QUALITY_GATE_WAKE_TEXT` | gc's witness wake prompt | the nudge text; the stops found are appended |
+| `QUALITY_GATE_ENTER_ROLES` | `witness,refinery,deacon,dog,boot` | seats whose stuck gc prompt the gate submits |
+| `QUALITY_GATE_PROMPT_RE` | `^Run 'gc prime' to check `, gc's start prompt, `[Pasted text #N` | what counts as gc's own prompt |
+| `QUALITY_GATE_DIALOG_RE`, `_BUSY_RE`, `_BOX_CHAR` | Claude Code's | how a pane shows a dialog, work in progress and its input box |
+| `QUALITY_GATE_DEACON_SEAT` | `deacon` | base name of the seat that takes the findings |
+| `QUALITY_GATE_DISK_PATH`, `_DISK_MIN_GB`, `_DISK_DROP_GBH` | `/`, `40`, `15` | the disk rule |
+| `QUALITY_GATE_MAX_LOAD` | `40` | above this the census part waits; panes and disk still run |
+| `QUALITY_TMUX`, `QUALITY_TMUX_SOCKET` | tmux on PATH or next to gc, `gc` | how the panes are read |
+
+Cost, measured on 2026-10-29 in the city it was built in (load 10): one run 5.4-6.1 s wall and
+2.8 s CPU, most of it the census pass and its `gc session list`.
+
+Backtest on the week of 10-22..10-28 in the city it was built in (every acting patrol wake read by
+hand; times from bead events, the census log and the agents' own notes):
+- gcs-tk5 sat routed to an idle refinery from 17:12Z; the witness's hourly patrol nudged the
+  refinery at 17:26Z. The gate's idle-reviewer stop would have woken the witness at 17:22-17:32Z.
+  The census order alone would not: it ran host-only from 16:39Z to 20:22Z (load 23-55).
+- hivemind-1sanf (bounced twice) was caught by a witness woken by a nudge, which the gate does
+  not change.
+- gc's prompt stuck unsent in a refinery's or witness's box: the deacon found it 12 times, up to
+  77 minutes after it appeared. The gate's rule is the deacon's own (its pane scan), so it
+  submits within 10-20 minutes; this cannot be replayed from records (no pane history) and is what
+  a shadow trial checks.
+- Free disk falling 15-21 G/h on 10-23, 10-25 and 10-26: by the agents' own numbers the disk rule
+  fires 30-90 minutes before the deacon's patrol found it.
+- Not caught by any rule: one witness judgment escalation (a re-sling watcher about to re-sling a
+  bead the owner was driving by hand) and three deacon judgment notes (the mayor stuck on a wait
+  loop that matched itself, a deploy unit that read FAILED but had worked, why the town went down).
+  These wait for a heartbeat.
+
+Blind spots:
+- It wakes for what the census types and the rules above match. What only a reading seat notices
+  waits for the heartbeat.
+- In a shadow trial, heartbeats rarely show while the city's usual patrols keep the watchers busy.
+  At 6 hours they come to 4 a day per awake rig.
+- A pane is read as Claude Code draws it today (the box character, the dim placeholder, "esc to
+  interrupt"); another provider or a new Claude Code layout needs the `_RE` and `_BOX_CHAR` settings.
 
 ## Traps this pack handles
 
