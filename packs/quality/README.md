@@ -28,6 +28,7 @@ transcripts the agents already write, priced from a table in the pack (`assets/p
 | Why it's waiting | every 30 minutes: one typed stop per waiting bead and seat, with who clears it and for how long; stop-hours per class |
 | Weekly review | once a week: the biggest slowdown, what last week's change did, one proposed config change |
 | Today | after every census, one page: the decisions waiting on the human with what each unblocks, who clears the other waits, health, 7-day trends, cost |
+| Patrol census | on demand (`patrols.py`): per patrol seat, how many wakes ran, what each cost, and how many did something besides reading |
 
 ## Use it in a city
 
@@ -708,6 +709,55 @@ Blind spots:
   prices tokens itself) are not reconciled here.
 - The 7-day window counts today so far, as the Quality page does, so landed per day reads low
   early in the day.
+
+## What patrols cost and find (patrol census)
+
+`assets/scripts/patrols.py` answers "what do the patrol seats cost, and how often do they find
+something?" with no model call. Run it by hand in the city (it is not an order):
+
+    python3 <pack>/assets/scripts/patrols.py                      # the last 7 local days
+    python3 <pack>/assets/scripts/patrols.py --since 2026-10-22 --until 2026-10-29 --json wakes.json
+    python3 <pack>/assets/scripts/patrols.py --seat hivemind/gastown.witness   # one line per wake
+
+It reads the metrics order's state (`QUALITY_STATE_DIR`), transcripts (`QUALITY_TRANSCRIPTS`) and
+prices (`QUALITY_PRICES`), plus `QUALITY_PATROL_ROLES`, `QUALITY_PATROL_WAKE_RE` and
+`QUALITY_PATROL_CONTINUE_RE` below. A 7-day run read ~150 MB of transcripts in 6.6 s wall and
+6.1 s CPU (load 8). It writes nothing unless `--json` is given.
+
+- **Patrol seats** are the session dirs in the metrics state (`session_dirs`, written by
+  `quality-metrics`) whose seat's base name is in `QUALITY_PATROL_ROLES` (default
+  `witness,deacon,boot,dog`).
+- **A wake** starts at a turn gc, an order or another agent put into the session (a patrol prompt,
+  a nudge, a fresh start) and runs to the next one. A compaction summary or "usage limit has reset"
+  continues the wake before it. The trigger is `patrol` (text matching `QUALITY_PATROL_WAKE_RE`),
+  `start` (gc's `[gc] <seat> • <time>` start prompt) or `nudge` (anything else).
+- **Cost** is every assistant message in the wake, subagents included, priced like "Cost per
+  landed bead" (list price, `assets/prices.toml`).
+- **Acted** means the wake ran at least one command that changes something: a nudge
+  (`gc session nudge`, `tmux send-keys`), mail (`gc mail send|reply`), a recovery (`gc session
+  kill|restart|reset|wake|...`, `git push`), a bead change (`bd update|close|reopen|create`,
+  `gc sling`) or `gc order run`. Patrol upkeep does not count: its own patrol wisp (an id whose
+  title is `mol-*patrol`, or a shell variable), notes-only updates and appends to `.md` notes.
+  **All clear** is a billed wake that did none of these.
+
+Blind spots:
+- An action a seat takes inside its own script is invisible (the deacon's `stagger-nudge.sh`
+  nudges witnesses from a `systemd-run` unit, so those nudges are not counted as the deacon's).
+- "Acted" says that something changed, not that it was a catch: a status report mailed to the
+  mayor counts the same as an escalation. Read the `--seat` list or the JSON's `said` (the wake's
+  last message) before calling a wake a catch.
+- A seat's session dirs come from session beads; a seat whose beads were purged before the
+  metrics order first saw them is missing.
+
+Spot checks, 2026-10-29, local days 10-22..10-28 in the city it was built in:
+- Dollars per seat against the metrics page's `by_seat` for the same days: within $3.5 for each
+  of the 8 seats ($1098 in all).
+- All 9 witness wakes counted as acted, read by hand: 9 real actions (2 escalations, 4 FYIs, 2
+  relays, 1 refinery nudge). A random sample of 5 all-clear witness wakes: only reads, wisp upkeep
+  and notes.
+- The 22 deacon wakes first counted as acted, read by hand: 21 real; 1 was a `gc session nudge`
+  quoted in a note appended to its handoff file (now skipped). Of the 21, one is the deacon
+  resetting its own session at 81% context, not a catch.
 
 ## Traps this pack handles
 
