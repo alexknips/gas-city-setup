@@ -154,6 +154,7 @@ Settings of the `quality-stops` order (the pack sets the first two in its `[orde
 | `QUALITY_GC_DASHBOARD_URL` | the API URL | gc's dashboard as a browser reaches it; Today links to `<it>/city/<city>/beads?bead=<id>` |
 | `QUALITY_HUMAN_NAME` | `QUALITY_STOP_HUMAN` | how Today names the human |
 | `QUALITY_POST_RENDER` | unset | as for `quality-metrics`, run on `today.html` with `{name}` = `today` |
+| `QUALITY_PANELS` | unset | JSON files other loops write, one Today card each: `{title, rows: [[value, label], …], note?, link?, at?}` (counts only; at most 8 rows; a missing file shows nothing). The pr-review pack's feedback order writes one. |
 | `QUALITY_HUMAN_PREFIXES`, `_DUE_KEY`, `QUALITY_VERIFY_*`, `QUALITY_HOLD_KEYS`, `QUALITY_ROUTE_KEYS`, `QUALITY_PARKED_STATUSES`, `QUALITY_LANDED_RESULTS` | the metrics order's, from its `quality.json` | set here only to differ |
 | `QUALITY_OUT_DIR`, `QUALITY_STATE_DIR`, `QUALITY_TZ`, `QUALITY_DAYS` | as for `quality-metrics` | the same page, caches, day buckets; `stops/<day>.jsonl` is kept `QUALITY_DAYS` days |
 

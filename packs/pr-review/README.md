@@ -1,30 +1,37 @@
 # pr-review
 
 A Gas City pack that reviews a stream of pull requests for one person and surfaces only what needs
-them. It is two orders and a few scripts: no agents, no formulas, nothing in the core.
+them. It is three orders and a few scripts: no agents, no formulas, nothing in the core.
 
 - **`pr-review-sweep`** (every 30 min, no model): finds each new PR head, puts it through zero-token
   rules, records one bead per PR, and queues the PRs that need a review.
-- **`pr-review-run`** (every 15 min): escalates PRs whose CI is red or missing (no model), then
-  reviews the next queued PR with one headless, read-only `claude -p` run, within a daily cap. The
-  script, not the model, posts the result: a pending GitHub review in shadow mode, and the outcome
-  word plus the PR link in Slack.
+- **`pr-review-run`** (every 15 min): reviews the next queued PR with one headless, read-only
+  `claude -p` run, within a daily cap. The script, not the model, renders the review in the style
+  guide's shape, gates it, and posts it: a pending GitHub review in shadow mode, and the outcome word
+  plus the PR link in Slack. A PR whose only problem is CI gets one sentence without a model.
+- **`pr-review-feedback`** (hourly, no model): reads what the reviewer did with each review (submitted
+  unchanged, edited, discarded; a thumbs-up or thumbs-down and replies in Slack) and keeps the score.
 
-Both orders ship **off**. A city turns them on with an override that names its repos, the reviewer
+Together they are a loop ([Quality loop](#quality-loop)): a versioned style guide, a gate that holds
+any review breaking it, feedback from the reviewer's own actions, and a regression set every change
+must pass.
+
+All three ship **off**. A city turns them on with an override that names its repos, the reviewer
 and the Slack channel ([Turning it on](#turning-it-on)).
 
 ## Flow
 
 ```
-GitHub ──sweep (rules, no model)──► bead per PR + queue ──run──► CI red/missing? ── escalate (no model)
+GitHub ──sweep (rules, no model)──► bead per PR + queue ──run──► only CI wrong, no content rule? ── one line (no model)
                                                           │
                                                           └──► next in queue within cap
                                                                worktree at PR head (outside the runtime)
-                                                               claude -p: Read/Grep/Glob only → JSON
-                                                               script: outcome, credential scan, post
-                                                               ├─► GitHub: PENDING review (shadow) or review (live)
+                                                               claude -p: Read/Grep/Glob only → line-anchored items (JSON)
+                                                               script: outcome, render, GATE (fail: regenerate once, then hold)
+                                                               ├─► GitHub: replaces its own pending review; PENDING (shadow) or review (live)
                                                                ├─► Slack: "<word>: <link>", nothing else
                                                                └─► bead: outcome, closed
+feedback (hourly) ◄── the reviewer's actions on GitHub and Slack ──► score, Today card, regression inbox
 ```
 
 ## Configuration
@@ -37,7 +44,9 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_MODE` | `shadow` | The LIVE switch. `shadow`: every review is a PENDING review (only the reviewer sees it) and Slack says "would …". `live`: reviews are submitted under the reviewer's account. |
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
 | `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR, and whose `gh` login posts. |
-| `PR_REVIEW_REVIEWER_NAME` | the login | The name in the disclosure every review opens with. |
+| `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
+| `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for Nils"). |
+| `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
 | `PR_REVIEW_SLACK_ENV` | `~/.config/gc/slack.env ~/.config/gc/slack2.env` | Files searched for the first `xoxb-` bot token. |
 | `PR_REVIEW_DAILY_CAP` | `10` | Model reviews per UTC day. CI escalations do not count. |
@@ -72,7 +81,8 @@ pack keeps the repository's text on GitHub and in the work dir, and nowhere else
 - **What the scripts print** (what an order log or an agent's transcript sees) is ids, links,
   outcomes, counts, sizes and cost. Error messages keep only the scripts' own text.
 - **The work dir** holds the code while a review runs. Its context files and worktree are deleted
-  afterwards. The bare mirror stays, like any clone.
+  afterwards. The bare mirror stays, like any clone. It also keeps, mode 700, what was posted, the
+  reviewer's edits and Slack replies (`feedback/`) and the real regression cases (`regression/`).
 
 ## Rules
 
@@ -141,12 +151,16 @@ from [anthropics/claude-code-security-review](https://github.com/anthropics/clau
 - The command's `git status / diff / log` substitutions become the PR's link, title and description,
   its changed files, its commits and its diff (from where the PR forked off its base). A diff over
   350k characters is left in a file the model reads in parts.
-- The checklist (`PR_REVIEW_CHECKLIST`) and the PR's zero-token flags go in before `START ANALYSIS`.
+- The checklist (`PR_REVIEW_CHECKLIST`), the style guide (`assets/style-guide.md`) and the hunks the
+  rules flagged (path and line, found in memory) go in before `START ANALYSIS`.
 - The closing steps are rewritten. The upstream command starts sub-tasks; here the model finds the
   issues, filters false positives and drops anything below confidence 8 itself, because the run has
-  no Task tool.
-- The answer is JSON (`--json-schema`): an outcome, a summary, at most 5 findings (file, line,
-  severity, how it fails, what was checked, confidence), questions, evidence wanted, and the B3 checks.
+  no Task tool. Each flagged hunk must become an item: a problem, or "nothing wrong here" with what to
+  look at (R12).
+- The answer is JSON (`--json-schema`): at most 5 items, worst first, each anchored to a line range on
+  one side of the diff, with a kind (check for the reviewer, question for the author, change to make),
+  severity, area, what changed, why it matters, what to decide or ask, what was verified, and a
+  confidence; then a "safe to skip" line and the B3 checks. The model does not pick the outcome.
 
 `assets/checklist-health.md` is the default checklist for health-care code: HIPAA Security Rule
 technical safeguards (45 CFR 164.312), SOC 2 Trust Services Criteria CC6, CC7 and CC8.1, actions
@@ -158,9 +172,8 @@ tools. Reads under `/home`, `/root`, `/etc`, `/proc`, `/data`, `/tmp` and simila
 PR's text can sway the review; it cannot act.
 
 **What the script checks before posting**:
-- It keeps only findings with confidence 8 or more whose file exists at the head or in the diff, at
-  most 5.
-- Findings on lines inside the diff become inline comments; every finding is also listed in the body.
+- It keeps only items with confidence 8 or more, at most 5, derives the outcome, and renders the body
+  and one inline comment per item. Then the gate ([Quality loop](#quality-loop)).
 - It strips @-mentions, images, HTML and links to hosts other than github.com from model text: an
   image in a review is fetched when someone opens it.
 - It withholds the whole review text if it contains a credential from this host (`gh` token, Slack
@@ -169,22 +182,68 @@ PR's text can sway the review; it cannot act.
 
 ## Outcomes
 
-One per reviewed PR.
+One per reviewed PR, derived by the script from the items (`pr_format.decide`), not chosen by the model.
 
-| Outcome | When | Shadow | Live |
-| --- | --- | --- | --- |
-| `low-risk` | The model found nothing and asks nothing, **and** the PR tripped no select rule, **and** CI is green. | pending review, Slack "Would approve" | APPROVE, "Approved as low risk" |
-| `questions` | The model asks questions or wants evidence, or it said "changes" without a finding that names a file and line, or its only findings are low. | pending, "Would ask" | COMMENT, "Asked" |
-| `changes` | Findings with file and line, at least one medium. | pending, "Would request changes" | REQUEST_CHANGES, "Requested changes" |
-| `escalate` | The model escalates, a finding is high, CI is red, missing or skipped, or the model found nothing on a PR the rules flag (approval needs both). | pending, "Needs you" | stays pending, "Needs you" |
+| Outcome | When | Line 1 | Shadow | Live |
+| --- | --- | --- | --- | --- |
+| `escalate` | any item for the reviewer to decide, any high item, CI red, missing or skipped, or no items on a PR the rules flagged | **Needs you: N things to check** | pending, Slack "Needs you" | stays pending, "Needs you" |
+| `changes` | a change item of medium or high severity, or a mix of changes and questions | **Changes requested: N** | pending, "Would request changes" | REQUEST_CHANGES, "Requested changes" |
+| `questions` | only questions for the author | **N questions for <author>** | pending, "Would ask" | COMMENT, "Asked" |
+| `low-risk` | no items, CI passed, no rule flagged the PR | **Low risk: nothing to check** | pending, "Would approve" | APPROVE, "Approved as low risk" |
+
+A PR whose CI failed, did not run or was all skipped, and that tripped no content rule, gets one
+sentence without a model ("No CI ran on this commit; nothing else flagged.", R11). With a content rule,
+the model reads it and CI is just the facts line.
 
 On a merged PR, a live approve or request-changes is posted as a comment: nothing can gate a merge
-that already happened. Every review opens with the line "Automated review by <name>'s review agents
-(Claude Code). <name> has not read this PR unless they say so." (`PR_REVIEW_REVIEWER_NAME`). It ends
-with "Not checked: billing, plans, credits, pricing."
+that already happened. Before posting, the script deletes its own pending review on the PR (GitHub
+allows one per user). It leaves the PR alone (`skipped`) if the reviewer submitted a review there or
+edited ours (the body no longer hashes to what was posted).
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (closed unmerged before its
-turn), `error` (the run failed; see the log).
+turn), `held-gate` (the gate failed twice; nothing posted), `held-secret` (the text held a credential
+shape; nothing posted), `skipped`, `error` (the run failed; see the log).
+
+## Quality loop
+
+The reviewer's complaint about the first shadow reviews (2026-10-29: "it just fluff and really hard to
+read. there are no markers in the review what I actually need to manually review") became a loop, so a
+complaint is fixed once and stays fixed.
+
+1. **Style guide** (`assets/style-guide.md`, versioned). Rules R1 to R14, each with the complaint it came
+   from: the outcome and count on line 1; at most 5 items, each linked to the exact diff lines and
+   repeated as an inline comment, with what changed, why it matters and what to decide or ask; a "Safe
+   to skip" line; one facts line; the footer last; no rule codes or boilerplate in the body. The model
+   reads it as part of its prompt.
+2. **Gate** (`pr_format.gate`, zero tokens). Every machine-checkable rule, against the model's items and
+   the rendered body: each range resolved against the diff's hunks on its side, an inline comment per
+   item, non-empty fields of at least four words with no filler (a deny-list) and no rule codes, the
+   sizes, line 1, "Safe to skip", the facts line and the footer. On a failure the model answers again
+   with the gate's reasons. A second failure posts nothing (`held-gate`). The log keeps the rule ids of
+   each failure (`gate_first`, `gate`), so the score can count holds and regenerations.
+3. **Feedback** (`pr-review-feedback`, hourly, zero tokens). For each posted review: submitted unchanged
+   (good), edited before submitting (partial), discarded (bad), a "needs you" approved unchanged (false
+   alarm), and a thumbs-up or thumbs-down and replies on the Slack link. The text (their edits, their
+   replies, what was posted) stays in `PR_REVIEW_WORK_DIR/feedback` (mode 700). The state file holds the
+   verdicts. The week's numbers (posted, accepted unchanged, edited, discarded, false alarms, gate holds)
+   go to `PR_REVIEW_PANEL`, a card on the quality pack's Today page. `--record KEY VERDICT` records what
+   was seen by hand.
+4. **Regression set**. Every bad or partial verdict drops a candidate case (the posted body and the
+   feedback) into `PR_REVIEW_WORK_DIR/regression/inbox`. The weekly quality review triages each one: a
+   new or sharper style-guide rule if the gate could have caught it, then the case moves to
+   `regression/` with the verdict it must get. `assets/scripts/pr-review-regress.sh` runs every case
+   (the pack's synthetic fixtures in `tests/fixtures`, written by `tests/make_fixtures.py`, plus the
+   host-local real ones) through the gate. Before any style-guide, gate, rule or prompt change moves a
+   city's pin, it must end "N of N fixtures as expected": old failures still fail, good reviews still
+   pass. Real cases never enter the public pack; a look-alike with invented text does.
+   Format and gate rules from the reviewer's feedback are applied directly and listed for them. A
+   change to what counts as "needs you" is their decision.
+
+Case 1, in both sets: a CI escalation posted with rule labels and no line markers. It fails the gate on
+R1, R3, R7, R8, R9 and R10.
+
+The regression covers the gate and the renderer, not the model: it cannot show that a prompt change
+makes the model write better items. The feedback numbers measure that.
 
 ## Calibration
 
@@ -214,7 +273,7 @@ First calibration (2026-10-29, three repos, 329 PRs, one author):
      version = "sha:<commit>"
    ```
    then `gc import install`.
-2. Override both orders' env in `city.toml`. Shadow first:
+2. Override the three orders' env in `city.toml`. Shadow first:
    ```toml
    [[orders.overrides]]
    name = "pr-review-sweep"
@@ -228,9 +287,17 @@ First calibration (2026-10-29, three repos, 329 PRs, one author):
    [[orders.overrides]]
    name = "pr-review-run"
    [orders.overrides.env]
-   # the same five lines
+   # the same five lines, plus PR_REVIEW_REVIEWER_NAME and PR_REVIEW_NAMES
+
+   [[orders.overrides]]
+   name = "pr-review-feedback"
+   [orders.overrides.env]
+   # the same five lines, plus PR_REVIEW_PANEL = "<the quality pack's out dir>/pr-review-panel.json"
    ```
-3. Check: `gc order run pr-review-sweep`, then `tail $PR_REVIEW_STATE_DIR/pr-review.jsonl`.
+   and add that panel path to the quality pack's `quality-stops` override:
+   `QUALITY_PANELS = "<out dir>/pr-review-panel.json"` (the Today page shows it as a card).
+3. Check: `gc order run pr-review-sweep`, then `tail $PR_REVIEW_STATE_DIR/pr-review.jsonl`, and
+   `assets/scripts/pr-review-regress.sh` (every fixture as expected).
 
 Going live is one line: `PR_REVIEW_MODE = "live"` on `pr-review-run`. Leave it at `shadow` until
 the reviewer says so.

@@ -298,6 +298,56 @@ def evaluate(pr, files, ruleset, reviewer, repo, base_oid):
     return hits
 
 
+# Rules about what a PR's content does (not CI, conflicts or who was asked): when one fires, the PR is
+# read by the model even if CI alone would escalate it (style guide R11).
+NOT_CONTENT = {'requested', 'ci-red', 'ci-none', 'ci-skipped', 'conflicts', 'untested', 'no-description'}
+
+
+def locate(files, ruleset, hits, limit=12):
+    """Where the content rules in `hits` matched: [{rule, label, path, line}] with new-side line numbers
+    (a path rule points at the file's first changed line). In memory only: the review prompt uses them
+    so a "needs you" names the exact hunks (R12)."""
+    by_id = {r['id']: r for r in ruleset['rules']}
+    out = []
+    for f in files:
+        path, patch = f['filename'], f.get('patch') or ''
+        if any(p.search(path) for p in ruleset['not_paths']):
+            continue
+        is_test = any(p.search(path) for p in ruleset['test_paths'])
+        added, line, first = [], 0, None
+        for raw in patch.splitlines():
+            m = re.match(r'@@ -\d+(?:,\d+)? \+(\d+)', raw)
+            if m:
+                line = int(m.group(1)); continue
+            if raw.startswith('+') and not raw.startswith('+++'):
+                added.append((line, raw[1:])); first = first or line; line += 1
+            elif not raw.startswith('-'):
+                line += 1
+        for rid in hits:
+            r = by_id.get(rid)
+            if r is None:
+                if rid.startswith('migration') and MIG_DIR.search(path) and first:
+                    out.append({'rule': rid, 'label': BUILTIN[rid][1], 'path': path, 'line': first})
+                continue
+            if any(p.search(path) for p in r['not_paths']) or (r['tests'] == 'skip' and is_test) or (
+                    r['tests'] == 'only' and not is_test):
+                continue
+            if any(p.search(path) for p in r['paths']) and first:
+                out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': first})
+            if r['added'] and (not r['in_paths'] or any(p.search(path) for p in r['in_paths'])):
+                for ln, text in added:
+                    if any(p.search(text) for p in r['added']):
+                        out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': ln})
+                        break
+    seen, uniq = set(), []
+    for o in out:
+        k = (o['rule'], o['path'])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(o)
+    return uniq[:limit]
+
+
 # Rules whose hit is serious on its own: they go before the other select rules when the cap bites.
 SERIOUS = {'migration-order', 'migration-edit', 'conflicts', 'irrev-destructive', 'phi-ehr-write', 'phi-logs',
            'phi-fixtures', 'sec-secrets', 'ci-red', 'ci-none', 'ci-skipped'}

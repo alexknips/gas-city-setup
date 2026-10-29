@@ -1,0 +1,20 @@
+# Review feedback (README.md, "Quality loop"): every hour, what the reviewer did with each posted review.
+# From GitHub: submitted unchanged (good), edited before submitting (partial), discarded (bad), and "needs
+# you" approved unchanged (a false alarm). From Slack: a thumbs-up or thumbs-down on the link message,
+# and replies in its thread. No model, no tokens. Texts (their edits, replies) stay host-local under
+# PR_REVIEW_WORK_DIR/feedback; bad and partial ones drop a candidate case in .../regression/inbox for the
+# weekly triage. The state file gets verdicts and counts; PR_REVIEW_PANEL gets this week's numbers as a
+# Today-page card (quality pack: QUALITY_PANELS).
+# Manual run: gc order run pr-review-feedback
+# Dry run:    $PACK_DIR/assets/scripts/pr-review-feedback.sh --dry-run
+[order]
+description = "PR review feedback: what the reviewer did with each posted review (GitHub, Slack)"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/pr-review-feedback.sh"
+trigger = "cooldown"
+interval = "1h"
+timeout = "5m"
+
+[order.env]
+PR_REVIEW = "off"
+PR_REVIEW_MODE = "shadow"

@@ -171,6 +171,8 @@
     <p class="sub" id="cost-note"></p>
   </section>
 
+  <div id="panels"></div>
+
   <p class="errs" id="errs"></p>
 </main>
 <script>
@@ -365,6 +367,18 @@ function render(m) {
   const unpriced = Object.keys(c.unpriced || {});
   $("cost-note").textContent = "The agents' transcripts priced at API list price (the pack's prices.toml): a list price, not an invoice." +
     (unpriced.length ? " Models without a price, left out: " + unpriced.join(", ") + "." : "");
+  // Panels: cards other loops write (QUALITY_PANELS), counts only.
+  (m.panels || []).forEach(p => {
+    const sec = el("section", "card"), h = el("h2", null, p.title);
+    sec.appendChild(h);
+    const box = el("div", "cost");
+    p.rows.forEach(([big, lbl]) => { const d = el("div"); d.appendChild(el("div", "big", big)); d.appendChild(el("div", "lbl", lbl)); box.appendChild(d); });
+    sec.appendChild(box);
+    const note = el("p", "sub", (p.note || "") + (p.at ? " As of " + when(p.at) + "." : ""));
+    if (p.link) { const a = el("a", null, " Details"); a.href = p.link; note.appendChild(a); }
+    sec.appendChild(note);
+    $("panels").appendChild(sec);
+  });
   if ((m.errors || []).length) $("errs").textContent = "Sources that did not answer: " + m.errors.join("; ");
 }
 

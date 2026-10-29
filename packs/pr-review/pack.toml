@@ -4,8 +4,12 @@
 # orders/pr-review-run.toml: every 15 min, CI escalations (no model), then the next queued PR within a daily
 # cap, reviewed by one headless read-only model run built on Claude Code's /security-review plus a
 # checklist. The script posts a PENDING review (shadow, the default) or the review (live) and puts the
-# outcome word and the link in Slack. Both orders ship off (PR_REVIEW = "off"); a city turns them on with
-# an override that names its repos, reviewer and channel. No agents, no formulas.
+# outcome word and the link in Slack. A style guide (assets/style-guide.md) shapes each review and a
+# zero-token gate holds any review that breaks it (regenerated once, then nothing is posted).
+# orders/pr-review-feedback.toml: hourly, what the reviewer did with each review (GitHub, Slack): the
+# score, a Today-page card, and candidate regression cases (assets/scripts/pr-review-regress.sh).
+# All orders ship off (PR_REVIEW = "off"); a city turns them on with an override that names its repos,
+# reviewer and channel. No agents, no formulas.
 [pack]
 name = "pr-review"
 schema = 2

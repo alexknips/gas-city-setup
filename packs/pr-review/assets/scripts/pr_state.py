@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.parse
 import urllib.request
 
 # Outcome -> (Slack word in shadow mode, Slack word in live mode). None: nothing goes to Slack.
@@ -24,6 +25,9 @@ OUTCOMES = {
     'over-cap': (None, None),
     'closed': (None, None),
     'error': (None, None),
+    'held-gate': (None, None),
+    'held-secret': (None, None),
+    'skipped': (None, None),
 }
 
 
@@ -64,6 +68,7 @@ def config():
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '420')),
+        'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),
     }
 
 
@@ -145,6 +150,31 @@ class Beads:
             self._run(rig, 'close', bead, '--reason', outcome or 'done')
 
 
+def private_dir(cfg, *parts):
+    """A dir under PR_REVIEW_WORK_DIR (mode 700) for what holds the repositories' text: posted review
+    bodies, the reviewer's edits and replies, host-local regression cases. Never the town runtime."""
+    d = os.path.join(cfg['work'], *parts)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def keep_posted(cfg, entry, head, body, comments):
+    """The posted body and comments, host-local, so feedback can diff the reviewer's edits against it."""
+    p = os.path.join(private_dir(cfg, 'feedback', 'posted'),
+                     f"{entry['repo'].replace('/', '__')}-{entry['number']}-{head[:10]}.json")
+    with open(p, 'w') as f:
+        json.dump({'url': entry['url'], 'head': head, 'body': body, 'comments': comments, 'at': iso(now())}, f)
+    os.chmod(p, 0o600)
+
+
+def slack_get(token, method, params):
+    """A read-only Slack call; conversations.* and reactions.* take query parameters, not JSON."""
+    req = urllib.request.Request(f'https://slack.com/api/{method}?' + urllib.parse.urlencode(params),
+                                 headers={'Authorization': f'Bearer {token}'})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
 def slack_token(env_files):
     """The first xoxb- bot token in the env files (the town's slack.env convention)."""
     for f in env_files:
@@ -168,18 +198,19 @@ def slack_call(token, method, payload):
 
 def slack_post(cfg, outcome, url):
     """Post '<word>: <link>' to the channel. The text is built here from a fixed word and the PR link;
-    nothing the model wrote reaches Slack. Returns 'ok', 'off' or an error code."""
+    nothing the model wrote reaches Slack. Returns (status, message ts): 'ok', 'off' or an error code;
+    the ts lets the feedback order find reactions and replies on that message."""
     word = OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
     if not word or not cfg['slack_channel']:
-        return 'off'
+        return 'off', None
     if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+', url):
-        return 'bad-url'
+        return 'bad-url', None
     token = slack_token(cfg['slack_env'])
     if not token:
-        return 'no-token'
+        return 'no-token', None
     try:
         r = slack_call(token, 'chat.postMessage', {'channel': cfg['slack_channel'], 'text': f'{word}: {url}',
                                                    'unfurl_links': False, 'unfurl_media': False})
     except OSError as e:
-        return f'error:{type(e).__name__}'
-    return 'ok' if r.get('ok') else f"error:{r.get('error')}"
+        return f'error:{type(e).__name__}', None
+    return ('ok', r.get('ts')) if r.get('ok') else (f"error:{r.get('error')}", None)

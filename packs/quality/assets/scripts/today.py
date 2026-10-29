@@ -30,6 +30,7 @@ GC_API = q.env("QUALITY_GC_API")                      # gc's API base URL; unset
 GC_CITY_NAME = q.env("QUALITY_GC_CITY_NAME")          # the city's name in gc's API; unset = the one at this city's path
 GC_DASHBOARD = q.env("QUALITY_GC_DASHBOARD_URL")      # where a browser reaches gc's dashboard; unset = the API URL
 HUMAN_NAME = q.env("QUALITY_HUMAN_NAME")              # the census's human as the page names them; unset = the same
+PANELS = q.env("QUALITY_PANELS")                      # JSON files another pack writes, one card each (README, "Today")
 API_KEEP_H = 6                                        # a discovered API URL and city name are kept this long
 API_TIMEOUT_S = 5
 # The order a person's stops come in: past due first, then open gates, holds, blocked work.
@@ -206,6 +207,21 @@ def latest_review(out_dir):
             "last_week": r.get("last_week")}
 
 
+def panels():
+    """Cards other loops put on this page: each file holds {title, rows: [[value, label], ...], note?,
+    link?, at?}. A file that is missing or malformed is left out, not an error on the page."""
+    out = []
+    for path in (PANELS or "").split():
+        p = q.load_json(path, None)
+        if not isinstance(p, dict) or not p.get("title") or not isinstance(p.get("rows"), list):
+            continue
+        rows = [[str(r[0]), str(r[1])] for r in p["rows"] if isinstance(r, (list, tuple)) and len(r) >= 2][:8]
+        out.append({"title": str(p["title"])[:80], "rows": rows, "note": str(p.get("note") or "")[:300],
+                    "link": p.get("link") if str(p.get("link") or "").startswith(("http", "/", "./")) or
+                    str(p.get("link") or "").endswith(".html") else None, "at": p.get("at")})
+    return out
+
+
 def build(stops, now, state):
     out_dir = q.OUT_DIR
     qual = q.load_json(os.path.join(out_dir, "quality.json"), {})
@@ -261,6 +277,7 @@ def build(stops, now, state):
         },
         "trends": tiles,
         "review": latest_review(out_dir),
+        "panels": panels(),
         "cost": {"usd_7d": w7.get("cost_usd"), "landed_7d": w7.get("cost_landed"),
                  "per_landed_7d": w7.get("cost_per_landed"), "per_landed_long": wl.get("cost_per_landed"),
                  "days_7d": w7.get("cost_days"),
