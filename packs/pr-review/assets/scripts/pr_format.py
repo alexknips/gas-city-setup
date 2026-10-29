@@ -1,47 +1,50 @@
 #!/usr/bin/env python3
 """Review format and gate (assets/style-guide.md). Pure functions, no network.
 
-  diff_index(diff)            which lines of which file a review may point at
-  decide(items, ci, flagged)  the outcome from the items the model returned
-  render(...)                 the review body and its inline comments, in the style guide's shape
-  gate(...)                   the reasons a review breaks the style guide ([] = it may be posted)
+  diff_index(diff)              which lines of which file an item may point at
+  decide(decisions, items, ci)  the outcome
+  render(...)                   the review as markdown (what the gate reads) ...
+  render_page(...)              ... and as the private HTML page that is delivered (R0, R17)
+  gate(...)                     the reasons a review breaks the style guide ([] = it may be delivered)
 
 `pr_format.py --regress DIR...` runs the gate over regression fixtures (README.md, "Quality loop").
 """
 import hashlib
+import html
 import json
 import os
 import re
 import sys
 
-AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'behaviour patients notice', 'other']
-KINDS = {'check': 'You decide', 'question': 'Ask {author}', 'change': 'Change'}
+AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'behaviour patients notice',
+         'product', 'compliance', 'other']
+KINDS = {'question': 'Ask {author}', 'change': 'Change'}
 FOOTER = ('Automated review (Claude Code); {name} has not read this PR. '
           'Not checked: billing, plans, credits, pricing.')
-MARKER = 'Automated review'  # in every body this pack posts, old format and new
-MAX_ITEMS, MAX_FIELD, MAX_BODY = 5, 300, 5000
+MARKER = 'Automated review'
+MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
 
-# R6: phrases that carry no information on their own. Matched case-insensitively in item fields.
+# R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
 FILLER = [r'\bmake sure\b', r'\bconsider (reviewing|checking|adding)\b', r'\bplease (review|check|verify)\b',
           r'\bbest practices?\b', r'\bpotential(ly)? (issues?|problems?|risks?)\b', r'\blooks? good\b',
-          r'\bgreat (job|work)\b', r'\bnice\b', r'\bit is (important|recommended|advisable) to\b',
-          r'\bin general\b', r'\boverall\b', r'\bas needed\b', r'\bdouble[- ]check\b', r'\bkeep in mind\b',
-          r'\bshould be reviewed\b', r'\bmay want to\b', r'\bmight want to\b', r'\bverify (that )?everything\b']
+          r'\bgreat (job|work)\b', r'\bit is (important|recommended|advisable) to\b', r'\bin general\b',
+          r'\boverall\b', r'\bas needed\b', r'\bdouble[- ]check\b', r'\bkeep in mind\b', r'\bshould be reviewed\b',
+          r'\bmay want to\b', r'\bmight want to\b', r'\bverify (that )?everything\b']
 FILLER_RE = re.compile('|'.join(FILLER), re.I)
-# R10: rule codes and ids that must not appear in the body outside the closing <details>.
+# R10: rule codes and ids that must not appear in the text outside the closing <details>.
 CODES_RE = re.compile(r'\b(A[1-7]|B[1-4]|R\d{1,2}|ci-(red|none|skipped)|phi-[a-z-]+|sec-[a-z-]+|irrev-[a-z-]+|'
                       r'migration-(order|edit)|no-description|untested)\b')
 LINE1 = {
-    'escalate': re.compile(r'^\*\*Needs you: (\d+) things? to check\*\*$|^\*\*Needs you:\*\* .+$'),
-    'questions': re.compile(r'^\*\*(\d+) questions? for .+\*\*$'),
+    'escalate': re.compile(r'^\*\*Needs you: (\d+) decisions?\*\*$'),
+    'questions': re.compile(r'^\*\*(\d+) questions? for .+\*\*$|^\*\*1 question for [^*]+:\*\* .+$'),
     'changes': re.compile(r'^\*\*Changes requested: (\d+)\*\*$'),
     'low-risk': re.compile(r'^\*\*Low risk: nothing to check\*\*$'),
 }
 
 
 def diff_index(diff):
-    """{path: {'new': set of new-side lines, 'old': set of old-side lines, 'hunks': [(new set, old set)]}}
-    for every file in a unified diff (`git diff`), counting context lines on both sides."""
+    """{path: {'new': set, 'old': set, 'hunks': [(new set, old set)]}} for every file in a unified diff,
+    counting context lines on both sides."""
     idx, cur, hunk, new_l, old_l = {}, None, None, 0, 0
     for raw in diff.splitlines():
         if raw.startswith('diff --git '):
@@ -73,26 +76,37 @@ def diff_index(diff):
     return idx
 
 
-def deleted_paths(diff):
-    """Paths a diff removes (their lines exist on the old side only)."""
-    out, old = set(), None
-    for raw in diff.splitlines():
-        if raw.startswith('--- a/'):
-            old = raw[6:]
-        elif raw.startswith('+++ /dev/null') and old:
-            out.add(old)
-    return out
-
-
-def anchor(repo, number, path, side, start, end):
+def diff_link(repo, number, path, side, start, end):
     """The Files-view link to lines of a PR's diff: #diff-<sha256(path)>R40-R52 (L for the old side)."""
     s = 'R' if side == 'new' else 'L'
     rng = f'{s}{start}' if start == end else f'{s}{start}-{s}{end}'
     return f'https://github.com/{repo}/pull/{number}/files#diff-{hashlib.sha256(path.encode()).hexdigest()}{rng}'
 
 
+def code_link(repo, head, path, start, end):
+    """A permalink to lines of a file at the PR's head commit (R16)."""
+    rng = f'L{start}' if start == end else f'L{start}-L{end}'
+    return f'https://github.com/{repo}/blob/{head}/{path}#{rng}'
+
+
+def decision_link(repo, pr, d):
+    ln = d.get('link') or {}
+    if ln.get('kind') == 'code':
+        return code_link(repo, pr['headRefOid'], ln.get('path', ''), ln.get('line_start', 1), ln.get('line_end', 1))
+    if ln.get('kind') == 'description':
+        return f"https://github.com/{repo}/pull/{pr['number']}"
+    return ln.get('url') or ''
+
+
+def link_text(d):
+    ln = d.get('link') or {}
+    if ln.get('kind') == 'code':
+        s, e = ln.get('line_start'), ln.get('line_end')
+        return f"`{ln.get('path')}` L{s}" + ('' if s == e else f'-L{e}')
+    return {'description': 'the PR description', 'ticket': 'the ticket'}.get(ln.get('kind'), 'the source')
+
+
 def in_diff(idx, item):
-    """Both ends of the item's range are lines of one hunk of its file, on its side."""
     f = idx.get(item.get('path'))
     if not f:
         return False
@@ -100,17 +114,17 @@ def in_diff(idx, item):
     return any(item['line_start'] in h[k] and item['line_end'] in h[k] for h in f['hunks'])
 
 
-def decide(items, ci, flagged):
-    """Outcome from the items (the script decides, not the model): a high item or a check for the
-    reviewer = escalate; a medium or high change = changes; only questions = questions; none = low risk
-    when CI passed and no rule flagged the PR, else escalate (R12: the gate then wants the flagged hunks)."""
-    if any(i['kind'] == 'check' or i['severity'] == 'high' for i in items) or ci in ('red', 'none', 'skipped'):
+def decide(decisions, items, ci):
+    """R16: Needs you only with a decision only the reviewer can make. Otherwise changes (a medium or
+    high change item, or changes mixed with questions), questions (only questions), or low risk
+    (nothing, and CI passed; CI red or missing with nothing else becomes a question for the author)."""
+    if decisions:
         return 'escalate'
     if any(i['kind'] == 'change' and i['severity'] in ('medium', 'high') for i in items):
         return 'changes'
     if items:
         return 'questions' if all(i['kind'] == 'question' for i in items) else 'changes'
-    return 'escalate' if flagged else 'low-risk'
+    return 'low-risk' if ci == 'green' else 'questions'
 
 
 def plural(n, one, many):
@@ -125,53 +139,143 @@ def facts_line(pr, ci, ci_bad):
     return f'{c} · {conflict} · {state}'
 
 
-def render(repo, pr, outcome, items, safe_to_skip, facts, rule_ids, name, author, single_line=None):
-    """(body, inline comments) in the style guide's shape."""
-    n = len(items)
+def headline(outcome, decisions, items, author, single_line=None):
     if single_line:
-        head = f'**Needs you:** {single_line}'
-    else:
-        head = {'escalate': f"**Needs you: {plural(n, 'thing', 'things')} to check**",
-                'questions': f"**{plural(n, 'question', 'questions')} for {author}**",
-                'changes': f'**Changes requested: {n}**',
-                'low-risk': '**Low risk: nothing to check**'}[outcome]
-    lines, comments = [head, ''], []
+        return f'**1 question for {author}:** {single_line}'
+    return {'escalate': f"**Needs you: {plural(len(decisions), 'decision', 'decisions')}**",
+            'questions': f"**{plural(len(items), 'question', 'questions')} for {author}**",
+            'changes': f"**Changes requested: {sum(1 for i in items if i['kind'] == 'change')}**",
+            'low-risk': '**Low risk: nothing to check**'}[outcome]
+
+
+def render(repo, pr, outcome, decisions, items, safe_to_skip, reply, facts, rule_ids, name, author,
+           single_line=None):
+    """The review as markdown: what the gate checks, and the text of the page."""
+    lines = [headline(outcome, decisions, items, author, single_line), '']
+    for k, d in enumerate(decisions, 1):
+        lines += [f"{k}. **{d['question']}** · {d['area']} · [open {link_text(d)}]({decision_link(repo, pr, d)})",
+                  f"   **Why you:** {d['why']}",
+                  f"   **Options:** {'; '.join(d['options'])}",
+                  f"   **Recommended:** {d['recommendation']}"]
+    if decisions and items:
+        lines += ['', f'**For {author}:**']
     for k, it in enumerate(items, 1):
         rng = f"L{it['line_start']}" if it['line_start'] == it['line_end'] else f"L{it['line_start']}-L{it['line_end']}"
         old = ' (removed lines)' if it.get('side') == 'old' else ''
-        url = anchor(repo, pr['number'], it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
+        url = diff_link(repo, pr['number'], it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
         label = KINDS[it['kind']].format(author=author)
-        lines += [f"{k}. [`{it['path']}` {rng}{old}]({url}) · {it['area']}",
+        lines += [f"{'-' if decisions else str(k) + '.'} [`{it['path']}` {rng}{old}]({url}) · {it['area']}",
                   f"   **Changed:** {it['what']}",
                   f"   **Why it matters:** {it['why']}",
                   f"   **{label}:** {it['ask']}"]
-        c = {'path': it['path'], 'line': it['line_end'], 'side': 'RIGHT' if it.get('side', 'new') == 'new' else 'LEFT',
-             'body': f"**{k}. {it['area']}**: {it['what']} {it['why']}\n\n**{label}:** {it['ask']}"}
-        if it['line_start'] != it['line_end']:
-            c.update(start_line=it['line_start'], start_side=c['side'])
-        comments.append(c)
-    if items:
+    if decisions or items:
         lines.append('')
     if safe_to_skip:
         lines += [f'**Safe to skip:** {safe_to_skip}', '']
+    if reply:
+        lines += [f'**Suggested reply to {author}:** {reply}', '']
     lines += [facts, '', f"<sub>{FOOTER.format(name=name)}</sub>"]
     if rule_ids:
         lines += ['', f"<details><summary>rules</summary>{', '.join(rule_ids)}</details>"]
-    return '\n'.join(lines), comments
+    return '\n'.join(lines)
 
 
-def gate_items(items, idx, flagged_paths, outcome, single_line=False):
-    """Reasons the model's items break the style guide."""
+def render_page(repo, pr, outcome, decisions, items, safe_to_skip, reply, facts, rule_ids, name, author,
+                reviewed_at, single_line=None):
+    """The private page (R0, R17): the same content as render(), as self-contained HTML (no external
+    resources), with the suggested reply in a copyable box."""
+    e = html.escape
+    out = [f"<h1>{e(headline(outcome, decisions, items, author, single_line).replace('**', ''))}</h1>",
+           f"<p class=meta><a href=\"{e(pr['url'])}\">{e(repo)}#{pr['number']}</a> · head "
+           f"<code>{e(pr['headRefOid'][:10])}</code> · reviewed {e(reviewed_at)}</p>"]
+    if decisions:
+        out.append('<h2>Your decisions</h2><ol>')
+        for d in decisions:
+            out.append(f"<li><p class=q>{e(d['question'])}</p><p class=meta>{e(d['area'])} · "
+                       f"<a href=\"{e(decision_link(repo, pr, d))}\">open {e(link_text(d).replace('`', ''))}</a></p>"
+                       f"<p><b>Why you:</b> {e(d['why'])}</p><p><b>Options:</b> {e('; '.join(d['options']))}</p>"
+                       f"<p><b>Recommended:</b> {e(d['recommendation'])}</p></li>")
+        out.append('</ol>')
+    if items:
+        out.append(f"<h2>{'For ' + e(author) if decisions else 'What to look at'}</h2><ol>")
+        for it in items:
+            rng = f"L{it['line_start']}" + ('' if it['line_start'] == it['line_end'] else f"-L{it['line_end']}")
+            url = diff_link(repo, pr['number'], it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
+            label = KINDS[it['kind']].format(author=author)
+            out.append(f"<li><p class=meta><a href=\"{e(url)}\">open line: {e(it['path'])} {rng}</a> · {e(it['area'])}</p>"
+                       f"<p><b>Changed:</b> {e(it['what'])}</p><p><b>Why it matters:</b> {e(it['why'])}</p>"
+                       f"<p><b>{e(label)}:</b> {e(it['ask'])}</p></li>")
+        out.append('</ol>')
+    if safe_to_skip:
+        out.append(f'<p><b>Safe to skip:</b> {e(safe_to_skip)}</p>')
+    if reply:
+        out.append(f'<h2>Suggested reply to {e(author)}</h2><textarea readonly rows=6>{e(reply)}</textarea>'
+                   '<p class=meta>Copy it into the PR yourself if you want; nothing was posted.</p>')
+    out.append(f'<p>{e(facts)}</p><p class=meta>{e(FOOTER.format(name=name))}</p>')
+    if rule_ids:
+        out.append(f"<details><summary>rules</summary>{e(', '.join(rule_ids))}</details>")
+    style = ('body{font:15px/1.45 system-ui,sans-serif;max-width:860px;margin:24px auto;padding:0 16px;color:#1d2125;'
+             'background:#fff}@media(prefers-color-scheme:dark){body{background:#16181b;color:#e3e5e8}a{color:#8ab4f8}}'
+             'h1{font-size:22px}h2{font-size:17px;margin-top:22px}li{margin:0 0 14px}.q{font-weight:600}'
+             '.meta{color:#777;font-size:13px}textarea{width:100%;font:inherit}')
+    return (f'<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
+            f'<meta name=robots content=noindex><title>Review {e(repo)}#{pr["number"]}</title><style>{style}</style>'
+            f'<body>{"".join(out)}</body></html>')
+
+
+def field_reasons(p, f, v):
+    why, v = [], (v or '').strip()
+    if len(v.split()) < 4:
+        why.append(f'R5: {p} {f} is empty or under 4 words')
+    elif len(v) > MAX_FIELD:
+        why.append(f'R14: {p} {f} is over {MAX_FIELD} characters')
+    m = FILLER_RE.search(v)
+    if m:
+        why.append(f'R6: {p} {f} has filler ("{m.group(0)}")')
+    c = CODES_RE.search(v)
+    if c:
+        why.append(f'R10: {p} {f} has a rule code ("{c.group(0)}")')
+    return why
+
+
+def gate_entries(decisions, items, idx, outcome, tree_lines, pr_text, single_line=False):
+    """Reasons the model's decisions and items break the style guide. tree_lines: {path: line count} at
+    the head (None = not checked); pr_text: the PR description, where a ticket link must appear."""
     why = []
     if single_line:
         return why
     if len(items) > MAX_ITEMS:
         why.append(f'R2: {len(items)} items, at most {MAX_ITEMS}')
-    if outcome == 'low-risk' and items:
+    if len(decisions) > MAX_DECISIONS:
+        why.append(f'R16: {len(decisions)} decisions, at most {MAX_DECISIONS}')
+    if outcome == 'low-risk' and (items or decisions):
         why.append('R2: low risk with items')
-    if outcome != 'low-risk' and not items:
-        why.append('R12: no items; name the exact hunks to check' + (
-            f" (the rules flagged {', '.join(sorted(flagged_paths)[:5])})" if flagged_paths else ''))
+    if outcome == 'escalate' and not decisions:
+        why.append('R16: needs you without a decision for the reviewer')
+    for k, d in enumerate(decisions, 1):
+        p = f'decision {k}'
+        q = (d.get('question') or '').strip()
+        if not q.endswith('?') or q.count('?') != 1:
+            why.append(f'R16: {p} is not one question ending in "?"')
+        if len(d.get('options') or []) < 2:
+            why.append(f'R16: {p} has fewer than 2 options')
+        for f in ('question', 'why', 'recommendation'):
+            why += field_reasons(p, f, d.get(f))
+        ln = d.get('link') or {}
+        if ln.get('kind') == 'code':
+            n = (tree_lines or {}).get(ln.get('path'))
+            if tree_lines is not None and n is None:
+                why.append(f"R16: {p} links {ln.get('path')}, which is not a file at the head")
+            elif not (isinstance(ln.get('line_start'), int) and isinstance(ln.get('line_end'), int)) or \
+                    ln['line_start'] < 1 or ln['line_end'] < ln['line_start'] or (n is not None and ln['line_end'] > n):
+                why.append(f"R16: {p} lines L{ln.get('line_start')}-L{ln.get('line_end')} are not within the file")
+        elif ln.get('kind') == 'ticket':
+            if not ln.get('url') or ln['url'] not in (pr_text or ''):
+                why.append(f'R16: {p} ticket link is not in the PR description')
+        elif ln.get('kind') != 'description':
+            why.append(f'R16: {p} has no link to code or text')
+        if d.get('area') not in AREAS:
+            why.append(f'R16: {p} area is not one of {AREAS}')
     for k, it in enumerate(items, 1):
         p = f'item {k}'
         if not it.get('path') or not isinstance(it.get('line_start'), int) or not isinstance(it.get('line_end'), int):
@@ -182,16 +286,7 @@ def gate_items(items, idx, flagged_paths, outcome, single_line=False):
             why.append(f"R3: {p} {it['path']} L{it['line_start']}-L{it['line_end']} ({it.get('side', 'new')} side) "
                        f'is not inside one hunk of the diff')
         for f in ('what', 'why', 'ask'):
-            v = (it.get(f) or '').strip()
-            if len(v.split()) < 4:
-                why.append(f'R5: {p} {f} is empty or under 4 words')
-            elif len(v) > MAX_FIELD:
-                why.append(f'R14: {p} {f} is over {MAX_FIELD} characters')
-            m = FILLER_RE.search(v)
-            if m:
-                why.append(f'R6: {p} {f} has filler ("{m.group(0)}")')
-            if CODES_RE.search(v):
-                why.append(f'R10: {p} {f} has a rule code ("{CODES_RE.search(v).group(0)}")')
+            why += field_reasons(p, f, it.get(f))
         if it.get('area') not in AREAS:
             why.append(f'R5: {p} area is not one of {AREAS}')
         if it.get('kind') == 'question' and not (it.get('ask') or '').rstrip().endswith('?'):
@@ -199,25 +294,25 @@ def gate_items(items, idx, flagged_paths, outcome, single_line=False):
     return why
 
 
-def gate_body(body, comments, n_items, outcome, single_line=False):
-    """Reasons the rendered body breaks the style guide (also runs on bodies posted earlier)."""
+def gate_body(body, n_decisions, n_items, outcome, single_line=False):
+    """Reasons the rendered markdown breaks the style guide (also runs on bodies delivered earlier)."""
     why = []
     main = body.split('<details>')[0]
-    lines = [l for l in main.splitlines()]
+    lines = main.splitlines()
     first = lines[0] if lines else ''
     pat = LINE1.get(outcome)
-    if not pat or not pat.match(first):
-        why.append(f'R1: line 1 is not the outcome and count for {outcome}')
     m = pat.match(first) if pat else None
-    if m and m.groups() and m.group(1) and int(m.group(1)) != n_items:
-        why.append(f'R1: line 1 counts {m.group(1)}, the review has {n_items}')
+    if not m:
+        why.append(f'R1: line 1 is not the outcome and count for {outcome}')
+    elif m.groups() and m.group(1) and outcome != 'changes':
+        want = n_decisions if outcome == 'escalate' else n_items
+        if int(m.group(1)) != want:
+            why.append(f'R1: line 1 counts {m.group(1)}, the review has {want}')
     if not single_line and outcome != 'low-risk':
-        links = re.findall(r'^\d+\. \[`[^`]+` L\d+(?:-L\d+)?(?: \(removed lines\))?\]\(https://github\.com/[^)]+/files#diff-[0-9a-f]{64}[RL]\d+(?:-[RL]\d+)?\)',
-                           main, re.M)
-        if len(links) != n_items or n_items == 0:
-            why.append(f'R3: {len(links)} item links to diff lines for {n_items} items')
-        if len(comments) != n_items:
-            why.append(f'R4: {len(comments)} inline comments for {n_items} items')
+        links = re.findall(r'\]\(https://github\.com/[^)]+/(?:pull/\d+/files#diff-[0-9a-f]{64}[RL]\d+(?:-[RL]\d+)?|'
+                           r'blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?|pull/\d+)\)', main)
+        if not links or len(links) < n_items + n_decisions:
+            why.append(f'R3: {len(links)} links to lines or text for {n_items + n_decisions} entries')
         if not re.search(r'^\*\*Safe to skip:\*\* \S', main, re.M):
             why.append('R7: no "Safe to skip" line')
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', main, re.M)
@@ -231,24 +326,37 @@ def gate_body(body, comments, n_items, outcome, single_line=False):
     if re.search(r'(?i)shadow mode|review agents', main):
         why.append('R9: boilerplate in the body')
     prose = re.sub(r'\]\([^)]*\)', ']', main)  # link targets carry R40-R52 anchors, not rule codes
-    m = CODES_RE.search(prose.replace(tail[-1] if tail else '', ''))
-    if m:
-        why.append(f'R10: rule code "{m.group(0)}" in the body')
+    c = CODES_RE.search(prose.replace(tail[-1] if tail else '', ''))
+    if c:
+        why.append(f'R10: rule code "{c.group(0)}" in the body')
     if len(body) > MAX_BODY:
         why.append(f'R14: body is {len(body)} characters, at most {MAX_BODY}')
     return why
 
 
-def gate(items, idx, flagged_paths, outcome, body, comments, single_line=False):
-    return gate_items(items, idx, flagged_paths, outcome, single_line) + gate_body(
-        body, comments, len(items), outcome, single_line)
+def gate_delivery(pr_state, page_url):
+    """R15: never deliver for a merged or closed PR. R17: a delivered review has its own URL. R0: that
+    URL is the private page, never a GitHub review in the reviewer's name."""
+    why = []
+    if pr_state != 'OPEN':
+        why.append(f'R15: the PR is {pr_state.lower()}')
+    if not page_url or not re.match(r'^https?://', page_url):
+        why.append('R17: the review has no URL of its own')
+    elif re.search(r'github\.com/', page_url):
+        why.append("R0: the review's URL is on GitHub, not the private page")
+    return why
+
+
+def gate(decisions, items, idx, outcome, body, tree_lines=None, pr_text='', single_line=False):
+    return (gate_entries(decisions, items, idx, outcome, tree_lines, pr_text, single_line)
+            + gate_body(body, len(decisions), len(items), outcome, single_line))
 
 
 def regress(dirs):
     """Run the gate over every fixture (*.json) in dirs. A fixture holds `expect` ("pass" or "fail"),
-    optionally `expect_reasons` (rule ids that must be among the reasons), and either `body` (+ `outcome`,
-    `n_items`, `comments`) for a posted body, or `items` + `diff` + `outcome` (+ repo, pr) to render and
-    gate. Returns the number of fixtures whose verdict differs from `expect`."""
+    optionally `expect_reasons` (rule ids that must be among the reasons), and either `body` (+ outcome,
+    n_items, n_decisions) for a delivered body, or `decisions` + `items` + `diff` + `outcome` to render
+    and gate; `delivery` ({pr_state, page_url}) adds the delivery checks. Returns the mismatches."""
     bad = total = 0
     for d in dirs:
         if not os.path.isdir(d):
@@ -258,17 +366,21 @@ def regress(dirs):
                 continue
             fx = json.load(open(os.path.join(d, fn)))
             total += 1
+            single = fx.get('single_line')
             if 'body' in fx:
-                reasons = gate_body(fx['body'], fx.get('comments', []), fx.get('n_items', 0), fx['outcome'],
-                                    fx.get('single_line', False))
+                reasons = gate_body(fx['body'], fx.get('n_decisions', 0), fx.get('n_items', 0), fx['outcome'], bool(single))
             else:
                 idx = diff_index(fx['diff'])
-                pr = fx.get('pr', {'number': 1, 'state': 'MERGED', 'mergeable': 'MERGEABLE'})
-                body, comments = render(fx.get('repo', 'example/repo'), pr, fx['outcome'], fx['items'],
-                                        fx.get('safe_to_skip', ''), fx.get('facts', 'CI passed · no merge conflict · merged'),
-                                        fx.get('rule_ids', []), 'Reviewer', 'the author', fx.get('single_line'))
-                reasons = gate(fx['items'], idx, fx.get('flagged_paths', []), fx['outcome'], body, comments,
-                               bool(fx.get('single_line')))
+                pr = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'url': 'https://github.com/example/repo/pull/1',
+                      'headRefOid': 'a' * 40}
+                body = render('example/repo', pr, fx['outcome'], fx.get('decisions', []), fx['items'],
+                              fx.get('safe_to_skip', ''), fx.get('reply', ''),
+                              fx.get('facts', 'CI passed · no merge conflict · open'), fx.get('rule_ids', []),
+                              'Reviewer', 'the author', single)
+                reasons = gate(fx.get('decisions', []), fx['items'], idx, fx['outcome'], body, fx.get('tree_lines'),
+                               fx.get('pr_text', ''), bool(single))
+            if 'delivery' in fx:
+                reasons += gate_delivery(fx['delivery'].get('pr_state', 'OPEN'), fx['delivery'].get('page_url'))
             verdict = 'fail' if reasons else 'pass'
             need = set(fx.get('expect_reasons', []))
             got = {r.split(':')[0] for r in reasons}

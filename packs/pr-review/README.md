@@ -3,12 +3,14 @@
 A Gas City pack that reviews a stream of pull requests for one person and surfaces only what needs
 them. It is three orders and a few scripts: no agents, no formulas, nothing in the core.
 
-- **`pr-review-sweep`** (every 30 min, no model): finds each new PR head, puts it through zero-token
-  rules, records one bead per PR, and queues the PRs that need a review.
-- **`pr-review-run`** (every 15 min): reviews the next queued PR with one headless, read-only
-  `claude -p` run, within a daily cap. The script, not the model, renders the review in the style
-  guide's shape, gates it, and posts it: a pending GitHub review in shadow mode, and the outcome word
-  plus the PR link in Slack. A PR whose only problem is CI gets one sentence without a model.
+- **`pr-review-sweep`** (every 5 min, no model): finds each new head of an open PR, puts it through
+  zero-token rules, records one bead per PR, and queues the PRs that need a review. Merged and closed
+  PRs are never reviewed (R15).
+- **`pr-review-run`** (every 5 min): reviews the next queued PR with one headless, read-only `claude -p`
+  run, within a daily cap. The script, not the model, renders the review in the style guide's shape,
+  gates it, and delivers it as a **private page** on the town's dashboard. Slack gets the outcome word,
+  the PR link and the page link. **Nothing is posted under the reviewer's GitHub identity** (R0). A PR
+  whose only problem is CI gets one question for its author, without a model.
 - **`pr-review-feedback`** (hourly, no model): reads what the reviewer did with each review (submitted
   unchanged, edited, discarded; a thumbs-up or thumbs-down and replies in Slack) and keeps the score.
 
@@ -28,8 +30,9 @@ GitHub ──sweep (rules, no model)──► bead per PR + queue ──run─�
                                                                worktree at PR head (outside the runtime)
                                                                claude -p: Read/Grep/Glob only → line-anchored items (JSON)
                                                                script: outcome, render, GATE (fail: regenerate once, then hold)
-                                                               ├─► GitHub: replaces its own pending review; PENDING (shadow) or review (live)
-                                                               ├─► Slack: "<word>: <link>", nothing else
+                                                               ├─► re-check: still open? (R15)
+                                                               ├─► private page per PR (R0, R17); nothing on GitHub
+                                                               ├─► Slack: "<word>: <PR link> · <page link>", nothing else
                                                                └─► bead: outcome, closed
 feedback (hourly) ◄── the reviewer's actions on GitHub and Slack ──► score, Today card, regression inbox
 ```
@@ -41,9 +44,12 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `PR_REVIEW` | `off` | Master switch. `on` runs the orders; `off` makes every fire exit at once. |
-| `PR_REVIEW_MODE` | `shadow` | The LIVE switch. `shadow`: every review is a PENDING review (only the reviewer sees it) and Slack says "would …". `live`: reviews are submitted under the reviewer's account. |
+| `PR_REVIEW_MODE` | `shadow` | Only changes the Slack words ("Would …" in shadow). Reviews are private pages in both modes: posting on GitHub, as a separate bot identity, is a later explicit change (R0). |
+| `PR_REVIEW_PAGES_DIR` | (none) | Where the private review pages go (mode 600 files, plus an `index.html`). Without it nothing is delivered (R17). |
+| `PR_REVIEW_PAGES_URL` | (none) | The URL that directory is served at, for the Slack link. Keep it on a private network. |
+| `PR_REVIEW_EFFORT` | `high` | `claude --effort` for the review run. |
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
-| `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR, and whose `gh` login posts. |
+| `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR. Nothing is posted as them. |
 | `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
 | `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for Nils"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
@@ -80,6 +86,8 @@ pack keeps the repository's text on GitHub and in the work dir, and nowhere else
   ingest hook ships its session anywhere.
 - **What the scripts print** (what an order log or an agent's transcript sees) is ids, links,
   outcomes, counts, sizes and cost. Error messages keep only the scripts' own text.
+- **The review pages** (`PR_REVIEW_PAGES_DIR`) hold the review's text, mode 600, on the host, served on
+  the private network only. The script writes nothing else outside the work dir.
 - **The work dir** holds the code while a review runs. Its context files and worktree are deleted
   afterwards. The bare mirror stays, like any clone. It also keeps, mode 700, what was posted, the
   reviewer's edits and Slack replies (`feedback/`) and the real regression cases (`regression/`).
@@ -182,48 +190,51 @@ PR's text can sway the review; it cannot act.
 
 ## Outcomes
 
-One per reviewed PR, derived by the script from the items (`pr_format.decide`), not chosen by the model.
+One per reviewed PR, derived by the script (`pr_format.decide`), not chosen by the model.
 
-| Outcome | When | Line 1 | Shadow | Live |
-| --- | --- | --- | --- | --- |
-| `escalate` | any item for the reviewer to decide, any high item, CI red, missing or skipped, or no items on a PR the rules flagged | **Needs you: N things to check** | pending, Slack "Needs you" | stays pending, "Needs you" |
-| `changes` | a change item of medium or high severity, or a mix of changes and questions | **Changes requested: N** | pending, "Would request changes" | REQUEST_CHANGES, "Requested changes" |
-| `questions` | only questions for the author | **N questions for <author>** | pending, "Would ask" | COMMENT, "Asked" |
-| `low-risk` | no items, CI passed, no rule flagged the PR | **Low risk: nothing to check** | pending, "Would approve" | APPROVE, "Approved as low risk" |
+| Outcome | When | Line 1 | Slack (shadow) |
+| --- | --- | --- | --- |
+| `escalate` | one or more decisions only the reviewer can make (R16): a product, risk or compliance trade-off, each one question with options, a recommendation and a link to the code at the head or the PR text | **Needs you: N decisions** | "Needs you" |
+| `changes` | a change item of medium or high severity for the author, or changes mixed with questions | **Changes requested: N** | "Would request changes" |
+| `questions` | only questions for the author; or CI red, missing or skipped with nothing else | **N questions for <author>** | "Would ask" |
+| `low-risk` | nothing for anyone, and CI passed | **Low risk: nothing to check** | "Would approve" |
 
-A PR whose CI failed, did not run or was all skipped, and that tripped no content rule, gets one
-sentence without a model ("No CI ran on this commit; nothing else flagged.", R11). With a content rule,
-the model reads it and CI is just the facts line.
+Rule flags alone never route a PR to the reviewer: they tell the model where to look first. Each page
+also has a suggested reply to the author, as text to copy; nothing is posted.
 
-On a merged PR, a live approve or request-changes is posted as a comment: nothing can gate a merge
-that already happened. Before posting, the script deletes its own pending review on the PR (GitHub
-allows one per user). It leaves the PR alone (`skipped`) if the reviewer submitted a review there or
-edited ours (the body no longer hashes to what was posted).
-
-Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (closed unmerged before its
-turn), `held-gate` (the gate failed twice; nothing posted), `held-secret` (the text held a credential
-shape; nothing posted), `skipped`, `error` (the run failed; see the log).
+Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
+review was delivered, R15), `held-gate` (the gate failed twice; nothing delivered), `held-secret` (the
+text held a credential shape), `error` (the run failed; see the log).
 
 ## Quality loop
 
-The reviewer's complaint about the first shadow reviews (2026-10-29: "it just fluff and really hard to
-read. there are no markers in the review what I actually need to manually review") became a loop, so a
-complaint is fixed once and stays fixed.
+The reviewer's complaints about the first shadow reviews (2026-10-29: "it just fluff and really hard to
+read. there are no markers in the review what I actually need to manually review"; then the pending
+reviews in his name blocking his own; then "that review comment needs to link to the human decisions
+… otherwise you do not need me!") became a loop, so a complaint is fixed once and stays fixed. The
+measure is the reviewer's effort: time from the Slack post to his own decision on the PR, what he
+opened, his thumbs on the Slack link. Not review volume.
 
-1. **Style guide** (`assets/style-guide.md`, versioned). Rules R1 to R14, each with the complaint it came
-   from: the outcome and count on line 1; at most 5 items, each linked to the exact diff lines and
-   repeated as an inline comment, with what changed, why it matters and what to decide or ask; a "Safe
-   to skip" line; one facts line; the footer last; no rule codes or boilerplate in the body. The model
-   reads it as part of its prompt.
+1. **Style guide** (`assets/style-guide.md`, versioned, v2). Rules R0 to R17, each with the complaint it
+   came from: never the reviewer's identity (R0); the outcome and count on line 1; "needs you" only for
+   decisions only the reviewer can make, each linked to the code or text (R16); at most 5 items for the
+   author, each linked to the exact diff lines, with what changed, why it matters and the change or
+   question; a "Safe to skip" line; one facts line; the footer last; no rule codes or boilerplate;
+   never for a merged PR (R15); every review at its own URL (R17). The model reads it in its prompt.
 2. **Gate** (`pr_format.gate`, zero tokens). Every machine-checkable rule, against the model's items and
-   the rendered body: each range resolved against the diff's hunks on its side, an inline comment per
-   item, non-empty fields of at least four words with no filler (a deny-list) and no rule codes, the
-   sizes, line 1, "Safe to skip", the facts line and the footer. On a failure the model answers again
+   the rendered text: each item's range resolved against the diff's hunks on its side, each decision's
+   code link resolved against the head (the file exists, the lines are within it) and asked as one
+   question with options, fields of at least four words with no filler (a deny-list) and no rule codes,
+   the sizes, line 1, "Safe to skip", the facts line and the footer. Right before delivery: the PR is
+   still open (R15) and the review has its own URL that is not on GitHub (R0, R17). On a failure the model answers again
    with the gate's reasons. A second failure posts nothing (`held-gate`). The log keeps the rule ids of
    each failure (`gate_first`, `gate`), so the score can count holds and regenerations.
-3. **Feedback** (`pr-review-feedback`, hourly, zero tokens). For each posted review: submitted unchanged
-   (good), edited before submitting (partial), discarded (bad), a "needs you" approved unchanged (false
-   alarm), and a thumbs-up or thumbs-down and replies on the Slack link. The text (their edits, their
+3. **Feedback** (`pr-review-feedback`, hourly, zero tokens). Being reworked for R0: the GitHub verdicts
+   below came from pending reviews, which are no longer posted. Next: the time from the Slack post to the
+   reviewer's own GitHub review, merge or dismissal, the thumbs and replies on the Slack link. Until then
+   it reads: submitted unchanged (good), edited before submitting (partial), discarded (bad), a "needs
+   you" approved unchanged (false alarm), and a thumbs-up or thumbs-down and replies on the Slack link.
+   A verdict is never inferred from someone else's action (`--record` notes who did what). The text (their edits, their
    replies, what was posted) stays in `PR_REVIEW_WORK_DIR/feedback` (mode 700). The state file holds the
    verdicts. The week's numbers (posted, accepted unchanged, edited, discarded, false alarms, gate holds)
    go to `PR_REVIEW_PANEL`, a card on the quality pack's Today page. `--record KEY VERDICT` records what
@@ -239,8 +250,10 @@ complaint is fixed once and stays fixed.
    Format and gate rules from the reviewer's feedback are applied directly and listed for them. A
    change to what counts as "needs you" is their decision.
 
-Case 1, in both sets: a CI escalation posted with rule labels and no line markers. It fails the gate on
-R1, R3, R7, R8, R9 and R10.
+Case 1, in both sets: a CI escalation posted with rule labels and no line markers (fails on R1, R3,
+R7, R8, R9, R10). Case 2: a review delivered on a merged PR (R15). Case 3: "needs you" without a linked
+decision (R16). Case 4: a delivered review without its own URL (R17); case 5: delivered as a GitHub
+review (R0).
 
 The regression covers the gate and the renderer, not the model: it cannot show that a prompt change
 makes the model write better items. The feedback numbers measure that.

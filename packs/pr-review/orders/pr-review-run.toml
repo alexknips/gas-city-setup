@@ -1,20 +1,21 @@
-# PR review run (README.md, "Review"): first every queued PR whose CI is red, missing or all skipped
-# (escalated without a model), then the next queued PR within PR_REVIEW_DAILY_CAP, in priority order
-# (the reviewer was asked > a serious rule > the rest; PR_REVIEW_RESERVE slots kept for the first two).
-# One headless `claude -p` per PR, in a worktree at the PR head under PR_REVIEW_WORK_DIR: Read, Grep and
-# Glob only, no hooks, no MCP, no repository settings, reads outside the worktree denied, no GitHub or
-# Slack credential, LOOMTRACER_INGEST_DISABLE=1. It returns JSON; this script decides the outcome, scans
-# for credentials and posts. PR_REVIEW_MODE = "shadow": a PENDING review only the reviewer sees, and
-# "would approve / would ask / would request changes / needs you" plus the link in Slack. "live": the
-# review is submitted (approve, comment, request changes; escalations stay pending).
+# PR review run (README.md, "Review"): every 5 min, first every queued open PR whose only problem is CI
+# (one question for its author, no model), then the next queued open PR within PR_REVIEW_DAILY_CAP, in
+# priority order (the reviewer was asked > a serious rule > the rest; newest first among equals).
+# One headless `claude -p` per PR (PR_REVIEW_MODEL, --effort PR_REVIEW_EFFORT), in a worktree at the PR
+# head under PR_REVIEW_WORK_DIR: Read, Grep and Glob only, no hooks, no MCP, no repository settings,
+# reads outside the worktree denied, no GitHub or Slack credential, LOOMTRACER_INGEST_DISABLE=1.
+# It returns decisions for the reviewer and items for the author as JSON; this script derives the outcome,
+# renders it (assets/style-guide.md), gates it (regenerate once, then hold), re-checks that the PR is
+# still open, and delivers a PRIVATE PAGE in PR_REVIEW_PAGES_DIR. Slack gets "<word>: <PR> · <page>".
+# Nothing is ever posted under the reviewer's GitHub identity (R0).
 # Manual run: gc order run pr-review-run
-# Dry run:    $PACK_DIR/assets/scripts/pr-review-run.sh --dry-run [--pr owner/repo#N]  (no model, no post)
+# Dry run:    $PACK_DIR/assets/scripts/pr-review-run.sh --dry-run [--pr owner/repo#N]  (no model, no delivery)
 [order]
-description = "PR review run: one capped, read-only model review per run; posts pending reviews and Slack links"
+description = "PR review run: one capped, read-only model review per run, delivered as a private page + a Slack link"
 scope = "city"
 exec = "$PACK_DIR/assets/scripts/pr-review-run.sh"
 trigger = "cooldown"
-interval = "15m"
+interval = "5m"
 timeout = "25m"
 
 [order.env]

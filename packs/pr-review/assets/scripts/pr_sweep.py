@@ -166,10 +166,12 @@ def sweep(cfg, dry):
         known = set(st['prs'])
     since = last - dt.timedelta(minutes=15)  # search lags; heads already seen are skipped
     found, counts = {}, collections.Counter()
+    open_keys = set()
     for repo in cfg['repos']:
         prs, heads = pr_rules.open_prs(repo)
-        merged = pr_rules.search_prs(f'repo:{repo} is:pr is:merged merged:>={pr_state.iso(since)}')
-        for pr in prs + merged:
+        open_keys |= {f"{repo}#{pr['number']}" for pr in prs}
+        # R15: open PRs only. A merged or closed PR is never reviewed.
+        for pr in prs:
             key = f"{repo}#{pr['number']}"
             # An open PR nobody touched since the last sweep, and never seen, is not news: the first
             # sweep starts PR_REVIEW_LOOKBACK_H back instead of at every PR ever opened.
@@ -185,6 +187,12 @@ def sweep(cfg, dry):
                 found[key] = (repo, pr, {pr['baseRefName']: pr_rules.branch_oid(repo, pr['baseRefName'])})
     with pr_state.locked(cfg['state']) as st:
         seen = {k: dict(v) for k, v in st['prs'].items()}
+    # R15: a queued or waiting PR that is no longer open leaves the queue ('closed', no Slack).
+    gone = [k for k, v in seen.items() if v.get('status') in ('queued', 'waiting-ci') and k not in open_keys]
+    for k in gone:
+        counts['closed'] += 1
+        if not dry:
+            record_one(cfg, beads, k, dict(seen[k], status='done', outcome='closed'), seen[k], counts)
     partial = False
     for key, (repo, pr, heads) in sorted(found.items()):
         if (pr_state.now() - t0).total_seconds() > cfg['sweep_budget_s']:
@@ -237,7 +245,7 @@ def sweep(cfg, dry):
 
 def record_one(cfg, beads, key, entry, old, counts):
     """The PR's bead and its state entry, written at once, so a sweep cut short keeps what it did."""
-    terminal = entry['status'] == 'done' and entry.get('outcome') == 'no-rule'
+    terminal = entry['status'] == 'done' and entry.get('outcome') in ('no-rule', 'closed')
     outcome = entry.get('outcome') or entry['status']
     try:
         if not entry.get('bead'):

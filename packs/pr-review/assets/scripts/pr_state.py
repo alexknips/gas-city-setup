@@ -65,9 +65,12 @@ def config():
         'slack_channel': e('PR_REVIEW_SLACK_CHANNEL', ''),
         'slack_env': e('PR_REVIEW_SLACK_ENV', '~/.config/gc/slack.env ~/.config/gc/slack2.env').split(),
         'model': e('PR_REVIEW_MODEL', 'opus'),
+        'effort': e('PR_REVIEW_EFFORT', 'high'),
+        'pages_dir': e('PR_REVIEW_PAGES_DIR', ''),
+        'pages_url': e('PR_REVIEW_PAGES_URL', ''),
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
-        'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '420')),
+        'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
         'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),
     }
 
@@ -196,20 +199,21 @@ def slack_call(token, method, payload):
         return json.load(r)
 
 
-def slack_post(cfg, outcome, url):
-    """Post '<word>: <link>' to the channel. The text is built here from a fixed word and the PR link;
-    nothing the model wrote reaches Slack. Returns (status, message ts): 'ok', 'off' or an error code;
-    the ts lets the feedback order find reactions and replies on that message."""
+def slack_post(cfg, outcome, url, page_url):
+    """Post '<word>: <PR link> · <review page link>' to the channel (R17). The text is built here from a
+    fixed word and the two links; nothing the model wrote reaches Slack. Returns (status, message ts):
+    'ok', 'off' or an error code; the ts lets the feedback order find reactions and replies."""
     word = OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
     if not word or not cfg['slack_channel']:
         return 'off', None
-    if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+', url):
+    if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+', url) or \
+            not re.fullmatch(r'https?://[\w.:-]+/[\w./-]+\.html', page_url or ''):
         return 'bad-url', None
     token = slack_token(cfg['slack_env'])
     if not token:
         return 'no-token', None
     try:
-        r = slack_call(token, 'chat.postMessage', {'channel': cfg['slack_channel'], 'text': f'{word}: {url}',
+        r = slack_call(token, 'chat.postMessage', {'channel': cfg['slack_channel'], 'text': f'{word}: {url} · {page_url}',
                                                    'unfurl_links': False, 'unfurl_media': False})
     except OSError as e:
         return f'error:{type(e).__name__}', None
