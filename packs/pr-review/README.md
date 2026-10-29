@@ -229,17 +229,16 @@ opened, his thumbs on the Slack link. Not review volume.
    still open (R15) and the review has its own URL that is not on GitHub (R0, R17). On a failure the model answers again
    with the gate's reasons. A second failure posts nothing (`held-gate`). The log keeps the rule ids of
    each failure (`gate_first`, `gate`), so the score can count holds and regenerations.
-3. **Feedback** (`pr-review-feedback`, hourly, zero tokens). Being reworked for R0: the GitHub verdicts
-   below came from pending reviews, which are no longer posted. Next: the time from the Slack post to the
-   reviewer's own GitHub review, merge or dismissal, the thumbs and replies on the Slack link. Until then
-   it reads: submitted unchanged (good), edited before submitting (partial), discarded (bad), a "needs
-   you" approved unchanged (false alarm), and a thumbs-up or thumbs-down and replies on the Slack link.
-   A verdict is never inferred from someone else's action (`--record` notes who did what). The text (their edits, their
-   replies, what was posted) stays in `PR_REVIEW_WORK_DIR/feedback` (mode 700). The state file holds the
-   verdicts. The week's numbers (posted, accepted unchanged, edited, discarded, false alarms, gate holds)
-   go to `PR_REVIEW_PANEL`, a card on the quality pack's Today page. `--record KEY VERDICT` records what
-   was seen by hand.
-4. **Regression set**. Every bad or partial verdict drops a candidate case (the posted body and the
+3. **Feedback** (`pr-review-feedback`, hourly, zero tokens). For each delivered review: the thumbs-up or
+   thumbs-down and the replies on its Slack message; the reviewer's own GitHub review after delivery and
+   the minutes to it, or the PR merged or closed before they looked; a "needs you" they approved as is
+   (false alarm). A verdict is never inferred from someone else's action: `--record KEY VERDICT --by WHO`
+   records what was seen by hand and who did it. Blind spot: which items on the page were opened (the
+   page server keeps no log the pack reads). The text (replies, notes, what was delivered) stays in
+   `PR_REVIEW_WORK_DIR/feedback` (mode 700); the state file holds counts. The week's numbers (delivered,
+   thumbs, median minutes to the reviewer's own review, PRs merged before they looked, false alarms, gate
+   holds) go to `PR_REVIEW_PANEL`, a card on the quality pack's Today page.
+4. **Regression set**. Every thumbs-down or reply drops a candidate case (the delivered text and the
    feedback) into `PR_REVIEW_WORK_DIR/regression/inbox`. The weekly quality review triages each one: a
    new or sharper style-guide rule if the gate could have caught it, then the case moves to
    `regression/` with the verdict it must get. `assets/scripts/pr-review-regress.sh` runs every case
