@@ -1,7 +1,9 @@
 # Review feedback (README.md, "Quality loop"): every hour, what each delivered review cost or saved the
 # reviewer. From Slack: a thumbs-up or thumbs-down on the link message, and replies in its thread. From
 # GitHub: the reviewer's own review after delivery and the minutes to it, or the PR merged or closed
-# before they looked; a "needs you" they approved as is counts as a false alarm. No model, no tokens.
+# before they looked; a "needs you" they approved as is counts as a false alarm. Then the reader test
+# (R26, pr_judge.py) for up to PR_REVIEW_JUDGE_PER_RUN delivered reviews without scores: the only tokens
+# this order spends (PR_REVIEW_JUDGE_MODEL, about $0.02 a review; PR_REVIEW_JUDGE=off turns it off).
 # Texts (replies) stay host-local under PR_REVIEW_WORK_DIR/feedback; a thumbs-down or a reply drops a
 # candidate case in .../regression/inbox for the weekly triage. The state file gets counts; PR_REVIEW_PANEL
 # gets this week's numbers as a Today-page card (quality pack: QUALITY_PANELS).

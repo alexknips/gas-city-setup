@@ -8,8 +8,12 @@
 #
 # Areas: A1 PHI, A2 security and SOC 2, A4 cannot be undone, A5 behaviour people notice, A7 CI.
 # A PR that trips any rule in a `select` area is reviewed (within the daily cap); other rules only tell
-# the reviewer what to ask about. A3 (money) has no rules: it is not checked, and every review says so.
+# the reviewer what to ask about. A3 (money) is NOT CHECKED: its rule only finds where a reviewed PR
+# touches it, and then the review says so on its first line and asks the reviewer to look (style guide R20).
 select_areas = ["A1", "A2", "A4", "A7"]
+not_checked_areas = ["A3"]
+# How a review names the not-checked areas, in words.
+not_checked = "billing, plans, credits or pricing"
 # Test files: a rule skips them unless it says `tests = "also"` or `tests = "only"`. In the first
 # backtest most DROP, auth-path and token hits were in tests only (README, "Calibration").
 test_paths = ['(?i)(^|/)(tests?|__tests__|spec|e2e|cypress|playwright|fixtures?|mocks?|seeds?|factories)/', '(?i)\.(test|spec)\.|_test\.|(^|/)test_[^/]*$']
@@ -105,3 +109,16 @@ id = "irrev-messages"
 area = "A4"
 label = "a message sent to people (SMS, email, push)"
 added = ['(?i)\bsend_?(sms|text)\w*', '(?i)\bsend_?(email|mail)\w*', '(?i)\bsend_?(message|notification|push)\w*', '(?i)\b(twilio|sendgrid|postmark|mailgun|resend)\b', '(?i)\bmessages\.create\b']
+
+# Not checked (A3): where a reviewed PR touches money. Health-care words ("care plan", "charge nurse")
+# are left out on purpose: plans only count as plan ids, tiers or plan files. Backtest 2026-10-29 (7 days,
+# 336 PRs, each flagged PR's matched lines judged by a model with capture off): the paths plus these two
+# added-line terms flagged 24 PRs, 20 of them touch money (83%), and found 20 of the 22 that do. The words
+# stripe, billing, invoice, price, subscription and refund in added lines flagged 21 PRs that do not, so
+# they are left out; the review model reports the money lines it sees as well (style guide R20).
+[[rule]]
+id = "money"
+area = "A3"
+label = "billing, plans, credits or pricing"
+paths = ['(?i)billing', '(?i)invoic', '(?i)pricing', '(?i)subscriptions?', '(?i)payments?', '(?i)checkout', '(?i)stripe', '(?i)(^|/)credits?(/|\.|_)', '(?i)(^|/)plans?(/|\.|_)']
+added = ['(?i)\b(credits?|credit_?balance)\b', '(?i)\b(plan_?ids?|plan_?tiers?|pricing_?plans?|subscription_?plans?)\b']

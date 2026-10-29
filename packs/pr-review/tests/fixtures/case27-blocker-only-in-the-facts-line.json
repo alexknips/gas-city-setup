@@ -1,0 +1,8 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R22"
+ ],
+ "outcome": "low-risk",
+ "body": "Automated review by Reviewer's review agents (Claude Code); Reviewer hasn't read this PR yet.\n\n**Low risk. Reviewer: nothing. Author: nothing.**\n\n**Checked and cleared:**\n- a message sent to people (SMS, email, push) at [`src/notify/send.ts` L14](https://github.com/example/repo/pull/1/files#diff-bf00f9230f398d397512db241acef44833841d6772224ba525f7bcc824ad1601R14): The send call is the existing reminder path; only the text changes and it carries no new recipient.\n\n**Safe to skip:** 1 test file.\n\nNo CI ran \u00b7 merge conflict \u00b7 open"
+}

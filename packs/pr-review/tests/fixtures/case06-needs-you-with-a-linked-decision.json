@@ -43,7 +43,6 @@
   }
  ],
  "safe_to_skip": "1 test file: a happy-path test.",
- "reply": "Thanks. Please drop the body from the log line; I will decide what the SMS may say.",
  "delivery": {
   "pr_state": "OPEN",
   "review_url": "https://github.com/example/repo/pull/1#pullrequestreview-1001",

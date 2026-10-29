@@ -4,14 +4,16 @@
 # One headless `claude -p` per PR (PR_REVIEW_MODEL, --effort PR_REVIEW_EFFORT), in a worktree at the PR
 # head under PR_REVIEW_WORK_DIR: Read, Grep and Glob only, no hooks, no MCP, no repository settings,
 # reads outside the worktree denied, no GitHub or Slack credential, LOOMTRACER_INGEST_DISABLE=1.
-# It returns decisions for the reviewer and items for the author as JSON; this script derives the outcome,
-# renders it (assets/style-guide.md), gates it (regenerate once, then hold), re-checks that the PR is
-# still open, and posts a SUBMITTED COMMENT review (never pending, R0): an honesty line first, the items as
-# inline comments. Slack gets "<word>: <review URL>", once per PR head (R17, R18).
+# It returns decisions for the reviewer, items for the author and why each flagged hunk is safe as JSON;
+# this script derives the outcome, renders it (assets/style-guide.md), gates it and gives it the reader
+# test (pr_judge.py, PR_REVIEW_JUDGE_MODEL; regenerate once, then hold), re-checks that the PR is still
+# open on the reviewed head, and posts ONE SUBMITTED review (never pending, R0, R24): APPROVE for a
+# low-risk PR under the bar with PR_REVIEW_APPROVE=on (R27), else COMMENT; the honesty line first, the
+# items as inline comments. Slack gets "<word>: <review URL>", once per PR head (R17, R18).
 # Manual run: gc order run pr-review-run
 # Dry run:    $PACK_DIR/assets/scripts/pr-review-run.sh --dry-run [--pr owner/repo#N]  (no model, no delivery)
 [order]
-description = "PR review run: one capped, read-only model review per run, posted as a COMMENT review + a Slack link"
+description = "PR review run: one capped, read-only model review per run, posted as one GitHub review + a Slack link"
 scope = "city"
 exec = "$PACK_DIR/assets/scripts/pr-review-run.sh"
 trigger = "cooldown"

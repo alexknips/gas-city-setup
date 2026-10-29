@@ -27,6 +27,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_judge  # noqa: E402
 import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
 
@@ -37,7 +38,8 @@ VERDICTS = {'good', 'bad', 'rejected'}
 
 def reviews_by(repo, number, reviewer):
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq',
-                        '.[] | {id, state, login: .user.login, submitted_at, ours: (.body | startswith("Automated review"))}'],
+                        '.[] | {id, state, login: .user.login, submitted_at, ours: ((.body | startswith("Automated review")) or '
+                        '(.body | startswith("Automated approval")))}'],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return None
@@ -109,6 +111,7 @@ def summarize(st, weeks=2):
     """Per ISO week of delivery: counts by outcome, thumbs, replies, the reviewer's decisions and the median
     minutes to their own review; gate holds and regenerations per week of review."""
     rows, mins = collections.defaultdict(collections.Counter), collections.defaultdict(list)
+    judged = collections.defaultdict(lambda: collections.defaultdict(list))
     for e in st['prs'].values():
         if e.get('delivered_at') and e.get('outcome') in DELIVERED:
             w = week_of(e['delivered_at'])
@@ -123,6 +126,12 @@ def summarize(st, weeks=2):
                 if e['fb_decision'] == 'their-review' and e.get('fb_minutes') is not None:
                     mins[w].append(e['fb_minutes'])
             c['false_alarm'] += 1 if e.get('fb_false_alarm') else 0
+            c['approved'] += 1 if e.get('approved') else 0
+            if e.get('judge'):  # R26: the reader test of the delivered review
+                c['judged'] += 1
+                c['judge_below_bar'] += 1 if pr_judge.below_bar(e['judge']) else 0
+                for d in ('markers', 'useful'):
+                    judged[w][d].append(e['judge'][d])
         if e.get('outcome') == 'held-gate' and e.get('reviewed_at'):
             rows[week_of(e['reviewed_at'])]['held_gate'] += 1
         if e.get('gate_first') and e.get('reviewed_at'):
@@ -134,6 +143,8 @@ def summarize(st, weeks=2):
         out[w] = dict(rows[w])
         if mins[w]:
             out[w]['median_min_to_their_review'] = round(statistics.median(mins[w]))
+        for d, v in judged[w].items():
+            out[w][f'median_{d}'] = statistics.median(v)
     return out
 
 
@@ -142,12 +153,16 @@ def panel(cfg, summary, now):
     c = summary.get(week, {})
     med = c.get('median_min_to_their_review')
     return {'title': f"PR reviews ({cfg['mode']}), week {week}", 'at': pr_state.iso(now),
-            'rows': [[str(c.get('delivered', 0)), f"reviews delivered ({c.get('outcome_escalate', 0)} needed you)"],
+            'rows': [[str(c.get('delivered', 0)), f"reviews delivered ({c.get('outcome_escalate', 0)} needed you, "
+                                                  f"{c.get('approved', 0)} approved)"],
                      [f"{c.get('thumbs_up', 0)} / {c.get('thumbs_down', 0)}", 'thumbs up / down on Slack'],
                      [f'{med} min' if med is not None else 'no data', 'median time to your own review'],
                      [str(c.get('their-review', 0)), 'PRs you reviewed after ours'],
                      [str(c.get('merged-without-their-review', 0)), 'merged before you looked'],
-                     [str(c.get('held_gate', 0)), f"held by the gate ({c.get('regenerated', 0)} regenerated)"]],
+                     [str(c.get('held_gate', 0)), f"held by the gate ({c.get('regenerated', 0)} regenerated)"],
+                     [f"{c['median_useful']:g} / {c['median_markers']:g}" if c.get('judged') else 'no data',
+                      f"reader test, median useful / markers of 5 ({c.get('judged', 0)} read, "
+                      f"{c.get('judge_below_bar', 0)} below the bar)"]],
             'note': (f"{c.get('replies', 0)} with a reply in Slack, {c.get('false_alarm', 0)} 'needs you' you approved "
                      f"as is. Read hourly from Slack and GitHub; the texts stay on the host.")}
 
@@ -183,6 +198,9 @@ def run(cfg, dry):
         for k, u in updates.items():
             if k in st['prs']:
                 st['prs'][k].update(u)
+    if cfg['judge']:  # R26: the reader test of delivered reviews without scores, a few per run
+        pr_judge.audit(cfg, int(os.environ.get('PR_REVIEW_JUDGE_PER_RUN', '5')))
+    with pr_state.locked(cfg['state']) as st:
         summary = summarize(st)
         st['feedback_summary'] = summary
     os.makedirs(os.path.dirname(cfg['panel']) or '.', exist_ok=True)

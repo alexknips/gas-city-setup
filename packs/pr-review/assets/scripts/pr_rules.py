@@ -167,6 +167,8 @@ def load_rules(path):
     if clash:
         raise ValueError(f'rule ids must be unique and not built in: {sorted(clash)}')
     return {'select_areas': set(cfg.get('select_areas', ['A1', 'A2', 'A4', 'A7'])), 'rules': rules,
+            'not_checked_areas': set(cfg.get('not_checked_areas', [])),
+            'not_checked': cfg.get('not_checked', ''),
             'not_paths': [re.compile(p) for p in cfg.get('not_paths', [])],
             'test_paths': [re.compile(p) for p in cfg.get('test_paths', [TEST_PATH.pattern])]}
 
@@ -362,6 +364,12 @@ def priority(hits, ruleset, area_of):
     if not sel:
         return None
     return 1 if SERIOUS & set(sel) else 2
+
+
+def not_checked(hits, ruleset, area_of):
+    """The rules that fired in a not-checked area (style guide R20): the review must say so and ask the
+    reviewer to look."""
+    return sorted(h for h in hits if area_of.get(h) in ruleset['not_checked_areas'])
 
 
 def selected(hits, ruleset, area_of):

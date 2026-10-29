@@ -17,7 +17,7 @@ import urllib.request
 
 # Outcome -> (Slack word in shadow mode, Slack word in live mode). None: nothing goes to Slack.
 OUTCOMES = {
-    'low-risk': ('Low risk', 'Approved as low risk'),
+    'low-risk': ('Low risk', 'Low risk'),
     'questions': ('Questions for the author', 'Questions for the author'),
     'changes': ('Changes requested', 'Changes requested'),
     'escalate': ('Needs you', 'Needs you'),
@@ -27,6 +27,8 @@ OUTCOMES = {
     'error': (None, None),
     'held-gate': (None, None),
     'held-secret': (None, None),
+    'held-inline': (None, None),
+    'requeued': (None, None),
     'skipped': (None, None),
 }
 
@@ -69,6 +71,10 @@ def config():
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
+        'approve': e('PR_REVIEW_APPROVE', 'off') == 'on',
+        'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
+        'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
+        'judge_max_usd': e('PR_REVIEW_JUDGE_MAX_USD', '0.25'),
         'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),
     }
 
@@ -199,11 +205,15 @@ def slack_call(token, method, payload):
         return json.load(r)
 
 
-def slack_post(cfg, outcome, url, review_url):
+APPROVED = 'Approved as low risk'
+
+
+def slack_post(cfg, outcome, url, review_url, approved=False, ts=None):
     """Post '<word>: <review URL>' to the channel (R17): the submitted review's own GitHub URL. The text is
-    built here from a fixed word and the link; nothing the model wrote reaches Slack. Returns (status,
+    built here from a fixed word and the link; nothing the model wrote reaches Slack. With `ts`, the
+    message of an earlier review of the same head is updated in place instead (R18). Returns (status,
     message ts): 'ok', 'off' or an error code; the ts lets the feedback order find reactions and replies."""
-    word = OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
+    word = APPROVED if approved else OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
     if not word or not cfg['slack_channel']:
         return 'off', None
     if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+#pullrequestreview-\d+', review_url or '') or \
@@ -213,8 +223,11 @@ def slack_post(cfg, outcome, url, review_url):
     if not token:
         return 'no-token', None
     try:
-        r = slack_call(token, 'chat.postMessage', {'channel': cfg['slack_channel'], 'text': f'{word}: {review_url}',
-                                                   'unfurl_links': False, 'unfurl_media': False})
+        msg = {'channel': cfg['slack_channel'], 'text': f'{word}: {review_url}', 'unfurl_links': False,
+               'unfurl_media': False}
+        r = slack_call(token, 'chat.update', dict(msg, ts=ts)) if ts else slack_call(token, 'chat.postMessage', msg)
     except OSError as e:
         return f'error:{type(e).__name__}', None
-    return ('ok', r.get('ts')) if r.get('ok') else (f"error:{r.get('error')}", None)
+    if not r.get('ok'):
+        return f"error:{r.get('error')}", None
+    return ('updated' if ts else 'ok'), r.get('ts')
