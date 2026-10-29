@@ -431,7 +431,12 @@ def model_review(cfg, key, entry, dry):
                      'body': f"**{f['severity']}**, {f['area']}: {f['problem'].strip()}\n\nHow it fails: "
                              f"{f['how_it_fails'].strip()}"} for f in findings if (f['file'], f['line']) in inline]
         body = body_for(cfg, pr, outcome, model, findings, inline, note, labels, ci)
-        extra = {'model': True, 'findings': len(findings), 'dropped': len(model['findings']) - len(findings), **meta}
+        # Enum values and counts only, so the log can say why reviews end where they do.
+        extra = {'model': True, 'findings': len(findings), 'dropped': len(model['findings']) - len(findings),
+                 'model_outcome': model['outcome'], 'questions': len(model['questions']),
+                 'evidence': len(model['evidence_requested']), 'checks': model['checks'],
+                 'severity': sorted(f['severity'] for f in findings), 'areas': sensitive,
+                 'rules_disagree': bool(note), **meta}
         if leaks([body] + [c['body'] for c in comments]):
             outcome, comments = 'escalate', []
             body = '\n'.join([HONEST, '', '**Needs you**: the review text was withheld because it matched a '
