@@ -61,7 +61,8 @@ CLEARED = {'flag': 'F1', 'path': 'src/notify/send.ts', 'line_start': 14, 'line_e
            'why': 'The send call is the existing reminder path; only the text changes and it carries no new recipient.'}
 NO_CI = pr_format.blockers('example/repo', {'number': 1}, 'none')
 NOT_CHECKED = 'billing, plans, credits or pricing'
-MONEY = pr_format.not_checked_decision([{'path': 'src/notify/send.ts', 'line': 13}], NOT_CHECKED, 'Author')
+MONEY = pr_format.not_checked_decision([{'path': 'src/notify/send.ts', 'line': 13}], NOT_CHECKED, 'Author',
+                                      'Each reminder now takes one SMS credit from the clinic balance.')
 GREEN = {'head': 'a' * 40, 'fresh': {'state': 'OPEN', 'checks': ['SUCCESS', 'SKIPPED']}}
 PR = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': 'a' * 40}
 

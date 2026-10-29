@@ -5,13 +5,15 @@
  "items": [],
  "decisions": [
   {
-   "question": "This PR touches billing, plans, credits or pricing, which no agent checks: will you review that part yourself before it merges?",
+   "question": "Who reviews the billing, plans, credits or pricing changes before this PR merges?",
    "options": [
-    "Review that part yourself before it merges",
-    "Let Author merge it without that review"
+    "You review the lines under Where yourself",
+    "Author first writes in the PR description what changes for customers, then you decide",
+    "A person who owns billing reviews them"
    ],
-   "recommendation": "Review that part yourself; the link opens where it starts.",
-   "why": "Money rules are outside what these agents check, so only a person can clear them.",
+   "recommendation": "You review the lines under Where yourself: 1 file.",
+   "why": "No agent checks money logic, so a person has to clear it.",
+   "what": "Each reminder now takes one SMS credit from the clinic balance.",
    "where": [
     {
      "path": "src/notify/send.ts",

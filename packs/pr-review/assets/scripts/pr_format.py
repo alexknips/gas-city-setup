@@ -189,7 +189,7 @@ def who_acts(rv, name, author):
     d = rv['decisions']
     you = plural(len(d), 'decision', 'decisions') if d else 'nothing'
     if rv.get('not_checked'):
-        you += f" (it touches {rv['not_checked']}, which no agent checks)"
+        you += f" ({rv['not_checked']} not checked)"
     n_change = sum(1 for i in rv['items'] if i['kind'] == 'change')
     n_q = sum(1 for i in rv['items'] if i['kind'] == 'question')
     parts = ([plural(n_change, 'change', 'changes')] if n_change else []) + \
@@ -212,13 +212,17 @@ def render(repo, pr, rv, name, author):
     if rv['decisions']:
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
-            lines.append(f"{k}. **{d['question']}** · {d['area']} · [open {link_text(d)}]({decision_link(repo, pr, d)})")
+            area = '' if d['area'] == NOT_CHECKED_AREA else f" · {d['area']}"
+            opener = '' if d.get('where') else f" · [open {link_text(d)}]({decision_link(repo, pr, d)})"
+            lines.append(f"{k}. **{d['question']}**{area}{opener}")
             if d.get('where'):
                 w = d['where']
                 links = [f"[`{x['path']}` L{x['line']}]({diff_link(repo, pr['number'], x['path'], 'new', x['line'], x['line'])})"
                          for x in w[:MAX_WHERE]]
                 more = f', and {plural(len(w) - MAX_WHERE, "more file", "more files")}' if len(w) > MAX_WHERE else ''
                 lines.append(f"   **Where:** {', '.join(links)}{more}")
+            if d.get('what'):
+                lines.append(f"   **What changes (not checked):** {d['what']}")
             lines += [f"   **Why you:** {d['why']}",
                       f"   **Options:** {'; '.join(d['options'])}",
                       f"   **Recommended:** {d['recommendation']}"]
@@ -265,17 +269,20 @@ def inline_comments(items, author):
     return out
 
 
-def not_checked_decision(located, words, author):
+def not_checked_decision(located, words, author, summary=''):
     """R20: the PR touches an area no agent checks, so the reviewer decides whether to look. `located`:
     [{path, line}] where the not-checked rule matched; the decision links the first."""
     first, where = located[0], []
     for x in located:  # the first line of each file, in order
         if x['path'] not in {w['path'] for w in where}:
             where.append({'path': x['path'], 'line': x['line']})
-    return {'question': f'This PR touches {words}, which no agent checks: will you review that part yourself before it merges?',
-            'options': ['Review that part yourself before it merges', f'Let {author} merge it without that review'],
-            'recommendation': 'Review that part yourself; the link opens where it starts.',
-            'why': 'Money rules are outside what these agents check, so only a person can clear them.',
+    return {'question': f'Who reviews the {words} changes before this PR merges?',
+            'options': ['You review the lines under Where yourself',
+                        f'{author} first writes in the PR description what changes for customers, then you decide',
+                        'A person who owns billing reviews them'],
+            'recommendation': f'You review the lines under Where yourself: {plural(len(where), "file", "files")}.',
+            'why': 'No agent checks money logic, so a person has to clear it.',
+            'what': summary,
             'where': where,
             'area': NOT_CHECKED_AREA,
             'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line'], 'line_end': first['line']},
@@ -340,7 +347,7 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R16: {p} is not one question ending in "?"')
         if len(d.get('options') or []) < 2:
             why.append(f'R16: {p} has fewer than 2 options')
-        for f in ('question', 'why', 'recommendation'):
+        for f in ('question', 'why', 'recommendation') + (('what',) if d.get('what') else ()):
             why += field_reasons(p, f, d.get(f))
         ln = d.get('link') or {}
         if ln.get('kind') == 'code':

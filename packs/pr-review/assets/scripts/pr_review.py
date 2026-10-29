@@ -57,7 +57,7 @@ NAMES = dict(x.split('=', 1) for x in os.environ.get('PR_REVIEW_NAMES', '').spli
 _TEXT = {'type': 'string'}
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
-    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'safe_to_skip', 'checks'],
+    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'not_checked_summary', 'safe_to_skip', 'checks'],
     'properties': {
         'decisions': {'type': 'array', 'maxItems': 3, 'description': (
             'Only decisions the reviewer alone can make: a product, risk or compliance trade-off, never a code '
@@ -114,6 +114,9 @@ SCHEMA = {
             'review). Empty when there are none.'), 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['path', 'line'],
             'properties': {'path': _TEXT, 'line': {'type': 'integer', 'minimum': 1}}}},
+        'not_checked_summary': {'type': 'string', 'maxLength': 240, 'description': (
+            'One plain sentence, at most 240 characters: what the not_checked_lines change for customers or '
+            'accounts (what changes, not whether it is right). Empty when there are none.')},
         'safe_to_skip': {'type': 'string', 'maxLength': 220, 'description': 'One line, at most 220 characters: what the rest of the diff is, e.g. "14 files: tests, UI copy, types".'},
         'checks': {'type': 'object', 'additionalProperties': False,
                    'required': ['description_matches_diff', 'behaviour_changes_have_tests',
@@ -156,8 +159,9 @@ directory is the repository at the PR head. Do these steps yourself, in order:
      id, its file, a new-side line range inside that hunk where the flagged code is, and one plain sentence
      on why it is safe. A flagged hunk with no entry anywhere fails the review.
    - `not_checked_lines`: new-side lines that change {not_checked}. This review does NOT check that area:
-     never write decisions, items or cleared entries about it; list where it is, and the reviewer is asked
-     to look at it himself.
+     never write decisions, items or cleared entries about it; list where it is, and say in
+     `not_checked_summary` what those lines change for customers or accounts (a description, not a
+     verdict). The reviewer is asked to look at it himself.
 4. Keep at most 3 decisions and 5 items, worst first. Write `safe_to_skip`.
 
 Your answer is the JSON object of the schema you were given; it replaces the markdown output format
@@ -316,6 +320,7 @@ def run_model(cfg, tree, ctx, prompt):
     if out.get('is_error') or not isinstance(so, dict):
         return None, {**meta, 'error': out.get('subtype') or 'no-structured-output'}
     so['safe_to_skip'] = clean(so['safe_to_skip'])
+    so['not_checked_summary'] = clean(so.get('not_checked_summary') or '')
     for c in so['cleared']:
         c['why'] = clean(c['why'])
     for it in so['items']:
@@ -589,13 +594,13 @@ def flags_for(files, ruleset, hits, area_of):
 
 
 def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_cut, nc, ruleset, author, model,
-             idx=None):
+             idx=None, nc_summary=''):
     """The review dict (pr_format): the not-checked decision first when the PR touches that area (R20);
     blockers for a conflict or CI that did not pass (R22); an approval only when the bar holds (R27), and
     a low-risk review that misses the bar asks the author for what is missing instead."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     if nc:
-        decisions = [pr_format.not_checked_decision(nc, words, author)] + decisions[:pr_format.MAX_DECISIONS - 1]
+        decisions = [pr_format.not_checked_decision(nc, words, author, nc_summary)] + decisions[:pr_format.MAX_DECISIONS - 1]
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
     rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'safe_to_skip': safe,
@@ -696,7 +701,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             nc = nc_rule + [dict(x, rule='model') for x in model['not_checked_lines']
                             if x['line'] in (idx.get(x['path']) or {}).get('new', set())]
             rv = assemble(cfg, repo, pr, ci, decisions, items, model['cleared'], model['safe_to_skip'], flagged,
-                          flags_cut, nc, ruleset, author, model=True, idx=idx)
+                          flags_cut, nc, ruleset, author, model=True, idx=idx,
+                          nc_summary=model['not_checked_summary'] if len(model['not_checked_summary'].split()) >= 4 else '')
             body = pr_format.render(repo, pr, rv, NAME, author)
             comments = pr_format.inline_comments(rv['items'], author)
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
