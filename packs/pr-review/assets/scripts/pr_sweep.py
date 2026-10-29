@@ -165,7 +165,7 @@ def sweep(cfg, dry):
         waiting = [k for k, v in st['prs'].items() if v.get('status') == 'waiting-ci']
         known = set(st['prs'])
     since = last - dt.timedelta(minutes=15)  # search lags; heads already seen are skipped
-    found, changes, counts = {}, [], collections.Counter()
+    found, counts = {}, collections.Counter()
     for repo in cfg['repos']:
         prs, heads = pr_rules.open_prs(repo)
         merged = pr_rules.search_prs(f'repo:{repo} is:pr is:merged merged:>={pr_state.iso(since)}')
@@ -185,7 +185,14 @@ def sweep(cfg, dry):
                 found[key] = (repo, pr, {pr['baseRefName']: pr_rules.branch_oid(repo, pr['baseRefName'])})
     with pr_state.locked(cfg['state']) as st:
         seen = {k: dict(v) for k, v in st['prs'].items()}
+    partial = False
     for key, (repo, pr, heads) in sorted(found.items()):
+        if (pr_state.now() - t0).total_seconds() > cfg['sweep_budget_s']:
+            # Out of time: what is recorded stays recorded, and last_sweep does not move, so the next
+            # sweep searches the same window again and skips the heads already seen.
+            partial = True
+            counts['left_for_next'] += 1
+            continue
         old = seen.get(key, {})
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
@@ -212,37 +219,42 @@ def sweep(cfg, dry):
         else:
             entry.update(status='queued', queued_at=pr_state.iso(t0))
         counts[entry['status'] if entry['status'] != 'done' else entry.get('outcome', 'done')] += 1
-        changes.append((key, entry, old))
-    if dry:
-        for key, entry, old in changes:
+        if dry:
             print(json.dumps({'pr': entry['url'], 'status': entry['status'], 'outcome': entry.get('outcome'),
                               'tier': entry['tier'], 'rules': entry['rules'], 'ci': entry['ci']}))
+            continue
+        record_one(cfg, beads, key, entry, old, counts)
+    if dry:
         print(json.dumps({'dry_run': True, 'since': pr_state.iso(since), 'counts': counts}))
         return
-    for key, entry, old in changes:
-        terminal = entry['status'] == 'done' and entry.get('outcome') == 'no-rule'
-        outcome = entry.get('outcome') or entry['status']
-        try:
-            if not entry.get('bead'):
-                entry['bead'] = beads.create(entry['rig'], entry['repo'], entry['number'], entry['url'],
-                                             entry['head'], outcome)
-                if terminal:
-                    beads.set(entry['rig'], entry['bead'], close=True, outcome=outcome)
-            elif entry['head'] != old.get('head') or outcome != old.get('outcome'):
-                beads.set(entry['rig'], entry['bead'], head=entry['head'], outcome=outcome)
-        except (RuntimeError, OSError) as e:
-            counts['bead_error'] += 1
-            entry['bead_error'] = str(e)[:200]
+    if not partial:
         with pr_state.locked(cfg['state']) as st:
-            cur = st['prs'].get(key, {})
-            if cur.get('status') == 'reviewing':  # the review order took it meanwhile; leave it be
-                continue
-            st['prs'][key] = entry
-    with pr_state.locked(cfg['state']) as st:
-        st['last_sweep'] = pr_state.iso(t0)
-    pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts,
+            st['last_sweep'] = pr_state.iso(t0)
+    pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts, 'partial': partial,
                                 'secs': round((pr_state.now() - t0).total_seconds())})
-    print(json.dumps({'sweep': pr_state.iso(t0), 'counts': counts}))
+    print(json.dumps({'sweep': pr_state.iso(t0), 'partial': partial, 'counts': counts}))
+
+
+def record_one(cfg, beads, key, entry, old, counts):
+    """The PR's bead and its state entry, written at once, so a sweep cut short keeps what it did."""
+    terminal = entry['status'] == 'done' and entry.get('outcome') == 'no-rule'
+    outcome = entry.get('outcome') or entry['status']
+    try:
+        if not entry.get('bead'):
+            entry['bead'] = beads.create(entry['rig'], entry['repo'], entry['number'], entry['url'],
+                                         entry['head'], outcome)
+            if terminal:
+                beads.set(entry['rig'], entry['bead'], close=True, outcome=outcome)
+        elif entry['head'] != old.get('head') or outcome != old.get('outcome'):
+            beads.set(entry['rig'], entry['bead'], head=entry['head'], outcome=outcome)
+    except (RuntimeError, OSError) as e:
+        counts['bead_error'] += 1
+        entry['bead_error'] = str(e)[:200]
+    with pr_state.locked(cfg['state']) as st:
+        cur = st['prs'].get(key, {})
+        if cur.get('status') == 'reviewing':  # the review order took it meanwhile; leave it be
+            return
+        st['prs'][key] = entry
 
 
 def main():

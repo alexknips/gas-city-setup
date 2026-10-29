@@ -63,6 +63,7 @@ def config():
         'model': e('PR_REVIEW_MODEL', 'opus'),
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
+        'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '420')),
     }
 
 

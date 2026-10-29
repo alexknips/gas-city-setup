@@ -13,7 +13,7 @@ scope = "city"
 exec = "$PACK_DIR/assets/scripts/pr-review-sweep.sh"
 trigger = "cooldown"
 interval = "30m"
-timeout = "5m"
+timeout = "10m"  # PR_REVIEW_SWEEP_BUDGET_S (7 min) stops the work first; the rest waits for the next sweep
 
 [order.env]
 PR_REVIEW = "off"
