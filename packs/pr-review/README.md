@@ -419,7 +419,11 @@ author's passes as a question for the author and fails as "Needs you" (R16, R22)
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail
 (R22); a decision without actors fails (R16). A rendered case can pin its line 2 (`line2`) and require that
 its parts give its outcome (`derived`). `pr-review-regress.sh` also runs `pr_hygiene.py`: no public file of the pack names a
-person or repository from the town's overrides (host-local; skipped without them).
+person or repository from the town's overrides (host-local; skipped without them). The same check covers
+commit messages and a PR's title and body (decision-67f9a695, forward only), as a gate the refinery runs
+at the PR head: `pr_hygiene.py --messages <base>..<head> --pr N --repo OWNER/NAME [--city city.toml]`.
+There the reviewer's own login and name are allowed, matching ignores case, and it prints labels and
+counts only.
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a
