@@ -50,8 +50,10 @@ VOICE_WORDS = {'changes': 'Changes requested', 'questions': 'Questions', 'low-ri
 VOICE_APPROVED = 'Approved'
 NOTHING_NEEDED = 'Nothing needed.'
 YOU = 'You'  # how an option for the author starts in the reviewer's voice
-# R38: what a review in the reviewer's voice never says (not "AI": code and features use the word).
-DISCLOSURE_RE = re.compile(r"(?i)\bautomated\b|\bhasn't read\b|\bhas not read\b|\breview agents?\b|\bclaude code\b|"
+# R38: what a review in the reviewer's voice never says. Phrases, not words: a PR may add "automated tests"
+# or change how a team uses Claude Code, and "AI" is allowed (code and features use the word).
+DISCLOSURE_RE = re.compile(r"(?i)\bautomated(,| (reviews?|approvals?|notes?)\b)|\bhasn't read\b|\bhas not read\b|"
+                           r"\breview agents?\b|\bclaude code('s)? (reviews?|agents?)\b|\breviewed by claude\b|"
                            r'\bnot reviewed automatically\b|\bnot checked by any agent\b')
 # decision-3aeec149 (06:09Z: "needs me should be reserved for escalations that cannot be escalated to [the
 # author], such as potential gaps in our review methodology"): every finding goes to the author; a gap in

@@ -1,0 +1,9 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "not-reviewed",
+ "n_author_decisions": 1,
+ "model": false,
+ "facts": "No CI ran \u00b7 no merge conflict \u00b7 open",
+ "body": "**Questions** <!-- pr-review v5.6 -->\nAuthor: 1 question, get CI running.\n\n**For Author:**\n1. **Who reviews this PR before it merges?**\n   A. Author asks a teammate who knows this code to review it: a person who knows the code checks in one pass what our review could not\n   B. Author states in the PR description what it changes and why that is safe: the author knows the change best, and the account stays on record\n   C. Author merges it as is: when a wrong change here would be cheap to undo\n   **Recommended: A.** A person who knows the code checks in one pass what our review could not.\n   **Where:**\n   - [`send.ts` L13-L15](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/notify/send.ts#L13-L15): a message sent to people (SMS, email, push)\n2. [Get CI running](https://github.com/example/repo/pull/1/checks): no check ran on this commit, so nothing has tested it.\n\nNo CI ran \u00b7 no merge conflict \u00b7 open"
+}

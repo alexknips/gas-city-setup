@@ -56,7 +56,8 @@ def config():
         'reviewer': e('PR_REVIEW_REVIEWER', ''),
         'rules': e('PR_REVIEW_RULES') or os.path.join(HERE, '..', 'rules.toml'),
         'checklist': e('PR_REVIEW_CHECKLIST') or os.path.join(HERE, '..', 'checklist-health.md'),
-        'cap': int(e('PR_REVIEW_DAILY_CAP', '10')),
+        # decision-fff4a691: no daily cap unless one is set ('off' = none).
+        'cap': NO_CAP if e('PR_REVIEW_DAILY_CAP', 'off') == 'off' else int(e('PR_REVIEW_DAILY_CAP')),
         'reserve': int(e('PR_REVIEW_RESERVE', '3')),
         'max_wait_h': float(e('PR_REVIEW_MAX_WAIT_H', '24')),
         'lookback_h': float(e('PR_REVIEW_LOOKBACK_H', '2')),
@@ -76,16 +77,18 @@ def config():
         # decision-ed7320b7: 'reviewer' = the review speaks as the reviewer (no disclosure line); the pack
         # default 'disclose' says on line 1 that it is automated and the reviewer hasn't read the PR.
         'voice': 'reviewer' if e('PR_REVIEW_VOICE', 'disclose') == 'reviewer' else 'disclose',
-        'max_usd': e('PR_REVIEW_MAX_USD', '5'),
+        # decision-fff4a691: turns bound each call, never dollars. The review used 2-11 turns (10-30), so
+        # 33; the tool-less helpers (reader, money lines, digest, bench labels) answer in 1-2.
+        'max_turns': int(e('PR_REVIEW_MAX_TURNS', '33')),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
         'approve': e('PR_REVIEW_APPROVE', 'off') == 'on',
         'request_changes': e('PR_REVIEW_REQUEST_CHANGES', 'off') == 'on',
         'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
         'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
-        'judge_max_usd': e('PR_REVIEW_JUDGE_MAX_USD', '0.25'),
+        'judge_max_turns': int(e('PR_REVIEW_JUDGE_MAX_TURNS', '6')),
         'digest_model': e('PR_REVIEW_DIGEST_MODEL', 'sonnet'),
-        'digest_max_usd': e('PR_REVIEW_DIGEST_MAX_USD', '1'),
+        'digest_max_turns': int(e('PR_REVIEW_DIGEST_MAX_TURNS', '6')),
         'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),
     }
 
@@ -218,6 +221,7 @@ def slack_call(token, method, payload):
         return json.load(r)
 
 
+NO_CAP = 10 ** 6  # PR_REVIEW_DAILY_CAP=off
 APPROVED = 'Approved as low risk'
 CHANGES_SUGGESTED = 'Changes suggested'
 # decision-3aeec149: "needs me should be reserved for escalations that cannot be escalated to [the author],

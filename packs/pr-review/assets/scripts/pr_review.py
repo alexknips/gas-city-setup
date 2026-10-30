@@ -421,7 +421,7 @@ def run_model(cfg, tree, ctx, prompt):
     cmd = [claude_bin(), '-p', '--output-format', 'json', '--json-schema', json.dumps(schema(cfg)), '--model', cfg['model'],
            '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps(settings),
            '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--add-dir', ctx,
-           '--max-budget-usd', str(cfg['max_usd'])]
+           '--max-turns', str(cfg['max_turns'])]
     if cfg.get('effort'):
         cmd += ['--effort', cfg['effort']]
     t0 = pr_state.now()

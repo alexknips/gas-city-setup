@@ -28,7 +28,7 @@
    "severity": "medium",
    "area": "patient data",
    "change": "Reminder text names the patient",
-   "why": "Claude Code found that the log line writes the message body with the name.",
+   "why": "The Claude Code review found the log line writes the message body with the name.",
    "ask": "Drop the message body from the info log line and log the visit id instead.",
    "rule": "",
    "verified": "read remind() and the logger config",

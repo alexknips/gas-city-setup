@@ -194,8 +194,10 @@ def run(cfg, dry):
                        'outcome': e['outcome'], 'thumbs': thumbs, 'replies': replies, 'decision': kind,
                        'their_state': state, 'minutes': minutes, 'false_alarm': false_alarm, 'at': pr_state.iso(t)})
         updates[key] = u
+    with pr_state.locked(cfg['state']) as st:
+        gaps = gap_asks(cfg, {k: dict(e) for k, e in st['prs'].items()}, dry)
     if dry:
-        print(json.dumps({'dry_run': True, 'checked': len(todo), 'counts': counts}))
+        print(json.dumps({'dry_run': True, 'checked': len(todo), 'counts': counts, **gaps}))
         return
     with pr_state.locked(cfg['state']) as st:
         for k, u in updates.items():
@@ -210,9 +212,51 @@ def run(cfg, dry):
     with open(cfg['panel'] + '.tmp', 'w') as f:
         json.dump(panel(cfg, summary, t), f, indent=1)
     os.replace(cfg['panel'] + '.tmp', cfg['panel'])
-    pr_state.log(cfg['state'], {'run': 'feedback', 'checked': len(todo), 'counts': counts})
-    print(json.dumps({'feedback': pr_state.iso(t), 'checked': len(todo), 'counts': counts,
+    pr_state.log(cfg['state'], {'run': 'feedback', 'checked': len(todo), 'counts': counts, **gaps})
+    print(json.dumps({'feedback': pr_state.iso(t), 'checked': len(todo), 'counts': counts, **gaps,
                       'week': summary.get(week_of(pr_state.iso(t)), {})}))
+
+
+GAP_WORDS = {'unverifiable-rule': 'a repository rule that no reading of the code can verify',
+             'new-risk': 'a kind of risk the review method does not handle',
+             'below-bar': 'reviews that could not reach the quality bar (the note or the minimal money review)',
+             'not-checked': 'an area no check covers'}
+
+
+def gap_asks(cfg, prs, dry):
+    """decision-3aeec149: each new kind of gap in our review method becomes ONE rule-level ask to the
+    reviewer (accept the gap, add a check, or change the rule), never one per PR and never a request to
+    read lines. It is mailed to PR_REVIEW_GAP_ASK_TO (a town address; unset = counted only), with the
+    review links. Accepted kinds (gaps/accepted.json) and kinds asked once (gaps/asked.json) are not asked."""
+    accepted = pr_state.accepted_gaps(cfg)
+    p = os.path.join(pr_state.private_dir(cfg, 'gaps'), 'asked.json')
+    asked = set(json.load(open(p))) if os.path.exists(p) else set()
+    seen = collections.defaultdict(list)
+    for e in prs.values():
+        for kind in e.get('gaps_open') or []:
+            if e.get('review_url'):
+                seen[kind].append(e['review_url'])
+    new = sorted(k for k in seen if k not in accepted and k not in asked)
+    to, sent = os.environ.get('PR_REVIEW_GAP_ASK_TO', ''), []
+    for kind in ([] if dry or not to else new):
+        urls = sorted(seen[kind])
+        body = (f"Gap kind: {kind} ({GAP_WORDS.get(kind, 'a gap in the review method')}). Seen on {len(urls)} "
+                f"reviews: {' '.join(urls[:10])}{' ...' if len(urls) > 10 else ''}\n"
+                'One rule-level ask for the reviewer, for this kind (never per PR, never a request to read lines): '
+                'A. accept the gap (it is then said to the author as scope, with no more Slack "Review gap"); '
+                'B. add a check that covers it; C. change the rule.')
+        r = subprocess.run([os.environ.get('GC_BIN') or 'gc', 'mail', 'send', to, '-s',
+                            f'pr-review: a new kind of gap in our review method ({kind}): one rule-level ask', '-m', body],
+                           cwd=cfg['city'], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            asked.add(kind)
+            sent.append(kind)
+    if sent:
+        with open(p, 'w') as f:
+            json.dump(sorted(asked), f)
+        os.chmod(p, 0o600)
+    return {'gap_kinds_open': {k: len(v) for k, v in sorted(seen.items())}, 'gap_asks_sent': sent,
+            'gap_asks_waiting': [k for k in new if k not in sent]}
 
 
 def record(cfg, key, verdict, by, note):

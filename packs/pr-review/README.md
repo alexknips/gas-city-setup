@@ -7,7 +7,7 @@ them. It is three orders and a few scripts: no agents, no formulas, nothing in t
   zero-token rules, records one bead per PR, and queues the PRs that need a review. Merged and closed
   PRs are never reviewed (R15).
 - **`pr-review-run`** (every 5 min): reviews the next queued PR with one headless, read-only `claude -p`
-  run, within a daily cap. The script, not the model, renders the review in the style guide's shape,
+  run (a daily cap only when PR_REVIEW_DAILY_CAP sets one; each call is bounded by turns). The script, not the model, renders the review in the style guide's shape,
   gates it, and posts it as a **submitted COMMENT review** under the reviewer's login: an honesty line
   first, the items as inline comments, never a pending review (R0). Slack gets the outcome word and that
   review's URL, once per PR head (R17, R18). A PR whose only problem is CI gets one question for its
@@ -50,14 +50,15 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_APPROVE` | `off` | `on`: a low-risk PR that meets the bar (R27) gets a SUBMITTED APPROVE review; `off`: a COMMENT review that says "Low risk". Only on the reviewer's word: SOC 2 reads an approval as human review. |
 | `PR_REVIEW_JUDGE` | `on` | The reader test (R26): a second model scores each review before delivery and holds it below markers 4 or useful 3; the feedback order scores delivered reviews that have no scores yet. |
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
-| `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
+| `PR_REVIEW_JUDGE_MAX_TURNS` | `6` | Turn limit (`claude --max-turns`) per reader test, money-lines call (R32, the same model) and benchmark label. No dollar limits anywhere (decision-fff4a691); cost and turns are logged. |
 | `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
 | `PR_REVIEW_SUGGESTIONS` | `off` | `on` lets each "change" item carry a one-click fix: the schema gets a `suggestion` field (the whole replacement for the item's lines) and the inline comment ends with it as a GitHub suggestion block (R4). The script drops a fix the gate would refuse (on a question or the old side, more than 12 lines, a code fence inside, or no change) and keeps the item. With `off` the schema and prompt are unchanged. Part of the benchmark's version. |
+| `PR_REVIEW_GAP_ASK_TO` | (unset) | Where `pr-review-feedback` mails the one rule-level ask per new kind of gap in our method (`gc mail send <address>`; decision-3aeec149). Unset: the kinds are counted in its output only. |
 | `PR_REVIEW_VOICE` | `disclose` | `reviewer` makes the review speak as the reviewer (decision-ed7320b7): line 1 is the verdict word and an invisible marker, line 2 what the author must do, a not-checked area is said as scope, and the gate refuses any disclosure phrase (R28, R38). `disclose` keeps the honesty note on line 1. Set it only for repositories whose reviewer asked for it. |
 | `PR_REVIEW_INCREMENTAL` | `off` | `on` makes the review of a new head of a PR we reviewed incremental ([The review prompt](#the-review-prompt)): the prompt gets our earlier asks and the new commits' diff, the body says what became of the asks, and our earlier threads are resolved where the new commits back it. With `off`, or when there is no earlier review, the prompt is unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
-| `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
+| `PR_REVIEW_DIGEST_MAX_TURNS` | `6` | Turn limit per digest pass. |
 | `PR_REVIEW_JUDGE_PER_RUN` | `5` | Delivered reviews the feedback order scores per run. |
 | `PR_REVIEW_EFFORT` | `high` | `claude --effort` for the review run. |
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
@@ -67,7 +68,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
 | `PR_REVIEW_SLACK_ENV` | `~/.config/gc/slack.env ~/.config/gc/slack2.env` | Files searched for the first `xoxb-` bot token. |
-| `PR_REVIEW_DAILY_CAP` | `10` | Model reviews per UTC day. CI escalations do not count. |
+| `PR_REVIEW_DAILY_CAP` | `off` | Model reviews per UTC day (a number), or `off` for no cap. CI escalations do not count. |
 | `PR_REVIEW_RESERVE` | `3` | Slots of the cap that tier-2 PRs may not use, kept for later asked-for and serious PRs. |
 | `PR_REVIEW_MAX_WAIT_H` | `24` | A queued PR not reached in this many hours closes as `over-cap`. |
 | `PR_REVIEW_LOOKBACK_H` | `2` | How far back the first sweep looks. Later sweeps start at the previous one. |
@@ -76,7 +77,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_RULES` | `assets/rules.toml` | The rule file ([Rules](#rules)). |
 | `PR_REVIEW_CHECKLIST` | `assets/checklist-health.md` | Custom scan instructions appended to the review prompt. |
 | `PR_REVIEW_MODEL` | `opus` | Model for the review run. |
-| `PR_REVIEW_MAX_USD` | `5` | Spend limit per review (`claude --max-budget-usd`). |
+| `PR_REVIEW_MAX_TURNS` | `33` | Turn limit per review (`claude --max-turns`; reviews used 2-11 turns). |
 | `PR_REVIEW_TIMEOUT_S` | `1200` | Wall-clock limit per review. |
 | `PR_REVIEW_STATE_DIR` | `<city>/.gc/runtime/pr-review` | `prs.json` (state) and `pr-review.jsonl` (one line per run or action). |
 | `PR_REVIEW_WORK_DIR` | `/var/tmp/gc-pr-review` | Bare blob-less mirrors and per-review worktrees: the repositories' code. Mode 700, outside the town runtime, and not under `/home`, `/data` or `/tmp`, which the review model may not read. |
@@ -297,6 +298,14 @@ the stored result for the current head again without a model run (once per head,
 `pr_review.py --rereview REPO#N` reviews a head again after a rule change: the earlier review is
 updated in place when it can be (same event, no inline comments), else cut to a pointer to the new one
 (R24), and its Slack message is updated in place.
+`pr_restamp.py` (decision-ed7320b7; zero tokens) rewrites the reviews we delivered, and our inline comments,
+into the reviewer's voice from the text GitHub holds: line 1 the verdict word and the marker, line 2 what
+the author must do, the disclosure lines dropped, "not checked by any agent" said as scope, a section for
+the reviewer renamed "Open questions"; findings, links and options stay. It knows every shape we delivered
+(v3, v4, v5-v5.5, the notes and pointers) and leaves alone, counted, a review whose text would still hold a
+disclosure phrase (R38). A dry run by default (counts only); `--apply` rewrites the reviews on open PRs,
+`--apply --merged` those on merged and closed PRs too. GitHub keeps each edited review's history, and a
+dismissal message cannot be edited.
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
 review was delivered, R15), `held-gate` (the gate or the reader test failed twice; nothing delivered),

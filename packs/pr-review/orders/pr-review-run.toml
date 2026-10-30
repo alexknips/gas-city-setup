@@ -1,5 +1,5 @@
 # PR review run (README.md, "Review"): every 5 min, first every queued open PR whose only problem is CI
-# (one question for its author, no model), then the next queued open PR within PR_REVIEW_DAILY_CAP, in
+# (one question for its author, no model), then the next queued open PR (within PR_REVIEW_DAILY_CAP when set; default off), in
 # priority order (the reviewer was asked > a serious rule > the rest; newest first among equals).
 # One headless `claude -p` per PR (PR_REVIEW_MODEL, --effort PR_REVIEW_EFFORT), in a worktree at the PR
 # head under PR_REVIEW_WORK_DIR: Read, Grep and Glob only, no hooks, no MCP, no repository settings,

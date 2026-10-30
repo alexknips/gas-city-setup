@@ -100,24 +100,25 @@ def review_text(body, comments):
     return f"BODY:\n{body}\n\nINLINE COMMENTS ({len(comments)}):\n{inline or '(none)'}"
 
 
-def ask(cfg, prompt, schema, model, max_usd, timeout=300):
+def ask(cfg, prompt, schema, model, max_turns, timeout=300):
     """One headless `claude -p` answer to `schema`, with no tools, no hooks, no MCP, no session kept and
     Loomtracer capture off (the prompt holds the repository's text). Returns (structured output or None,
-    meta {cost_usd, model[, error]}). The reader test, the money lines and the rules digest use it."""
+    meta {cost_usd, turns, model[, error]}). The reader test, the money lines and the rules digest use it;
+    `max_turns` bounds it (decision-fff4a691: no dollar limits)."""
     keep = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1')
     claude = os.environ.get('PR_REVIEW_CLAUDE') or 'claude'
     cmd = [claude, '-p', '--output-format', 'json', '--json-schema', json.dumps(schema), '--model', model,
            '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps({'disableAllHooks': True}),
-           '--strict-mcp-config', '--tools', '', '--max-budget-usd', str(max_usd)]
+           '--strict-mcp-config', '--tools', '', '--max-turns', str(max_turns)]
     os.makedirs(cfg['work'], mode=0o700, exist_ok=True)
     try:
         r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=cfg['work'], timeout=timeout)
         out = json.loads(r.stdout)
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
         return None, {'error': type(e).__name__, 'cost_usd': 0, 'model': model}
-    meta = {'cost_usd': out.get('total_cost_usd') or 0, 'model': model}
+    meta = {'cost_usd': out.get('total_cost_usd') or 0, 'turns': out.get('num_turns'), 'model': model}
     so = out.get('structured_output')
     if out.get('is_error') or not isinstance(so, dict):
         return None, {**meta, 'error': out.get('subtype') or 'no-structured-output'}
@@ -132,7 +133,7 @@ def judge(cfg, body, comments, name, author):
                            line1='the verdict word alone' if voice else
                            f"the verdict with the note that it is automated and {name} hasn't read the PR",
                            line2=f'what {author} must do' if voice else 'who acts')
-    so, meta = ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
+    so, meta = ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_turns'])
     if so is None:
         return None, [], meta
     risky = {int(x['n']): (x.get('question') or '').strip() for x in so.get('risky_cleared') or []

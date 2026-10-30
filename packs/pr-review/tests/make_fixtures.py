@@ -13,6 +13,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'assets', 'scripts'))
 import pr_format  # noqa: E402
+import pr_restamp  # noqa: E402
 import pr_review  # noqa: E402
 DIFF = """diff --git a/src/notify/send.ts b/src/notify/send.ts
 index 1111111..2222222 100644
@@ -495,11 +496,11 @@ CASES = {
     'case95-voice-disclosure-in-the-body': {
         'expect': 'fail', 'expect_reasons': ['R38'], 'only_reasons': ['R38'], 'voice': 'reviewer', 'outcome': 'changes',
         'diff': DIFF, 'items': [GOOD_ITEM], **SKIP,
-        'body_edit': ['Reminders now name the patient', 'An automated check found reminders now name the patient']},
+        'body_edit': ['Reminders now name the patient', 'An automated review found reminders now name the patient']},
     'case96-voice-disclosure-in-an-inline-comment': {
         'expect': 'fail', 'expect_reasons': ['R38'], 'only_reasons': ['R38'], 'voice': 'reviewer', 'outcome': 'changes',
         'diff': DIFF, **SKIP,
-        'items': [dict(GOOD_ITEM, why='Claude Code found that the log line writes the message body with the name.')]},
+        'items': [dict(GOOD_ITEM, why='The Claude Code review found the log line writes the message body with the name.')]},
     'case97-voice-line-1-keeps-the-old-note': {
         'expect': 'fail', 'expect_reasons': ['R28', 'R38'], 'voice': 'reviewer', 'outcome': 'changes', 'diff': DIFF,
         'items': [GOOD_ITEM], **SKIP,
@@ -508,6 +509,30 @@ CASES = {
         'expect': 'pass', 'voice': 'reviewer', 'outcome': 'changes', 'n_items': 1, 'model': True,
         'facts': pr_format.GREEN_FACTS,
         'body': body(outcome='changes', items=[GOOD_ITEM], voice='reviewer', **SKIP)},
+    # decision-ed7320b7: pr_restamp.py rewrites the reviews we delivered into the reviewer's voice, from
+    # their text. Each shape we delivered, restamped, passes the voice gate (v3 keeps its old faults).
+    'case99-restamp-v5-changes': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'changes', 'n_items': 1, 'facts': pr_format.GREEN_FACTS,
+        'body': pr_restamp.voice_body(body(outcome='changes', items=[GOOD_ITEM], **SKIP), 'Reviewer', 'Author')},
+    'case100-restamp-v55-billing-question': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'n_author_decisions': 1, 'model': False,
+        'not_checked': NOT_CHECKED, 'facts': pr_format.GREEN_FACTS,
+        'body': pr_restamp.voice_body(body(outcome='questions', decisions=[MONEY], not_checked=NOT_CHECKED, model=False),
+                                      'Reviewer', 'Author')},
+    'case101-restamp-v54-billing-for-the-reviewer': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'n_author_decisions': 1, 'model': False,
+        'not_checked': NOT_CHECKED, 'facts': pr_format.GREEN_FACTS,
+        'body': pr_restamp.voice_body(body(outcome='escalate', decisions=[MONEY_V54], not_checked=NOT_CHECKED, model=False),
+                                      'Reviewer', 'Author')},
+    'case102-restamp-note': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'not-reviewed', 'n_author_decisions': 1, 'model': False,
+        'facts': 'No CI ran · no merge conflict · open',
+        'body': pr_restamp.voice_body(body(outcome='not-reviewed', decisions=[FLOOR], blockers=NO_CI, model=False,
+                                           facts='No CI ran · no merge conflict · open'), 'Reviewer', 'Author')},
+    'case103-restamp-v3': {
+        'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
+        'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,
+        'body': pr_restamp.voice_body(LEGACY_CI_BODY.replace('**Automated review**', 'Automated review'), 'Reviewer', 'Author')},
 }
 
 if __name__ == '__main__':

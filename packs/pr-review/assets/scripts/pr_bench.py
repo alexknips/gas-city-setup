@@ -3,8 +3,7 @@
 on the repository's own history instead of claimed.
 
   pr_bench.py --mine REPO [--days 60] [--within 14]   cases and controls from git history, zero tokens
-  pr_bench.py --run REPO [--cases 5] [--controls 5] [--max-usd 10]
-                                                      review a sample at their heads (nothing delivered), then score
+  pr_bench.py --run REPO [--cases 5] [--controls 5]   review a sample at their heads (nothing delivered), then score
   pr_bench.py --label REPO                            whether each case's later PR fixes a defect (capture off)
   pr_bench.py --score REPO                            recall, a precision proxy, false alarms, cost per PR
 
@@ -249,7 +248,7 @@ def label(cfg, repo, limit=None):
             diff = git(mirror, 'diff', '-U3', '--no-ext-diff', f'{qc}^', qc, '--', *c['fixed'], check=False)[:5000]
             so, meta = pr_judge.ask(cfg, LABEL_PROMPT.format(p_title=p.get('title') or '', q_title=q.get('title') or '',
                                                              q_body=(q.get('body') or '')[:1500], diff=diff),
-                                    LABEL_SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
+                                    LABEL_SCHEMA, cfg['judge_model'], cfg['judge_max_turns'])
             cost += meta.get('cost_usd') or 0
             if so and (best is None or (so['defect'] == 'yes' and best['defect'] != 'yes')):
                 best = dict(so, fix_pr=fx['pr'])
@@ -317,9 +316,10 @@ def raw_anchors(model):
     return out
 
 
-def run(cfg, repo, n_cases, n_controls, max_usd):
+def run(cfg, repo, n_cases, n_controls):
     """Review the sampled cases and controls at their heads with this version (nothing delivered); the
-    results are saved after each PR, so a run resumes where it stopped."""
+    results are saved after each PR, so a run resumes where it stopped. No dollar stop (decision-fff4a691):
+    the usage is reported next to the scores."""
     import pr_review  # the review pipeline (lazy: it is heavy)
     bench_p, _, _ = paths(cfg, repo)
     bench = json.load(open(bench_p))
@@ -329,13 +329,10 @@ def run(cfg, repo, n_cases, n_controls, max_usd):
     defects = [c for c in bench['cases'] if (c.get('label') or {}).get('defect') == 'yes']
     cases = defects if any(c.get('label') for c in bench['cases']) else bench['cases']  # labelled: real defects only
     picks = [('case', c) for c in sample(cases, n_cases)] + [('control', c) for c in sample(bench['controls'], n_controls)]
-    spent = sum(r.get('cost_usd', 0) for r in res['prs'].values())
     for kind, c in picks:
         key = str(c['pr'])
         if key in res['prs']:
             continue
-        if spent >= max_usd:
-            break
         run_cfg = dict(cfg, bench=True, no_deliver=True, collect=[])
         entry = {'repo': repo, 'number': c['pr'], 'url': f"https://github.com/{repo}/pull/{c['pr']}",
                  'rig': cfg['repos'].get(repo, repo.split('/')[1]), 'rules': []}
@@ -347,7 +344,6 @@ def run(cfg, repo, n_cases, n_controls, max_usd):
         got = run_cfg['collect'][0] if run_cfg['collect'] else None
         x = (got or {}).get('extra') or {}
         cost = sum(x.get(k) or 0 for k in ('cost_usd', 'judge_cost_usd', 'money_cost_usd', 'digest_cost_usd'))
-        spent += cost
         res['prs'][key] = {'kind': kind, 'head': c['head'], 'cost_usd': round(cost, 4), 'held': (got or {}).get('held'),
                            'anchors': anchors(got['rv']) if got else None,
                            'raw': raw_anchors(got.get('model')) if got else None,
@@ -426,6 +422,12 @@ def by_bar(rows):
     return out
 
 
+def usage(turns):
+    """The review's turns per PR (decision-fff4a691: tracked, never a limit): median and max."""
+    t = sorted(x for x in turns if isinstance(x, int))
+    return {'turns_median': statistics.median(t) if t else None, 'turns_max': t[-1] if t else None}
+
+
 def score(cfg, repo, ver):
     """Recall on the cases, a precision proxy and false alarms on the controls, and cost per PR."""
     bench_p, mirror, res_p = paths(cfg, repo, ver)
@@ -468,7 +470,8 @@ def score(cfg, repo, ver):
            'errors': sum(1 for r in res['prs'].values() if r.get('anchors') is None),
            **reader_spread([r.get('judge') for r in done]),
            'by_confidence': by_bar(bars) if bars else None,
-           'cost_per_pr_usd': round(sum(r['cost_usd'] for r in done) / len(done), 3) if done else None}
+           'cost_per_pr_usd': round(sum(r['cost_usd'] for r in done) / len(done), 3) if done else None,
+           **usage([r.get('turns') for r in done])}
     print(json.dumps(out))
     return out
 
@@ -483,14 +486,13 @@ def main():
     ap.add_argument('--within', type=int, default=14)
     ap.add_argument('--cases', type=int, default=5)
     ap.add_argument('--controls', type=int, default=5)
-    ap.add_argument('--max-usd', type=float, default=10)
     ap.add_argument('--limit', type=int, help='--label: an even sample of this many cases')
     a = ap.parse_args()
     cfg = pr_state.config()
     if a.mine:
         mine(cfg, a.mine, a.days, a.within)
     elif a.run:
-        run(cfg, a.run, a.cases, a.controls, a.max_usd)
+        run(cfg, a.run, a.cases, a.controls)
     elif a.label:
         label(cfg, a.label, a.limit)
     elif a.score:

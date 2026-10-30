@@ -1,0 +1,20 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R3"
+ ],
+ "only_reasons": [
+  "R3",
+  "R7",
+  "R10",
+  "R22",
+  "R1",
+  "R8",
+  "R23",
+  "R30"
+ ],
+ "voice": "reviewer",
+ "outcome": "questions",
+ "n_items": 0,
+ "body": "**Questions** <!-- pr-review v5.6 -->\nNo check or status ran on this head. A7: CI red or skipped means escalate. No model review was run.\n\nZero-token flags: ci-none (no check or status reported on the head commit), irrev-messages (a message sent to people (SMS, email, push)), sec-auth (sign-in, sessions, roles or permissions). CI on this head: none.\nNot checked: billing, plans, credits, pricing."
+}

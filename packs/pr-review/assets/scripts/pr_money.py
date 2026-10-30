@@ -62,7 +62,7 @@ def describe(cfg, idx, ranges, words):
         text = '\n'.join(hunks[k]) if k is not None and k < len(hunks) else '(the change is outside the diff)'
         places.append(f"PLACE {n} (new lines {r['line_start']}-{r['line_end']}):\n{text[:MAX_HUNK_CHARS]}")
     prompt = PROMPT.format(count=len(ranges), words=words, places='\n\n'.join(places))
-    so, meta = pr_judge.ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
+    so, meta = pr_judge.ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_turns'])
     got = {x['n']: x for x in (so or {}).get('lines', []) if isinstance(x.get('n'), int)}
     meta.update(overview=((so or {}).get('overview') or '').strip(),
                 overview_places=[n - 1 for n in (so or {}).get('overview_places') or [] if isinstance(n, int)])

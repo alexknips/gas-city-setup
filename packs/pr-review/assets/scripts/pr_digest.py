@@ -127,7 +127,7 @@ def get(cfg, repo, mirror, commit):
         lines_of[path] = len(rows)
         texts.append(f'=== {path}\n' + '\n'.join(f'{n}: {t}' for n, t in enumerate(rows, 1)))
     so, meta = pr_judge.ask(cfg, PROMPT.format(max_rules=MAX_RULES, docs='\n\n'.join(texts)), SCHEMA,
-                            cfg['digest_model'], cfg['digest_max_usd'], timeout=900)
+                            cfg['digest_model'], cfg['digest_max_turns'], timeout=900)
     if so is None:
         return None, {'digest': 'error', 'error': meta.get('error'), 'cost_usd': meta.get('cost_usd', 0)}
     rules = {}

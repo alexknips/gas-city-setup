@@ -1,0 +1,8 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "changes",
+ "n_items": 1,
+ "facts": "CI passed \u00b7 no merge conflict \u00b7 open",
+ "body": "**Changes suggested** <!-- pr-review v5.6 -->\nAuthor: 1 change.\n\n**What it does:** Reminders now name the patient and log the message text.\n\n**For Author:**\n1. **Reminder text names the patient** \u00b7 Change \u00b7 [`src/notify/send.ts` L13-L15](https://github.com/example/repo/pull/1/files#diff-bf00f9230f398d397512db241acef44833841d6772224ba525f7bcc824ad1601R13-R15)\n\n**Safe to skip:** tests: [`notify.test.ts`](https://github.com/example/repo/pull/1/files#diff-6da717afc52467fded4327a65d18b76ef2b71e27ab5007108ef494a6e0c656de)"
+}
