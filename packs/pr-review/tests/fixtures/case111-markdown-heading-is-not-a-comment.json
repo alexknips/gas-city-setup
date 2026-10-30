@@ -1,0 +1,41 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "low-risk",
+ "derived": true,
+ "approve": true,
+ "approve_check": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "fresh": {
+   "state": "OPEN",
+   "checks": [
+    "SUCCESS",
+    "SKIPPED"
+   ]
+  }
+ },
+ "diff": "diff --git a/src/notify/send.ts b/src/notify/send.ts\nindex 1111111..2222222 100644\n--- a/src/notify/send.ts\n+++ b/src/notify/send.ts\n@@ -10,5 +10,7 @@ export async function remind(visit: Visit) {\n   const contact = await loadContact(visit.contactId);\n   if (!contact.optIn) return;\n+  // Reminders go out by SMS once the contact opts in.\n+  const channel = 'sms';\n   await queue.add(visit.id);\n   return true;\n }\ndiff --git a/src/notify/channel.ts b/src/notify/channel.ts\nindex 5555555..6666666 100644\n--- a/src/notify/channel.ts\n+++ b/src/notify/channel.ts\n@@ -1,3 +1,5 @@\n /**\n  * Reminder channels.\n+ * A reminder is a text message to the contact's phone.\n+ * It never names the reason for the visit.\n  */\ndiff --git a/docs/reminders.mdx b/docs/reminders.mdx\nindex 7777777..8888888 100644\n--- a/docs/reminders.mdx\n+++ b/docs/reminders.mdx\n@@ -1,2 +1,4 @@\n # Reminders\n+## Text messages\n+* A reminder is sent by SMS to the contact's phone.\n Opt-in is required.\n",
+ "items": [],
+ "flagged": [
+  {
+   "id": "F1",
+   "rule": "irrev-messages",
+   "label": "a message sent to people (SMS, email, push)",
+   "path": "docs/reminders.mdx",
+   "line": 3
+  }
+ ],
+ "cleared": [
+  {
+   "flag": "F1",
+   "path": "docs/reminders.mdx",
+   "line_start": 2,
+   "line_end": 3,
+   "rule": "",
+   "change": "Guide section on text reminders",
+   "why": "Only the guide changes; no code reads this page."
+  }
+ ],
+ "summary": "The guide says how reminders are sent.",
+ "skip": []
+}

@@ -1,0 +1,61 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "low-risk",
+ "derived": true,
+ "approve": true,
+ "approve_check": {
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "fresh": {
+   "state": "OPEN",
+   "checks": [
+    "SUCCESS",
+    "SKIPPED"
+   ]
+  }
+ },
+ "line2": "Author: nothing needed.",
+ "diff": "diff --git a/src/notify/send.ts b/src/notify/send.ts\nindex 1111111..2222222 100644\n--- a/src/notify/send.ts\n+++ b/src/notify/send.ts\n@@ -10,5 +10,7 @@ export async function remind(visit: Visit) {\n   const contact = await loadContact(visit.contactId);\n   if (!contact.optIn) return;\n+  // Reminders go out by SMS once the contact opts in.\n+  const channel = 'sms';\n   await queue.add(visit.id);\n   return true;\n }\ndiff --git a/src/notify/channel.ts b/src/notify/channel.ts\nindex 5555555..6666666 100644\n--- a/src/notify/channel.ts\n+++ b/src/notify/channel.ts\n@@ -1,3 +1,5 @@\n /**\n  * Reminder channels.\n+ * A reminder is a text message to the contact's phone.\n+ * It never names the reason for the visit.\n  */\ndiff --git a/docs/reminders.mdx b/docs/reminders.mdx\nindex 7777777..8888888 100644\n--- a/docs/reminders.mdx\n+++ b/docs/reminders.mdx\n@@ -1,2 +1,4 @@\n # Reminders\n+## Text messages\n+* A reminder is sent by SMS to the contact's phone.\n Opt-in is required.\n",
+ "items": [],
+ "flagged": [
+  {
+   "id": "F1",
+   "rule": "irrev-messages",
+   "label": "a message sent to people (SMS, email, push)",
+   "path": "src/notify/send.ts",
+   "line": 12
+  },
+  {
+   "id": "F2",
+   "rule": "irrev-messages",
+   "label": "a message sent to people (SMS, email, push)",
+   "path": "src/notify/channel.ts",
+   "line": 3
+  }
+ ],
+ "cleared": [
+  {
+   "flag": "F1",
+   "path": "src/notify/send.ts",
+   "line_start": 12,
+   "line_end": 12,
+   "rule": "",
+   "change": "Comment on the reminder channel",
+   "why": "Only a comment is added; the send path and its recipients stay as they are."
+  },
+  {
+   "flag": "F2",
+   "path": "src/notify/channel.ts",
+   "line_start": 3,
+   "line_end": 4,
+   "rule": "",
+   "change": "Comment on what reminders say",
+   "why": "Only the file comment changes; no code runs differently."
+  }
+ ],
+ "summary": "Comments say how\nreminders are sent.",
+ "skip": [],
+ "body_re": [
+  "^Author: nothing needed\\.\\n\\nComments say how reminders are sent\\.\\n\\n<details><summary>What was checked</summary>\\n\\n- \\*\\*[^\\n]*\\n- \\*\\*[^\\n]*\\n\\n</details>$"
+ ]
+}

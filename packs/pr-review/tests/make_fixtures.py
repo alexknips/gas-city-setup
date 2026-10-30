@@ -122,6 +122,49 @@ RC_OLD = {'event': 'REQUEST_CHANGES', 'rc_live': True, 'block': 'mechanical', 'r
           'review_heads': ['a' * 40], 'head': 'a' * 40, 'status': 'done', 'outcome': 'changes'}
 # The same diff with the log line turned into a comment (R36: a cleared link on comment lines only).
 COMMENT_DIFF = DIFF.replace('+  logger.info(`sent reminder ${body}`);', '+  // log the reminder for support')
+# v5.8.1 (R36): rules that fire on comments' own words, one in a code hunk and one in a hunk of comments
+# only, and a markdown guide whose heading and bullet are text, not comments (synthetic).
+COMMENTS_DIFF = """diff --git a/src/notify/send.ts b/src/notify/send.ts
+index 1111111..2222222 100644
+--- a/src/notify/send.ts
++++ b/src/notify/send.ts
+@@ -10,5 +10,7 @@ export async function remind(visit: Visit) {
+   const contact = await loadContact(visit.contactId);
+   if (!contact.optIn) return;
++  // Reminders go out by SMS once the contact opts in.
++  const channel = 'sms';
+   await queue.add(visit.id);
+   return true;
+ }
+diff --git a/src/notify/channel.ts b/src/notify/channel.ts
+index 5555555..6666666 100644
+--- a/src/notify/channel.ts
++++ b/src/notify/channel.ts
+@@ -1,3 +1,5 @@
+ /**
+  * Reminder channels.
++ * A reminder is a text message to the contact's phone.
++ * It never names the reason for the visit.
+  */
+diff --git a/docs/reminders.mdx b/docs/reminders.mdx
+index 7777777..8888888 100644
+--- a/docs/reminders.mdx
++++ b/docs/reminders.mdx
+@@ -1,2 +1,4 @@
+ # Reminders
++## Text messages
++* A reminder is sent by SMS to the contact's phone.
+ Opt-in is required.
+"""
+FLAG_C1 = dict(FLAG, id='F1', line=12)
+FLAG_C2 = dict(FLAG, id='F2', path='src/notify/channel.ts', line=3)
+CLEARED_C1 = dict(CLEARED, flag='F1', line_start=12, line_end=12, change='Comment on the reminder channel',
+                  why='Only a comment is added; the send path and its recipients stay as they are.')
+CLEARED_C2 = dict(CLEARED, flag='F2', path='src/notify/channel.ts', line_start=3, line_end=4,
+                  change='Comment on what reminders say', why='Only the file comment changes; no code runs differently.')
+FLAG_MD = dict(FLAG, id='F1', path='docs/reminders.mdx', line=3)
+CLEARED_MD = dict(CLEARED, flag='F1', path='docs/reminders.mdx', line_start=2, line_end=3,
+                  change='Guide section on text reminders', why='Only the guide changes; no code reads this page.')
 GREEN = {'head': 'a' * 40, 'fresh': {'state': 'OPEN', 'checks': ['SUCCESS', 'SKIPPED']}}
 PR = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': 'a' * 40}
 
@@ -320,9 +363,9 @@ CASES = {
         'body': body(**dict(LOW, approve=True)) + '\n\n**Safe to skip:** 1 test file.'},
     'case58-cleared-entries-repeat': {
         'expect': 'fail', 'expect_reasons': ['R36'], **dict(LOW, cleared=[CLEARED, dict(CLEARED, change='SMS send added here')])},
-    'case59-cleared-link-on-a-comment-line': {
+    'case59-cleared-link-on-a-comment-line': {  # the flag on the code above it (v5.8.1: a flagged comment may link itself)
         'expect': 'fail', 'expect_reasons': ['R36'],
-        **dict(LOW, diff=COMMENT_DIFF)},
+        **dict(LOW, diff=COMMENT_DIFF, flagged=[dict(FLAG, line=13)])},
     'case60-decision-asks-the-reviewer-to-read-code': {
         'expect': 'fail', 'expect_reasons': ['R37'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
         'items': [], **SKIP,
@@ -573,6 +616,20 @@ CASES = {
         'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE, 'blockers': NO_CI,
         'decisions': [dict(FLOOR_VOICE, reason='A teammate who knows the code can check it in one pass.')],
         'facts': 'No CI ran · no merge conflict · open', 'gaps': [{'kind': 'below-bar'}]},
+    # v5.8.1, the mayor's P1 (2026-10-30 16:19Z): a model's low-risk answer with several cleared entries,
+    # whose flags sit on comments (one in a code hunk, one in a hunk of comments only), approved; the
+    # summary's line break does not break the approval's one-line reason.
+    'case110-voice-approval-flags-on-comments': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'low-risk', 'derived': True, 'approve': True,
+        'approve_check': GREEN, 'line2': 'Author: nothing needed.', 'diff': COMMENTS_DIFF, 'items': [],
+        'flagged': [FLAG_C1, FLAG_C2], 'cleared': [CLEARED_C1, CLEARED_C2],
+        'summary': 'Comments say how\nreminders are sent.', 'skip': [],
+        'body_re': [r'^Author: nothing needed\.\n\nComments say how reminders are sent\.\n\n'
+                    r'<details><summary>What was checked</summary>\n\n- \*\*[^\n]*\n- \*\*[^\n]*\n\n</details>$']},
+    'case111-markdown-heading-is-not-a-comment': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'low-risk', 'derived': True, 'approve': True,
+        'approve_check': GREEN, 'diff': COMMENTS_DIFF, 'items': [], 'flagged': [FLAG_MD], 'cleared': [CLEARED_MD],
+        'summary': 'The guide says how reminders are sent.', 'skip': []},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,

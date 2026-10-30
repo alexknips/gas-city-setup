@@ -104,6 +104,15 @@ REVIEW_CODE_RE = re.compile(r'(?i)\byou(rself)? (review|read|check|look at)\b|\b
 IDENT_RE = re.compile(r'`|\b[a-z]+[A-Z][A-Za-z0-9]*\b|\b[A-Za-z]+_[A-Za-z0-9_]+\b|\w\(\)|::|->')
 # R36: a link that lands only on comment lines does not show why the code is safe.
 COMMENT_RE = re.compile(r'^\s*(//|#|/\*|\*|<!--|--|"""|\'\'\')')
+# In a markdown file a heading, a bullet or a rule is the text itself; only an HTML comment is a comment.
+MARKDOWN_EXT = ('.md', '.mdx', '.markdown')
+
+
+def is_comment(path, line):
+    """R36: the line is a comment in its file's language (by its first characters)."""
+    if (path or '').lower().endswith(MARKDOWN_EXT):
+        return line.lstrip().startswith('<!--')
+    return bool(COMMENT_RE.match(line))
 
 
 # R24: a review a newer one replaces becomes a pointer to it, and every pointer of ours on a PR follows the
@@ -445,7 +454,7 @@ def approval_reason(rv):
     what the PR does."""
     cleared = rv.get('cleared') or []
     text = (cleared[0].get('why') if len(cleared) == 1 else '') or rv.get('summary') or ''
-    text = text.strip()
+    text = ' '.join(text.split())  # one line, whatever the model's text holds
     return text[:1].upper() + text[1:] + ('' if text.endswith(('.', '!', '?')) else '.') if text else ''
 
 
@@ -969,7 +978,10 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
                     why.append(f'R36: {p} repeats cleared entry {j}')
             text = (idx.get(c['path']) or {}).get('text') or {}
             shown = [text[ln] for ln in range(c['line_start'], c['line_end'] + 1) if (text.get(ln) or '').strip()]
-            if shown and all(COMMENT_RE.match(t) for t in shown):
+            # A rule that fired on a comment's own words is cleared on that comment: the link holds the
+            # flagged line, and that line is a comment (a hunk of comments only has no other line to link).
+            on_flag = c['line_start'] <= f['line'] <= c['line_end'] and is_comment(c['path'], text.get(f['line']) or '')
+            if shown and all(is_comment(c['path'], t) for t in shown) and not on_flag:
                 why.append(f'R36: {p} links only comment lines; link the code that makes it safe')
             seen_c.append((k, c))
         why += [r.replace('R5:', 'R19:', 1) for r in field_reasons(p, 'why', c.get('why'))]
@@ -1007,7 +1019,11 @@ def gate_body(body, rv, comments=None):
         why += why_d
     rest = [l for l in lines[2:] if l.strip()]
     if rv.get('approve'):
-        folded = rest[1:] if rest and not re.match(r'(<|- |\*\*|\d+\. )', rest[0]) else rest  # the one-line reason
+        # The one-line reason: the line render() writes for these parts; on a body delivered earlier (no
+        # parts in rv), one plain line.
+        reason = approval_reason(rv)
+        plain = rest and (rest[0] == reason if reason else not re.match(r'(<|- |\*\*|\d+\. )', rest[0]))
+        folded = rest[1:] if plain else rest
         if folded and not (folded[0] == '<details><summary>What was checked</summary>' and folded[-1] == '</details>'
                            and all(l.startswith('- ') for l in folded[1:-1])):
             why.append('R36: an approval is line 1, line 2, one line on why and the collapsed "What was checked", '

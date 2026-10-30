@@ -399,7 +399,7 @@ Cases 49-62 (v5): the honesty line above the verdict (R28), a cleared entry that
 category label (R29), the status line on a green PR and a skip list without links (R30), a risky
 cleared entry and the question it becomes (R31), a money place without its line and "not checked" said
 twice (R32), an approval with more than "What was checked", repeated cleared entries and a cleared link
-on a comment line (R36), a decision that asks the reviewer to read code, a finding without its rule and
+on a comment line when the flag is on the code (R36), a decision that asks the reviewer to read code, a finding without its rule and
 one that cites it (R37). Case 67: a cleared entry that names a raw identifier (R29); case 68: a
 conflict blocker that names and links its files (R22). Cases 63-66: the sweep lifts a block that rested on a conflict once it is
 fixed, keeps it while CI is red, sends a block on content to a review of the new head, and never loops
@@ -422,7 +422,10 @@ approval; a body item whose ask runs over 20 words fails (R29). Cases 107-109 (v
 07:21Z): line 2 "Nothing needed." without the author's name fails (R22, R36); the money question first with
 the line it depends on, then the scope line, the evidence after the decision and not nested under it
 (passes; `body_re` and `body_not_re` pin the layout of a rendered case); a recommendation that repeats its
-option's own reason fails (R16). Case 91 also pins the approval's reason line. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+option's own reason fails (R16). Case 91 also pins the approval's reason line. Cases 110-111 (v5.8.1,
+the mayor's P1, 2026-10-30 16:19Z): an approval whose flags sit on comments, one in a code hunk and one in a
+hunk of comments only, cleared on those comments, with a line break in the summary (passes); a markdown
+heading and bullet are text, not comments (passes). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail

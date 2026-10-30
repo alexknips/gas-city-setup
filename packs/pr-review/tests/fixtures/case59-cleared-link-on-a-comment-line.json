@@ -12,7 +12,7 @@
    "rule": "irrev-messages",
    "label": "a message sent to people (SMS, email, push)",
    "path": "src/notify/send.ts",
-   "line": 14
+   "line": 13
   }
  ],
  "cleared": [
