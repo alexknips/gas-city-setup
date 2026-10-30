@@ -89,17 +89,20 @@ CLEARED_RE = re.compile(r'^- \*\*.+?\*\* · \[[^\]]*\]\([^)]*\): (.+?)(?: · rul
 
 def current(body, author):
     """A body in the voice brought to v5.8 (the mayor, 2026-10-30 07:21Z): line 2 names the author when nothing
-    is needed; an approval with one cleared entry shows its reason above "What was checked"."""
-    lines = body.replace('\r\n', '\n').split('\n')
+    is needed; an approval with one cleared entry shows its reason above "What was checked". Returns (text,
+    the kinds of change made)."""
+    lines, kinds = body.replace('\r\n', '\n').split('\n'), []
     if len(lines) > 1 and lines[1] == 'Nothing needed.':
         lines[1] = pr_format.NOTHING_NEEDED.format(author=author)
+        kinds.append('v58_line2_names_author')
     rest = [line for line in lines[2:] if line.strip()]
     if lines[0].startswith(f'**{pr_format.VOICE_APPROVED}**') and len(rest) == 3 and \
             rest[0] == '<details><summary>What was checked</summary>' and rest[2] == '</details>':
         m = CLEARED_RE.match(rest[1])
         if m:
             lines = lines[:2] + ['', pr_format.approval_reason({'cleared': [{'why': m.group(1)}]})] + lines[2:]
-    return '\n'.join(lines)
+            kinds.append('v58_approval_reason_line')
+    return '\n'.join(lines), kinds
 
 
 def voice_comment(body, author):
@@ -180,8 +183,9 @@ def restamp(cfg, apply, merged, ours=()):
             n['already_in_voice'] += voiced
             body = rv['body'] if voiced else voice_body(rv['body'], name, author, rv['state'])
             if body is not None:
-                body = retarget.get(rv['id']) or current(body, author)
-                n['repointed'] += rv['id'] in retarget
+                body, kinds = (retarget[rv['id']], ['repointed']) if rv['id'] in retarget else current(body, author)
+                for kind in kinds:
+                    n[kind] += 1
                 if body == rv['body']:
                     n['unchanged'] += 1
                     continue
@@ -239,7 +243,7 @@ def selftest():
     link = f'[`a.py` L1](https://github.com/o/r/blob/{"0" * 40}/a.py#L1)'
     approval = f'**Approved** {pr_format.MARK}\nNothing needed.\n\n<details><summary>What was checked</summary>\n\n' \
                f'- **Adds a field** · {link}: nothing reads it yet\n\n</details>'
-    up = current(approval, 'Author').split('\n')
+    up = current(approval, 'Author')[0].split('\n')
     checks['v5.8: line 2 names the author, the approval shows its reason'] = \
         up[1] == 'Author: nothing needed.' and up[3] == 'Nothing reads it yet.' and up[5].startswith('<details>')
     u = 'https://github.com/o/r/pull/1#pullrequestreview-'
