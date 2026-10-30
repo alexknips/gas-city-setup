@@ -5,6 +5,7 @@ run the regression:
 
   assets/scripts/pr-review-regress.sh
 """
+import hashlib
 import json
 import os
 import re
@@ -782,6 +783,115 @@ CASES = {
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,
         'body': pr_restamp.voice_body(LEGACY_CI_BODY.replace('**Automated review**', 'Automated review'), 'Reviewer', 'Author')},
 }
+
+# decision-57b6d9bb (the reviewer, 2026-10-30 22:18Z: "make sure our system is able to re-review things when [the
+# author] addresses questions or makes changes"): the sweep's follow-up triggers, structure only.
+A40, B40 = 'a' * 40, 'b' * 40
+REVIEWED = {'review_heads': [A40], 'head': A40, 'status': 'done', 'review_id': 77, 'head_review_ids': [77]}
+for name, old in {'approval': dict(outcome='low-risk', approved=True, event='APPROVE'),
+                  'comment': dict(outcome='questions', event='COMMENT'),
+                  'change-request': dict(outcome='changes', event='REQUEST_CHANGES', rc_live=True),
+                  'fallback': dict(outcome='questions', fallback='not-checked-minimal'),
+                  'note': dict(outcome='not-reviewed', fallback='not-reviewed')}.items():
+    CASES[f'case-fu-push-after-{name}'] = {'expect': 'pass', 'rule': 'followup', 'route': 'followup_push', 'want': True,
+                                           'args': {'old': dict(REVIEWED, **old), 'head': B40}}
+CASES.update({
+    'case-fu-push-held-head-never-loops': {'expect': 'pass', 'rule': 'followup', 'route': 'followup_push', 'want': False,
+                                           'args': {'old': dict(REVIEWED, head=B40, outcome='held-gate'), 'head': B40}},
+    'case-fu-push-waiting-for-ci-keeps-its-mark': {
+        'expect': 'pass', 'rule': 'followup', 'route': 'followup_push', 'want': True,
+        'args': {'old': dict(REVIEWED, head=B40, status='waiting-ci', followup='push'), 'head': B40}},
+    # A force-push is a new head like any other: the incremental part then says "rewritten" and the review is whole.
+    'case-fu-push-force-push': {'expect': 'pass', 'rule': 'followup', 'route': 'followup_push', 'want': True,
+                                'args': {'old': dict(REVIEWED, new_head='c' * 40), 'head': 'd' * 40}},
+    'case-fu-push-never-a-pr-we-did-not-review': {'expect': 'pass', 'rule': 'followup', 'route': 'followup_push',
+                                                  'want': False, 'args': {'old': {'head': A40, 'status': 'done',
+                                                                                  'outcome': 'no-rule'}, 'head': B40}},
+})
+
+
+def thread(*comments, resolved_by=None, tid='T1'):
+    return {'id': tid, 'isResolved': bool(resolved_by), 'resolvedBy': {'login': resolved_by} if resolved_by else None,
+            'comments': {'nodes': list(comments)}}
+
+
+def post(cid, who, at='2026-10-30T23:00:00Z', rid=None):
+    return {'databaseId': cid, 'author': {'login': who}, 'createdAt': at, 'submittedAt': at,
+            'pullRequestReview': {'databaseId': rid}}
+
+
+OURS = post(1, 'reviewer', '2026-10-30T22:00:00Z', 77)
+ACT_ARGS = {'us': 'Reviewer', 'since': '2026-10-30T22:00:00Z', 'our_reviews': [77]}
+NONE_ACT = {'replies': 0, 'comments': 0, 'reviews': 0, 'resolved': 0, 'newest': None, 'key': ''}
+CASES.update({
+    'case-fu-answer-in-a-thread': {
+        'expect': 'pass', 'rule': 'followup', 'route': 'answer_activity', 'want': dict(NONE_ACT, replies=1, newest=501, key='501'),
+        'args': {'pr': {'author': {'login': 'author'}, 'reviewThreads': {'nodes': [thread(OURS, post(501, 'author'))]}},
+                 **ACT_ARGS}},
+    'case-fu-answer-as-a-pr-comment': {
+        'expect': 'pass', 'rule': 'followup', 'route': 'answer_activity', 'want': dict(NONE_ACT, comments=1, newest=502, key='502'),
+        'args': {'pr': {'author': {'login': 'author'}, 'comments': {'nodes': [post(502, 'author')]}}, **ACT_ARGS}},
+    'case-fu-answer-a-resolved-thread': {
+        'expect': 'pass', 'rule': 'followup', 'route': 'answer_activity',
+        'want': dict(NONE_ACT, resolved=1, key='0+1:' + hashlib.sha1(b'T1').hexdigest()[:8]),
+        'args': {'pr': {'author': {'login': 'author'}, 'reviewThreads': {'nodes': [thread(OURS, resolved_by='author')]}},
+                 **ACT_ARGS}},
+    # Our own reply in our thread, our own PR comment, and anything from before our review never count.
+    'case-fu-answer-our-own-reply-ignored': {
+        'expect': 'pass', 'rule': 'followup', 'route': 'answer_activity', 'want': NONE_ACT,
+        'args': {'pr': {'author': {'login': 'author'}, 'reviewThreads': {'nodes': [thread(OURS, post(503, 'Reviewer'))]},
+                        'comments': {'nodes': [post(504, 'reviewer'), post(400, 'author', '2026-10-30T21:00:00Z')]}},
+                 **ACT_ARGS}},
+    'case-fu-answer-first-round': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                   'want': {'do': 'answer', 'key': '501'},
+                                   'args': {'old': REVIEWED, 'head': A40, 'act': {'key': '501'}, 'cap': 3}},
+    'case-fu-answer-the-same-batch-once': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                           'want': {'do': None, 'key': None},
+                                           'args': {'old': dict(REVIEWED, answers_key='501', answer_rounds={A40: 1}),
+                                                    'head': A40, 'act': {'key': '501'}, 'cap': 3}},
+    # A reply to our follow-up has a newer id: the next batch.
+    'case-fu-answer-a-second-round': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                      'want': {'do': 'answer', 'key': '777'},
+                                      'args': {'old': dict(REVIEWED, answers_key='501', answer_rounds={A40: 1}),
+                                               'head': A40, 'act': {'key': '777'}, 'cap': 3}},
+    'case-fu-answer-the-round-cap': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                     'want': {'do': 'cap', 'key': '901'},
+                                     'args': {'old': dict(REVIEWED, answers_key='801', answer_rounds={A40: 3}),
+                                              'head': A40, 'act': {'key': '901'}, 'cap': 3}},
+    'case-fu-answer-after-the-cap-it-stops': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                              'want': {'do': None, 'key': '991'},
+                                              'args': {'old': dict(REVIEWED, answers_key='901', answer_rounds={A40: 3},
+                                                                   answer_capped=A40), 'head': A40, 'act': {'key': '991'},
+                                                       'cap': 3}},
+    'case-fu-answer-not-while-queued': {'expect': 'pass', 'rule': 'followup', 'route': 'answer_batch',
+                                        'want': {'do': None, 'key': None},
+                                        'args': {'old': dict(REVIEWED, status='queued'), 'head': A40, 'act': {'key': '501'},
+                                                 'cap': 3}},
+    # PR_REVIEW_QUEUE=requested: an unrequested new PR never enters the queue; a requested one and a follow-up do.
+    'case-fu-queue-unrequested-new-pr-stays-out': {'expect': 'pass', 'rule': 'followup', 'route': 'in_queue', 'want': False,
+                                                   'args': {'queue': 'requested', 'requested': False, 'reviewed': False}},
+    'case-fu-queue-requested-pr-enters': {'expect': 'pass', 'rule': 'followup', 'route': 'in_queue', 'want': True,
+                                          'args': {'queue': 'requested', 'requested': True, 'reviewed': False}},
+    'case-fu-queue-followup-enters': {'expect': 'pass', 'rule': 'followup', 'route': 'in_queue', 'want': True,
+                                      'args': {'queue': 'requested', 'requested': False, 'reviewed': True}},
+    # The mayor, 2026-10-30 22:26Z (the 1987 shape): the review of a new head on a PR we reviewed, which does not
+    # request the reviewer, was held and nothing went out, so our change request stood on a head that was gone. A
+    # follow-up is never silent: held, it gets the note; and the note says what of our earlier asks is still open.
+    'case-fu-held-followup-is-never-silent': {'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-reviewed',
+                                              'args': {'requested': False, 'not_checked': False, 'gate_held': True,
+                                                       'reviewed': True}},
+    'case-fu-held-unreviewed-unrequested-stays-silent': {'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback',
+                                                         'want': None, 'args': {'requested': False, 'not_checked': False,
+                                                                                'gate_held': True, 'reviewed': False}},
+    'case-fu-held-followup-note-says-what-is-open': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False,
+        'tree_lines': TREE, 'decisions': [FLOOR_VOICE], 'fallback': True, 'gaps': [{'kind': 'below-bar'}],
+        'since': {'old': A40, 'new': B40, 'review_id': 77, 'fixed': 0, 'again': 0, 'open': 2, 'gone': 0, 'changed': 1,
+                  'resolve': []},
+        'body_re': [r'^\*\*Since the last review\*\* \(\[new commits\]\(https://github\.com/example/repo/compare/a{40}\.\.\.'
+                    r'b{40}\)\): 1 earlier ask on lines the new commits changed, 2 still open in their threads\.$',
+                    r'^\*\*Questions\*\* · for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$']},
+})
 
 if __name__ == '__main__':
     out = os.path.join(HERE, 'fixtures')

@@ -219,7 +219,20 @@ def sweep(cfg, dry):
         again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer'])) or \
             block == 'review'  # our block rested on content: the new head gets a review
         if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci' and not again:
-            counts['seen'] += 1
+            ans = answers(cfg, repo, pr, old, since) if cfg['followups'] else None
+            if not ans:
+                counts['seen'] += 1
+                continue
+            # decision-57b6d9bb: the author answered on the head we reviewed: a same-head follow-up (or the
+            # one line that the rounds are used up), first in the queue.
+            entry = dict(old, status='queued', queued_at=pr_state.iso(t0), followup=ans['do'], answers_pending=ans['key'],
+                         tier=0)
+            counts[f"followup_{ans['do']}"] += 1
+            if dry:
+                print(json.dumps({'pr': entry['url'], 'status': 'queued', 'followup': ans['do'],
+                                  **{k: ans['act'][k] for k in ('replies', 'comments', 'reviews', 'resolved')}}))
+                continue
+            record_one(cfg, beads, key, entry, old, counts)
             continue
         files = pr_rules.pr_files(repo, pr['number'])
         rec = record(cfg, repo, pr, files, ruleset, area_of, heads)
@@ -227,10 +240,22 @@ def sweep(cfg, dry):
                  'repo': repo, 'number': pr['number'], 'url': pr['url'], 'rig': cfg['repos'][repo],
                  'head': rec['head'], 'state': rec['state'], 'created': rec['created'], 'merged': rec['merged'],
                  'rules': sorted(rec['hits']), 'tier': rec['tier'], 'areas': rec['areas'], 'ci': rec['ci'],
-                 'seen_at': old.get('seen_at') or pr_state.iso(t0), 'bead': old.get('bead')}
-        ci_wait = pr_state.parse(entry['seen_at']) + dt.timedelta(hours=cfg['ci_wait_h'])
-        if rec['ci'] == 'pending' and t0 < ci_wait:
-            entry['status'] = 'waiting-ci'
+                 'seen_at': old.get('seen_at') or pr_state.iso(t0), 'bead': old.get('bead'),
+                 # CI is waited for on each head from when the sweep first saw that head
+                 'head_seen_at': (old.get('head_seen_at') or old.get('seen_at')) if old.get('head') == rec['head']
+                 else pr_state.iso(t0)}
+        ci_wait = pr_state.parse(entry['head_seen_at'] or entry['seen_at']) + dt.timedelta(hours=cfg['ci_wait_h'])
+        # decision-57b6d9bb: a new head on a PR we reviewed is reviewed again once its CI settles (incremental);
+        # PR_REVIEW_QUEUE=requested keeps an unrequested new PR out of the queue.
+        push = cfg['followups'] and pr_rules.followup_push(old, rec['head'])
+        wanted = push or again or pr_rules.in_queue(cfg['queue'], 'requested' in rec['hits'], bool(old.get('review_heads')))
+        if not wanted and rec['tier'] is not None:
+            entry.update(status='done', outcome='unrequested')
+        elif rec['ci'] == 'pending' and t0 < ci_wait:
+            entry.update(status='waiting-ci', **({'followup': 'push'} if push else {}))
+        elif push:
+            entry.update(status='queued', queued_at=pr_state.iso(t0), followup='push',
+                         tier=rec['tier'] if rec['tier'] is not None else 2)
         elif old.get('status') in ('done', 'reviewing') and not again and not (
                 pr_rules.SERIOUS & (set(rec['hits']) - set(old.get('rules', [])))):
             # Pushed again after a review: reviewed once unless the reviewer is asked again or the new head
@@ -247,7 +272,8 @@ def sweep(cfg, dry):
         counts[entry['status'] if entry['status'] != 'done' else entry.get('outcome', 'done')] += 1
         if dry:
             print(json.dumps({'pr': entry['url'], 'status': entry['status'], 'outcome': entry.get('outcome'),
-                              'tier': entry['tier'], 'rules': entry['rules'], 'ci': entry['ci']}))
+                              'tier': entry['tier'], 'rules': entry['rules'], 'ci': entry['ci'],
+                              **({'followup': entry['followup']} if entry.get('followup') else {})}))
             continue
         record_one(cfg, beads, key, entry, old, counts)
     if dry:
@@ -260,6 +286,22 @@ def sweep(cfg, dry):
     pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts, 'partial': partial,
                                 'secs': round((pr_state.now() - t0).total_seconds()), 'pruned': pruned})
     print(json.dumps({'sweep': pr_state.iso(t0), 'partial': partial, 'counts': counts}))
+
+
+def answers(cfg, repo, pr, old, since):
+    """The answer trigger (decision-57b6d9bb), zero tokens: on a head we reviewed and a PR updated since the
+    last sweep, what its author did after our first review of the head. {do, key, act} or None."""
+    head = pr['headRefOid']
+    if head not in (old.get('review_heads') or []) or pr_state.parse(pr['updatedAt']) < since:
+        return None
+    try:
+        act = pr_rules.answer_activity(pr_rules.activity(repo, pr['number']), cfg['reviewer'],
+                                       old.get('head_reviewed_at') or old.get('delivered_at'),
+                                       old.get('head_review_ids') or [old.get('review_id')])
+    except pr_rules.GhError:
+        return None
+    b = pr_rules.answer_batch(old, head, act, cfg['followup_rounds'])
+    return dict(b, act=act) if b['do'] else None
 
 
 def closed_at(repo, number):
@@ -277,7 +319,8 @@ def closed_at(repo, number):
 # head's line goes out once.
 CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block', 'rc_live', 'slack', 'slack_ts',
          'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky',
-         'client_posts', 'confidence', 'flagged_total', 'open_changes', 'open_questions')
+         'client_posts', 'confidence', 'flagged_total', 'open_changes', 'open_questions',
+         'head_reviewed_at', 'head_review_ids', 'answers_key', 'answer_rounds', 'answer_capped')
 
 
 def lift_block(repo, pr, review_id):
@@ -288,7 +331,7 @@ def lift_block(repo, pr, review_id):
     return r.returncode == 0
 
 
-TERMINAL = ('no-rule', 'closed')  # sweep outcomes that end a PR's bead; a review's outcome closes it at delivery
+TERMINAL = ('no-rule', 'closed', 'unrequested')  # sweep outcomes that end a PR's bead; a review's outcome closes it at delivery
 
 
 def terminal(entry):
@@ -425,10 +468,88 @@ def selftest():
             close_terminal(cfg, True, b)
         if [k for k, v in b.store.items() if v['status'] == 'open'] != ['fk-4']:
             fails.append('the one-off closes the terminal bead and the second bead, and leaves a queued one open')
+    fails += selftest_followups()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {7 - len(fails)} of 7')
+    print(f'pr_sweep selftest: {12 - len(fails)} of 12')
     return 1 if fails else 0
+
+
+def selftest_followups():
+    """decision-57b6d9bb, the whole sweep with GitHub stubbed: a push on a reviewed PR waits for its CI, then
+    is queued as a push follow-up; the author's reply on a reviewed head queues a same-head follow-up first
+    in line; with PR_REVIEW_QUEUE=requested an unrequested new PR stays out and a requested one enters."""
+    import tempfile
+    a40, b40, t = 'a' * 40, 'b' * 40, pr_state.now()
+    now = pr_state.iso(t)
+    prs = {1: {'head': b40, 'ci': 'pending'}, 2: {'head': a40, 'ci': 'green'}, 3: {'head': a40, 'ci': 'green'},
+           4: {'head': a40, 'ci': 'green', 'requested': True}}
+
+    def fake(n):
+        p = prs[n]
+        return {'number': n, 'url': f'https://github.com/o/r/pull/{n}', 'state': 'OPEN', 'isDraft': False,
+                'headRefOid': p['head'], 'updatedAt': now, 'mergeable': 'MERGEABLE', 'createdAt': now, 'mergedAt': None,
+                'baseRefName': 'main'}
+
+    def fake_record(cfg, repo, pr, files, ruleset, area_of, heads):
+        p = prs[pr['number']]
+        hits = ['requested', 'r1'] if p.get('requested') else ['r1']
+        return {'head': p['head'], 'state': 'OPEN', 'created': now, 'merged': None, 'hits': hits,
+                'tier': 0 if p.get('requested') else 2, 'areas': ['x'], 'ci': p['ci']}
+    act = {'author': {'login': 'auth'}, 'reviewThreads': {'nodes': [{'id': 'T1', 'isResolved': False, 'comments': {
+        'nodes': [{'databaseId': 1, 'author': {'login': 'rev'}, 'createdAt': pr_state.iso(t - dt.timedelta(hours=1)),
+                   'pullRequestReview': {'databaseId': 77}},
+                  {'databaseId': 501, 'author': {'login': 'auth'}, 'createdAt': now}]}}]}}
+    stubs = {(pr_rules, 'load_rules'): lambda p: {}, (pr_rules, 'areas'): lambda r: {},
+             (pr_rules, 'open_prs'): lambda repo: ([fake(n) for n in prs], {'main': 'c' * 40}),
+             (pr_rules, 'pr_files'): lambda repo, n: [], (pr_rules, 'ci_state'): lambda pr: prs[pr['number']]['ci'],
+             (pr_rules, 'requested_now'): lambda pr, who: bool(prs[pr['number']].get('requested')),
+             (pr_rules, 'get_pr'): lambda repo, n: fake(n), (pr_rules, 'activity'): lambda repo, n: act,
+             (pr_state, 'Beads'): lambda *a, **k: FakeBeads(), (pr_state, 'prune_private'): lambda *a: {}}
+    kept = {k: getattr(*k) for k in stubs}
+    g = globals()
+    real_record, fails = g['record'], []
+    reviewed = {'repo': 'o/r', 'rig': 'rig', 'status': 'done', 'outcome': 'questions', 'review_heads': [a40], 'head': a40,
+                'review_id': 77, 'head_review_ids': [77], 'head_reviewed_at': pr_state.iso(t - dt.timedelta(hours=1)),
+                'seen_at': pr_state.iso(t - dt.timedelta(days=1)), 'created': now, 'tier': 2, 'rules': ['r1']}
+    try:
+        for (m, n), f in stubs.items():
+            setattr(m, n, f)
+        g['record'] = fake_record
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {'state': d, 'city': d, 'beads': False, 'reviewer': 'rev', 'repos': {'o/r': 'rig'}, 'rules': '',
+                   'lookback_h': 2, 'ci_wait_h': 3, 'sweep_budget_s': 60, 'followups': True, 'followup_rounds': 3,
+                   'queue': 'requested', 'work': d, 'keep_days': 30}
+            with pr_state.locked(d) as st:
+                st['last_sweep'] = pr_state.iso(t - dt.timedelta(minutes=30))
+                st['prs'] = {'o/r#1': dict(reviewed, number=1, url='https://github.com/o/r/pull/1'),
+                             'o/r#2': dict(reviewed, number=2, url='https://github.com/o/r/pull/2')}
+            with contextlib.redirect_stdout(io.StringIO()):
+                sweep(cfg, False)
+                with pr_state.locked(d) as st:
+                    first = {k: dict(v) for k, v in st['prs'].items()}
+                prs[1]['ci'] = 'green'
+                sweep(cfg, False)
+            with pr_state.locked(d) as st:
+                second = {k: dict(v) for k, v in st['prs'].items()}
+    finally:
+        for (m, n), f in kept.items():
+            setattr(m, n, f)
+        g['record'] = real_record
+    p1, p1b, p2 = first['o/r#1'], second['o/r#1'], first['o/r#2']
+    if not (p1.get('status') == 'waiting-ci' and p1.get('followup') == 'push' and p1b.get('status') == 'queued'
+            and p1b.get('followup') == 'push'):
+        fails.append('a push on a reviewed PR waits for its CI, then is queued as a push follow-up')
+    if not (p2.get('status') == 'queued' and p2.get('followup') == 'answer' and p2.get('answers_pending') == '501'
+            and p2.get('tier') == 0):
+        fails.append("the author's reply queues a same-head follow-up, first in line")
+    if (first.get('o/r#3') or {}).get('outcome') != 'unrequested' or (first.get('o/r#3') or {}).get('status') != 'done':
+        fails.append('PR_REVIEW_QUEUE=requested keeps an unrequested new PR out of the queue')
+    if (first.get('o/r#4') or {}).get('status') != 'queued':
+        fails.append('a PR that requests the reviewer enters the queue')
+    if second['o/r#2'].get('followup') != 'answer' or second['o/r#2'].get('status') != 'queued':
+        fails.append('a queued follow-up is not queued twice or lost by the next sweep')
+    return fails
 
 
 def main():

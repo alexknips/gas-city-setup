@@ -8,6 +8,7 @@ repository's own text and the sweep's records and messages must not carry it (RE
 leaves GitHub").
 """
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -280,7 +281,7 @@ def asked_again(old, head, asked):
     when it is a new head after a review. Never a head already reviewed or held: no loop."""
     if not asked or old.get('status') in ('queued', 'reviewing', 'waiting-ci'):
         return False
-    return old.get('head') != head or old.get('outcome') == 'no-rule'
+    return old.get('head') != head or old.get('outcome') in ('no-rule', 'unrequested')
 
 
 def formal_block(old, head, mergeable, ci):
@@ -302,14 +303,102 @@ def ci_only(ci, requested, content):
     return ci in ('red', 'none', 'skipped') and not content and not requested
 
 
-def held_fallback(requested, not_checked, gate_held):
-    """R33: a held review is never silent on a PR that requests the reviewer, and never on a PR in a
-    not-checked area that the gate or the reader test held: 'not-checked-minimal' (the money decision and
-    the status line), 'not-reviewed' (the short note), or None (held, silent: nobody asked for this
-    review)."""
+def followup_push(old, head):
+    """The push trigger (decision-57b6d9bb; the mayor, 2026-10-30 22:22Z): a new head on a PR we delivered a
+    review on (approval, comment, changes, a fallback or the note) is reviewed again, the incremental way.
+    Only a head we have not reviewed, and never one the sweep already looked at (a held head never loops);
+    a follow-up still waiting for CI or in the queue keeps its mark until it runs."""
+    heads = old.get('review_heads') or []
+    if not heads or head in heads:
+        return False
+    if old.get('status') in ('waiting-ci', 'queued'):
+        return old.get('followup') == 'push'
+    if old.get('status') == 'reviewing':
+        return False
+    return old.get('head') != head
+
+
+ACTIVITY_Q = """query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
+  author { login }
+  reviews(last: 50) { nodes { databaseId author { login } submittedAt } }
+  comments(last: 50) { nodes { databaseId author { login } createdAt } }
+  reviewThreads(first: 100) { nodes { id isResolved resolvedBy { login }
+    comments(first: 50) { nodes { databaseId author { login } createdAt pullRequestReview { databaseId } } } } } } } }"""
+
+
+def activity(repo, number):
+    """The PR's reviews, comments and review threads, for answer_activity (one GraphQL read, zero tokens)."""
+    owner, name = repo.split('/')
+    return graphql(ACTIVITY_Q, o=owner, r=name, n=number)['repository']['pullRequest']
+
+
+def answer_activity(pr, us, since, our_reviews=()):
+    """The answer trigger (decision-57b6d9bb), zero tokens: what the PR's author did after `since` (our first
+    review of the current head): replies in a thread one of our reviews opened, PR comments, reviews of
+    their own, and our threads (of `our_reviews`, the head's) they resolved. Our own posts never count.
+    Returns counts and {key}: the newest reply id with the resolved threads, which keys one batch."""
+    login = lambda n: (((n or {}).get('author') or {}).get('login') or '').lower()  # noqa: E731
+    author, us = login(pr), (us or '').lower()
+    out = {'replies': 0, 'comments': 0, 'reviews': 0, 'resolved': 0, 'newest': None, 'key': ''}
+    if not author or author == us:
+        return out
+    after = lambda t: bool(t) and (not since or t > since)  # noqa: E731
+    ids = []
+    for t in (pr.get('reviewThreads') or {}).get('nodes') or []:
+        cs = (t.get('comments') or {}).get('nodes') or []
+        if not cs or login(cs[0]) != us:
+            continue
+        for c in cs[1:]:
+            if login(c) == author and after(c.get('createdAt')):
+                out['replies'] += 1
+                ids.append(c['databaseId'])
+        rid = (cs[0].get('pullRequestReview') or {}).get('databaseId')
+        if t.get('isResolved') and ((t.get('resolvedBy') or {}).get('login') or '').lower() == author and \
+                (not our_reviews or rid in our_reviews):
+            out['resolved'] += 1
+            out.setdefault('resolved_ids', []).append(t['id'])
+    for kind, when in (('comments', 'createdAt'), ('reviews', 'submittedAt')):
+        for c in (pr.get(kind) or {}).get('nodes') or []:
+            if login(c) == author and after(c.get(when)):
+                out[kind] += 1
+                ids.append(c['databaseId'])
+    out['newest'] = max(ids) if ids else None
+    res = sorted(out.pop('resolved_ids', []))
+    if ids or res:
+        out['key'] = f"{out['newest'] or 0}" + (f"+{len(res)}:{hashlib.sha1(','.join(res).encode()).hexdigest()[:8]}" if res else '')
+    return out
+
+
+def answer_batch(old, head, act, cap):
+    """The loop guard (decision-57b6d9bb): one follow-up per batch of the author's answers, keyed on the newest
+    reply (a reply to our follow-up starts the next batch), at most `cap` rounds per head; then 'cap' once
+    (one line tells the author and it stops). {do: 'answer' | 'cap' | None, key}."""
+    if old.get('status') in ('queued', 'reviewing', 'waiting-ci') or head not in (old.get('review_heads') or []) \
+            or old.get('head') != head:
+        return {'do': None, 'key': None}
+    if not act.get('key') or act['key'] == old.get('answers_key'):
+        return {'do': None, 'key': None}
+    if (old.get('answer_rounds') or {}).get(head, 0) >= cap:
+        return {'do': None if old.get('answer_capped') == head else 'cap', 'key': act['key']}
+    return {'do': 'answer', 'key': act['key']}
+
+
+def in_queue(queue, requested, reviewed):
+    """PR_REVIEW_QUEUE (the mayor, 22:22Z: the run without a hand start): 'requested' reviews only PRs that
+    request the reviewer and follow-ups of PRs we reviewed; an unrequested new PR never enters the queue.
+    'all' (the default) queues every PR a rule selects."""
+    return queue != 'requested' or bool(requested) or bool(reviewed)
+
+
+def held_fallback(requested, not_checked, gate_held, reviewed=False):
+    """R33: a held review is never silent on a PR that requests the reviewer, never on a PR in a
+    not-checked area that the gate or the reader test held, and never on a PR with a delivered review of
+    ours (the mayor, 2026-10-30 22:26Z: a held review of a new head left our change request standing):
+    'not-checked-minimal' (the money decision and the status line), 'not-reviewed' (the short note), or
+    None (held, silent: nobody asked for this review and we never reviewed the PR)."""
     if not_checked and gate_held:
         return 'not-checked-minimal'
-    return 'not-reviewed' if requested else None
+    return 'not-reviewed' if requested or reviewed else None
 
 
 def added_lines(patch):

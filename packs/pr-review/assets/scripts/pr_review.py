@@ -22,6 +22,9 @@ is regenerated once with the gate's reasons, then held. What it prints and keeps
 links, outcomes, counts, gate reasons and cost: never the repository's text.
 
   pr_review.py --redeliver REPO#N   deliver the stored result for the PR's current head again (no model)
+  pr_review.py --followup REPO#N [--dry-run | --no-deliver]
+                                    the same-head follow-up on the author's answers (decision-57b6d9bb;
+                                    the sweep queues it by itself): --dry-run prints the counts, no model
   pr_review.py --no-deliver --pr REPO#N
                                     the whole review (model, gate, reader test) without posting or recording
                                     anything; prints counts, rule ids and scores
@@ -45,6 +48,7 @@ import pr_client_slack  # noqa: E402
 import pr_context  # noqa: E402
 import pr_digest  # noqa: E402
 import pr_fallback  # noqa: E402
+import pr_followup  # noqa: E402
 import pr_format  # noqa: E402
 import pr_incremental  # noqa: E402
 import pr_judge  # noqa: E402
@@ -58,6 +62,9 @@ UPSTREAM = os.path.join(HERE, '..', 'upstream', 'security-review.md')
 # prompt looks for the defects a PR ships. PR_REVIEW_PROMPT picks one; the benchmark compares them.
 PROMPTS = {'security': UPSTREAM, 'correctness': os.path.join(HERE, '..', 'correctness-review.md')}
 STYLE = os.path.join(HERE, '..', 'style-guide.md')
+# The style guide's parts the review model never writes (the mayor, 2026-10-30 22:22Z: keep the first-review
+# prompt byte-identical to the benchmark's pin): marked in the guide, cut from the prompt.
+SCRIPT_ONLY_RE = re.compile(r'<!-- not in the review prompt -->\n.*?<!-- /not in the review prompt -->\n', re.S)
 MAX_DIFF_CHARS = 350_000
 # The footer names the person (default: the login); PR_REVIEW_NAMES maps authors' logins to names.
 NAME = os.environ.get('PR_REVIEW_REVIEWER_NAME') or os.environ.get('PR_REVIEW_REVIEWER') or 'the reviewer'
@@ -327,7 +334,7 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
     if not sep:
         raise RuntimeError('upstream prompt changed: START ANALYSIS missing')
     checklist = open(cfg['checklist']).read()
-    style = open(STYLE).read()
+    style = SCRIPT_ONLY_RE.sub('', open(STYLE).read())  # the parts the script writes stay out (byte-identical prompt)
     idx = pr_format.diff_index(diff)
     hunks = '\n'.join(f"- {f['id']}: {f['path']} line {f['line']} (new side), hunk {hunk_span(idx, f)}: {f['label']}"
                       for f in flagged) or '- none'
@@ -415,17 +422,18 @@ def clean(text):
     return re.sub(r'@(?=[A-Za-z0-9])', '@\u200b', text)
 
 
-def run_model(cfg, tree, ctx, prompt):
-    """The headless review. Returns (structured output or None, meta with cost and counts)."""
+def run_model(cfg, tree, ctx, prompt, answer_schema=None, max_turns=None):
+    """The headless review (`answer_schema`: another answer in the same sandbox, the follow-up's). Returns
+    (structured output or None, meta with cost and counts)."""
     settings = {'disableAllHooks': True,
                 'permissions': {'deny': [f'{t}({p})' for p in DENY_ROOTS for t in ('Read', 'Grep', 'Glob')]}}
     keep = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1')
-    cmd = [claude_bin(), '-p', '--output-format', 'json', '--json-schema', json.dumps(schema(cfg)), '--model', cfg['model'],
-           '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps(settings),
+    cmd = [claude_bin(), '-p', '--output-format', 'json', '--json-schema', json.dumps(answer_schema or schema(cfg)),
+           '--model', cfg['model'], '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps(settings),
            '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--add-dir', ctx,
-           '--max-turns', str(cfg['max_turns'])]
+           '--max-turns', str(max_turns or cfg['max_turns'])]
     if cfg.get('effort'):
         cmd += ['--effort', cfg['effort']]
     t0 = pr_state.now()
@@ -444,6 +452,8 @@ def run_model(cfg, tree, ctx, prompt):
     so = out.get('structured_output')
     if out.get('is_error') or not isinstance(so, dict):
         return None, {**meta, 'error': out.get('subtype') or 'no-structured-output'}
+    if answer_schema:
+        return so, meta
     so['summary'] = clean(so['summary'])
     for g in so['skip']:
         g['group'] = clean(g['group'])
@@ -557,10 +567,11 @@ def ours_on_head(repo, number, head):
 
 OURS_JQ = pr_format.ours_jq()
 DISMISSAL = 'Replaced by a newer automated review.'
-DISMISSAL_VOICE = 'Replaced by a newer review.'  # decision-ed7320b7
+DISMISSAL_VOICE = 'Replaced by a newer review.'
+STALE = {'disclose': 'This automated review was of an earlier commit.', 'reviewer': 'This review was of an earlier commit.'}  # decision-ed7320b7
 
 
-def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose'):
+def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose', message=None):
     """R35, R31: our newest review is our only live verdict on a PR. A later COMMENT review would leave an
     earlier REQUEST_CHANGES blocking, or an earlier APPROVE standing after the review found a question, so
     every newer review dismisses our earlier ones in those states. Only automated reviews (their body
@@ -574,7 +585,8 @@ def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose'):
     ok = bad = 0
     for rid in (l.strip() for l in r.stdout.splitlines() if l.strip()):
         d = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{repo}/pulls/{number}/reviews/{rid}/dismissals',
-                            '-f', f"message={DISMISSAL_VOICE if voice == 'reviewer' else DISMISSAL}", '-f', 'event=DISMISS'],
+                            '-f', f"message={(message or {}).get(voice) or (DISMISSAL_VOICE if voice == 'reviewer' else DISMISSAL)}",
+                            '-f', 'event=DISMISS'],
                            capture_output=True, text=True, timeout=60)
         ok, bad = ok + (d.returncode == 0), bad + (d.returncode != 0)
     return ok, bad
@@ -655,7 +667,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     elif posted == 'ok':
         extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'], cfg.get('voice'))
         extra['repointed'], extra['repoint_failed'] = repoint(repo, n, cfg['reviewer'], cfg.get('voice'))
-        if cfg.get('incremental') and rv.get('since'):  # gc-sy1hm.2 c: only once the new review is up
+        if (cfg.get('incremental') or entry.get('followup') == 'push') and rv.get('since'):  # gc-sy1hm.2 c, once it is up
             extra['threads_resolved'], extra['threads_resolve_failed'] = pr_incremental.resolve_threads(repo, n, rv['since'])
     if not url:
         finish(cfg, key, dict(entry, head=head), 'held-inline' if comments else 'error', {**extra, 'posted': posted})
@@ -665,8 +677,11 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         inline += [None] * (len(comments) - len(inline))
     reasons = pr_format.gate_delivery(fresh['state'], url, state, inline_lines=inline,
                                       ours_on_head=ours_on_head(repo, n, head))
-    if head not in heads:
+    if head not in heads:  # the answer trigger counts the author's posts from our first review of the head
         heads.append(head)
+        extra.update(head_reviewed_at=pr_state.iso(pr_state.now()), head_review_ids=[rid])
+    else:
+        extra['head_review_ids'] = ([x for x in entry.get('head_review_ids') or [entry.get('review_id')] if x] + [rid])[-10:]
     pr_state.keep_posted(cfg, entry, head, body, comments, result)
     extra.update(review_url=url, review_id=rid, review_heads=heads[-20:], body_sha=body_sha(body), posted=posted,
                  delivered_at=pr_state.iso(pr_state.now()), approved=event == 'APPROVE', event=event,
@@ -689,7 +704,11 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
                                        extra.get('flags_cut', rv.get('flags_cut') or 0), extra.get('gaps_open') or ())
     extra.update(confidence=review['confidence'], flagged_total=review['flagged'], open_changes=review['changes'],
                  open_questions=review['questions'])
-    if cfg['client_slack'] != 'off' and not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state'])):
+    # Once per head and status (decision-57b6d9bb): a follow-up posts a new entry only when readiness moved.
+    ready = pr_client_slack.readiness(fresh.get('mergeable'), extra.get('ci') or pr_rules.ci_state(fresh),
+                                      pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'))
+    if cfg['client_slack'] != 'off' and not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state']),
+                                                                      ready):
         try:
             status, meta = pr_client_slack.deliver_entry(cfg, key, dict(entry, review_url=url), review, fresh, summary,
                                                          lambda s: pr_client_slack.words_turn(cfg, s))
@@ -698,8 +717,9 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         extra.update(client_slack=status, **{k: meta[k] for k in ('words_from', 'words_cost_usd') if k in meta},
                      **({'client_ts': meta['ts']} if meta.get('ts') else {}))
         if status in pr_client_slack.POSTED:
-            extra['client_posts'] = pr_client_slack.record_post(entry, head, status, meta.get('ts'))
+            extra['client_posts'] = pr_client_slack.record_post(entry, head, status, meta.get('ts'), ready)
     finish(cfg, key, dict(entry, head=head), rv['outcome'], extra)
+    return url
 
 
 def redeliver(cfg, key):
@@ -736,6 +756,130 @@ def redeliver(cfg, key):
             summary=res.get('summary') or '')
 
 
+FOLLOWUP_TURNS = 16  # the follow-up reads the asks' lines and what the answers point at; the review used 2-11
+
+
+def post_reply(repo, number, comment_id, body):
+    """A reply in the review thread of our inline comment `comment_id`."""
+    r = subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/pulls/{number}/comments/{int(comment_id)}/replies',
+                        '-f', f'body={body}'], capture_output=True, text=True, timeout=60)
+    return r.returncode == 0
+
+
+def post_comment(repo, number, body):
+    r = subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}'],
+                       capture_output=True, text=True, timeout=60)
+    return r.returncode == 0
+
+
+def rebuild(cfg, repo, pr, ci, res, calls, asks, author):
+    """decision-57b6d9bb: the delivered review's parts after the author's answers (pr_followup.apply): answered
+    asks cleared with the answer as the reason, open ones kept, changes as changes; the blockers and status
+    as they stand now. A follow-up on a fallback stays one: it never approves (the full review is still
+    owed). Returns (rv, the follow-up replies for open asks)."""
+    voice = cfg.get('voice') or 'disclose'
+    items, cleared, decisions, counts, replies = pr_followup.apply(res, calls, asks, voice)
+    rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'summary': res.get('summary') or '',
+          'skip': res.get('skip') or [], 'since': None, 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)),
+          'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': res.get('not_checked') or '',
+          'model': bool(res.get('summary')), 'flags_cut': 0, 'approve': False, 'request_changes': cfg['request_changes'],
+          'rules': res.get('rules') or {}, 'rules_sha': res.get('rules_sha') or '', 'voice': voice, 'gaps': [],
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': bool(res.get('fallback')),
+          'others': res.get('others') or [], 'answers': counts,
+          'signed_off': pr_followup.signed_off(res, decisions, cleared)}
+    rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
+    return rv, replies
+
+
+def answer_review(cfg, key, entry, dry=False, answer=None):
+    """decision-57b6d9bb: the same-head follow-up on the author's answers (pr_followup), or the one line when
+    the rounds on the head are used up. The answers are read from GitHub into the prompt only (host-local,
+    capture off); what is printed and kept is counts and ids. `answer(prompt)` stands in for the model."""
+    repo, n = entry['repo'], entry['number']
+    pr = pr_rules.get_pr(repo, n)
+    if pr['state'] != 'OPEN':
+        finish(cfg, key, entry, 'closed', {'model': False})
+        return
+    head = pr['headRefOid']
+    if head not in (entry.get('review_heads') or []):  # pushed meanwhile: the new head gets its incremental review
+        return ci_escalation(cfg, key, dict(entry, followup='push'), dry)
+    rounds = dict(entry.get('answer_rounds') or {})
+    done = {'answers_key': entry.get('answers_pending') or entry.get('answers_key'), 'followup': None,
+            'answers_pending': None}
+    author, voice = author_of(pr), cfg.get('voice') or 'disclose'
+    if entry.get('followup') == 'cap':
+        ok = dry or cfg.get('no_deliver') or post_comment(repo, n, pr_followup.cap_line(author, rounds.get(head, 0), voice, NAME))
+        finish(cfg, key, entry, entry.get('outcome') or 'done',
+               {**done, 'model': False, 'answer_capped': head if ok else None, 'followup_cap': 'posted' if ok else 'failed'})
+        return
+    p = os.path.join(pr_state.private_dir(cfg, 'feedback', 'posted'), f"{repo.replace('/', '__')}-{n}-{head[:10]}.json")
+    try:
+        res = json.load(open(p)).get('result') or {}
+    except (OSError, ValueError):
+        res = {}
+    asks = pr_followup.asks_of(res)
+    if not asks:  # nothing of ours to follow up on this head (an approval, or no stored review)
+        finish(cfg, key, entry, entry.get('outcome') or 'done', {**done, 'model': False,
+                                                                 'followup_skipped': 'no asks' if res else 'no stored review'})
+        return
+    owner, name = repo.split('/')
+    act = pr_rules.graphql(pr_followup.REPLIES_Q, o=owner, r=name, n=n)['repository']['pullRequest']
+    ours = [x for x in entry.get('head_review_ids') or [entry.get('review_id')] if x]
+    threads = pr_followup.threads_of(act, cfg['reviewer'], asks, ours)
+    others = pr_followup.others_of(act, cfg['reviewer'], entry.get('head_reviewed_at') or entry.get('delivered_at'))
+    prompt = pr_followup.prompt(pr['url'], head, author, asks, threads, others)
+    if dry:
+        print(json.dumps({'pr': entry['url'], 'would': 'follow-up', 'asks': len(asks), 'threads': len(threads),
+                          'replies': sum(len(t['replies']) for t in threads.values()), 'comments': len(others),
+                          'prompt_chars': len(prompt)}))
+        return
+    run_id = f"{repo.replace('/', '__')}-{n}-{head[:10]}-followup"
+    mirror = None
+    try:
+        if answer:
+            so, meta = answer(prompt)
+        else:
+            mirror, tree, ctx, *_ = prepare(cfg, repo, pr, run_id)
+            so, meta = run_model(cfg, tree, ctx, prompt, pr_followup.SCHEMA, FOLLOWUP_TURNS)
+        rounds[head] = rounds.get(head, 0) + 1
+        extra = {**done, 'model': True, 'followup_kind': 'answer', 'answer_rounds': dict(list(rounds.items())[-10:]),
+                 'cost_usd': meta.get('cost_usd') or 0, 'turns': meta.get('turns'), 'asks': len(asks),
+                 'threads': len(threads), 'ci': pr_rules.ci_state(pr)}
+        if not so:
+            finish(cfg, key, entry, 'error', {**extra, 'error': meta.get('error') or 'no-answer'})
+            return
+        ci = pr_rules.ci_state(pr)
+        rv, replies = rebuild(cfg, repo, pr, ci, res, so.get('calls') or [], asks, author)
+        idx = pr_format.diff_index(pr_diff(repo, n))
+        flagged = [] if res.get('fallback') else res.get('flagged') or []
+        if rv['outcome'] == 'low-risk' and cfg['approve'] and not rv['fallback']:
+            rv['approve'] = not pr_format.gate_approve(rv, pr, head, flagged, idx)
+        body = pr_format.render(repo, pr, rv, NAME, author)
+        reasons = pr_format.gate(rv, idx, body, None, pr.get('body') or '', flagged, None)
+        if not reasons and leaks([body] + [t for _, t in replies]):
+            reasons = ['held-secret']
+        extra.update(followup_calls=rv['answers'], items=len(rv['items']), cleared=len(rv['cleared']),
+                     decisions=len(rv['decisions']), gate=sorted({r.split(':')[0] for r in reasons}))
+        if reasons:
+            finish(cfg, key, entry, 'held-gate', extra)
+            return
+        result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
+        result.update(rule_ids=res.get('rule_ids') or [], flagged=res.get('flagged') or [], rules=rv['rules'],
+                      rules_sha=rv['rules_sha'], **({'fallback': True, 'others': rv['others']} if rv['fallback'] else {}))
+        url = deliver(cfg, key, entry, pr, rv, body, [], result, extra, flagged, idx, rereview=True,
+                      summary=res.get('summary') or '')
+        if url:  # the follow-ups go into the open asks' threads once the review is up
+            sent = sum(post_reply(repo, n, threads[a]['comment'], t) for a, t in replies if a in threads)
+            with pr_state.locked(cfg['state']) as st:
+                st['prs'][key].update(followup_replies=sent)
+            pr_state.log(cfg['state'], {'run': 'followup-replies', 'pr': entry['url'], 'sent': sent, 'open': len(replies)})
+    except (RuntimeError, OSError, subprocess.SubprocessError, pr_rules.GhError) as e:
+        finish(cfg, key, entry, 'error', {**done, 'model': False, 'error': type(e).__name__})
+    finally:
+        if mirror:
+            cleanup(cfg, mirror, run_id)
+
+
 def pr_diff(repo, number):
     r = subprocess.run(['gh', 'api', f'repos/{repo}/pulls/{number}', '-H', 'Accept: application/vnd.github.diff'],
                        capture_output=True, text=True, timeout=120)
@@ -757,6 +901,9 @@ def finish(cfg, key, entry, outcome, extra):
     with pr_state.locked(cfg['state']) as st:
         cur = st['prs'].get(key, entry)
         cur.update(entry)
+        if not requeue:  # a follow-up's mark ends with its run (decision-57b6d9bb)
+            cur.pop('followup', None)
+            cur.pop('answers_pending', None)
         if requeue:
             cur.update(status='queued', requeued_at=pr_state.iso(pr_state.now()), note=extra.get('note'))
         else:
@@ -839,13 +986,14 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
     return rv
 
 
-def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info=None):
+def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info=None, since=None):
     """R33 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
     reader test held the full one twice: line 2, the money decision (each place linked to its changed range
     with its one line, R32) and the status line, nothing the review model wrote."""
     rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False, money_info=money_info)
     rv['gaps'].append({'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)})
     rv['fallback'] = True  # R33: held to the bar the full review failed, its places cut to the question's
+    rv['since'] = since
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -886,7 +1034,7 @@ def question_from(c, question=''):
             'confidence': 8}
 
 
-def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg=None, floor=False):
+def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg=None, floor=False, since=None):
     """R33: a PR that requests the reviewer is never silent, and the note keeps a floor the reviewer can act
     on (the mayor, 2026-10-30 02:11Z): why the review was held, in plain words; the places the zero-token
     rules know, each linked (the money places with their lines, the flagged hunks with what the rule saw);
@@ -907,7 +1055,7 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, 
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
           'request_changes': False, 'rules': {}, 'rules_sha': '', 'voice': voice,
           'gaps': [{'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)}] if cfg else [],
-          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True}
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True, 'since': since}
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -925,7 +1073,8 @@ def held_why(money, words, held, codes):
     return "Our review of this PR didn't reach the quality bar: " + '; '.join(parts or ['it was held']) + '.'
 
 
-def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note=False, held=None, codes=(), answer=None):
+def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note=False, held=None, codes=(), answer=None,
+                   since=None):
     """R33 (the mayor, 2026-10-30 21:39Z: "One specific question per linked line with its own reason, no
     boilerplate sentences, no orphan link, one status line"): the fallback as one question per place, the
     riskiest first, each on its lines with its reason as the inline comment (pr_fallback); the places it does
@@ -943,7 +1092,7 @@ def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note
         return None, None, None, meta
     voice = cfg.get('voice') or 'disclose'
     accepted = pr_state.accepted_gaps(cfg)
-    rv = {'decisions': [], 'items': items, 'cleared': [], 'summary': summary, 'skip': [], 'since': None,
+    rv = {'decisions': [], 'items': items, 'cleared': [], 'summary': summary, 'skip': [], 'since': since,
           'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
           'not_checked': words if money and not note else '', 'model': False, 'flags_cut': 0, 'approve': False,
           'request_changes': cfg.get('request_changes', False) and not note, 'rules': {}, 'rules_sha': '', 'voice': voice,
@@ -1057,7 +1206,7 @@ def keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author)
     os.chmod(p, 0o600)
 
 
-def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset, gate, answer=None):
+def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset, gate, answer=None, since=None):
     """R33: the note for a held review of a PR that requests the reviewer, gated by `gate(rv, body,
     comments)`: first its own question per place (asked_fallback); without one that passes, the stock note
     (one question, lettered options). When the stock note itself is held, the floor instead (never silent,
@@ -1066,18 +1215,19 @@ def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, rules
     reasons, log fields)."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     rv, body, comments, meta = asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, True, held, codes,
-                                              answer)
+                                              answer, since)
     if rv:
         reasons = gate(rv, body, comments)
         if not reasons:
             return rv, body, comments, [], asked_log(meta, 'asked')
         meta['gate'] = sorted({r.split(':')[0] for r in reasons})
-    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg)
+    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, since=since)
     reasons = gate(rv, body, comments)
     if not reasons:
         return rv, body, comments, [], asked_log(meta, 'stock')
     note = {'floor': True, 'note_gate': sorted({r.split(':')[0] for r in reasons}), **asked_log(meta, 'floor')}
-    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, floor=True)
+    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, floor=True,
+                                      since=since)
     note['floor_gate'] = sorted({r.split(':')[0] for r in gate(rv, body, comments)})
     return rv, body, comments, (reasons if leaks([body]) else []), note
 
@@ -1110,7 +1260,8 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     files = pr_rules.pr_files(entry['repo'], pr['number'])
     base = pr_rules.base_for(pr, {pr['baseRefName']: pr_rules.branch_oid(entry['repo'], pr['baseRefName'])})
     hits = pr_rules.evaluate(pr, files, ruleset, cfg['reviewer'], entry['repo'], base)
-    if not pr_rules.ci_only(ci, 'requested' in hits, bool(content_rules(hits, area_of, ruleset))):
+    # A follow-up (decision-57b6d9bb) is reviewed by the model like a requested PR (R34).
+    if entry.get('followup') or not pr_rules.ci_only(ci, 'requested' in hits, bool(content_rules(hits, area_of, ruleset))):
         return model_review(cfg, key, entry, dry, rereview)
     _, _, nc = flags_for(files, ruleset, hits, area_of)
     author = author_of(pr)
@@ -1156,7 +1307,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         context_block, cstats = pr_context.build(tree, pr_format.diff_index(diff)) if cfg.get('context') else ('', {})
         # gc-sy1hm.2 c: our earlier asks on this PR and the new commits since the head we reviewed
         prev, since_rows, since_block, inc = None, [], '', {}
-        if cfg.get('incremental'):
+        if cfg.get('incremental') or entry.get('followup') == 'push':  # decision-57b6d9bb: a push follow-up
             prev = pr_incremental.earlier(cfg, entry, pr['headRefOid'], pr_state.private_dir(cfg, 'feedback', 'posted'))
             if prev:
                 sdiff, su0, why = pr_incremental.since(mirror, prev['head'], pr['headRefOid'])
@@ -1318,21 +1469,25 @@ def model_review(cfg, key, entry, dry, rereview=False):
         if reasons:  # the weekly split: held by wording or format reasons only, or by a content rule
             extra['held_by'] = 'format' if pr_format.fixable(reasons) else 'content'
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
+        # The mayor, 22:26Z: a review of a PR we reviewed before is never silent, and its fallback says what of
+        # our earlier asks is still open (zero tokens: where their lines are now).
+        reviewed = bool(entry.get('review_heads'))
+        fb_since = pr_incremental.held(since_rows, prev, pr['headRefOid']) if prev and since_rows else None
         fallback = held and pr_rules.held_fallback(
             'requested' in hits, bool(rv['not_checked']),
-            held == 'held-gate')
+            held == 'held-gate', reviewed)
         if fallback == 'not-checked-minimal':
             # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
             # first one question per money place (R33, the mayor 21:39Z); without one that passes, line 2, the
             # stock money question and the facts line, with no model findings.
             def gated(x, b, c):
                 return pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c)
-            rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, [], money, author, ruleset)
+            rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, [], money, author, ruleset, since=fb_since)
             reasons, form = (gated(rv, body, comments), 'asked') if rv else (['R33: no question'], 'asked')
             if reasons:
                 if rv:
                     ameta['gate'] = sorted({r.split(':')[0] for r in reasons})
-                rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info)
+                rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info, fb_since)
                 reasons, form = gated(rv, body, comments), 'stock'
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=len(rv['decisions']),
                          author_decisions=len(rv['decisions']), items=len(rv['items']), cleared=0,
@@ -1342,13 +1497,14 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
-            fallback = held and pr_rules.held_fallback('requested' in hits, False, False)
+            fallback = held and pr_rules.held_fallback('requested' in hits, False, False, reviewed)
         if fallback == 'not-reviewed':
-            # A PR that requests the reviewer is never silent: the note, with its floor (R33).
+            # A PR that requests the reviewer, or one we reviewed before, is never silent: the note, with its floor (R33).
             codes = extra.get('held_gate') or extra['gate']
             rv, body, comments, reasons, note = held_note(
                 cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset,
-                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c))
+                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c),
+                since=fb_since)
             extra.update(fallback=fallback, held=held, held_gate=codes, decisions=len(rv['decisions']),
                          author_decisions=len(rv['decisions']), items=len(rv['items']), cleared=0,
                          blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}), **note)
@@ -1357,6 +1513,12 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
         if held:
+            # Nothing could go out on this head (a floor matching a secret's shape): our change request never
+            # stands on a head we did not review (the mayor, 22:26Z).
+            if entry.get('rc_live') and entry.get('event') == 'REQUEST_CHANGES' and not cfg.get('no_deliver'):
+                extra['rc_lifted'], extra['rc_lift_failed'] = dismiss_stale(repo, pr['number'], 0, cfg['reviewer'],
+                                                                            cfg.get('voice'), STALE)
+                extra['rc_live'] = bool(extra['rc_lift_failed'])
             finish(cfg, key, dict(entry, head=pr['headRefOid']), held, extra)
             return
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
@@ -1393,12 +1555,14 @@ def pick(cfg, only):
                        and pr_state.parse(e['queued_at']) < t - dt.timedelta(hours=cfg['max_wait_h'])]
             for k in expired:
                 prs[k].update(status='expiring')
-            queued = [(k, e) for k, e in prs.items() if e.get('status') == 'queued']
+            # PR_REVIEW_QUEUE=requested (decision-57b6d9bb): PRs that request the reviewer and follow-ups only
+            queued = [(k, e) for k, e in prs.items() if e.get('status') == 'queued' and pr_rules.in_queue(
+                cfg['queue'], 'requested' in e.get('rules', []), e.get('followup') or e.get('review_heads'))]
             ruleset = pr_rules.load_rules(cfg['rules'])
             area_of = pr_rules.areas(ruleset)
             # CI-only escalations need no model and no cap (R11); a PR with a content rule, or one that
             # requests the reviewer (R34), waits its turn for the model.
-            ci_keys = [k for k, e in queued if pr_rules.ci_only(e.get('ci'), 'requested' in e.get('rules', []),
+            ci_keys = [k for k, e in queued if not e.get('followup') and pr_rules.ci_only(e.get('ci'), 'requested' in e.get('rules', []),
                                                                 bool(content_rules(e.get('rules', []), area_of, ruleset)))]
             # Tier, then more areas, then the newest PR first (most merge within half an hour).
             rest = sorted(((k, e) for k, e in queued if k not in ci_keys), key=lambda ke: ke[1]['created'], reverse=True)
@@ -1438,6 +1602,7 @@ def selftest():
               body.count('](https://github.com/o/r/blob/') == 10 and '<details><summary>Other places</summary>' in body
               and '/pull/1/files)' not in body}
     checks.update(selftest_asked(cfg, idx, flagged, pr, ruleset, real))
+    checks.update(selftest_followup(idx, pr))
     calls = []
 
     def hold_first(x, b, c):
@@ -1518,6 +1683,43 @@ def selftest_asked(cfg, idx, flagged, pr, ruleset, real):
         pr_format.gate(rv, idx, body, None, '', [], comments) == [] and [i['path'] for i in rv['items']] == \
         ['src/a0.ts', 'src/a1.ts', 'src/a2.ts'] and 'CI red' not in body and 'outside this review' not in body and \
         '- Billing, plans, credits or pricing: [`a3.ts` L2]' in body and meta['kept'] == 3
+    return checks
+
+
+def selftest_followup(idx, pr):
+    """decision-57b6d9bb: the review rebuilt from the author's answers, gated as delivered."""
+    q = {'side': 'new', 'line_start': 2, 'line_end': 2, 'kind': 'question', 'severity': 'low', 'area': 'other',
+         'why': 'Texts can reach a shared phone.', 'rule': '', 'verified': 'read it', 'confidence': 8}
+    res = {'items': [dict(q, path='src/a0.ts', change='Reminder sent by text', ask='Does a reminder go to the home phone?'),
+                     dict(q, path='src/a1.ts', change='Cancellation sent by text', ask='Does a cancellation name the visit?')],
+           'decisions': [], 'cleared': [], 'blockers': [], 'summary': 'Reminders and cancellations now go out by text.',
+           'skip': [], 'not_checked': '', 'flagged': [], 'rules': {}}
+    asks = pr_followup.asks_of(res)
+    cfg = {'voice': 'reviewer', 'request_changes': False, 'approve': True}
+    green = dict(pr, commits={'nodes': [{'commit': {'statusCheckRollup': {'state': 'SUCCESS', 'contexts': {
+        'totalCount': 1, 'nodes': [{'conclusion': 'SUCCESS'}]}}}}]})
+    half = [{'id': 'E1', 'status': 'answered', 'why': 'Reminders go only to the mobile number the patient confirmed.'},
+            {'id': 'E2', 'status': 'open', 'why': 'Not answered yet.', 'follow_up': 'Does the text say what the visit was for?'}]
+    rv, replies = rebuild(cfg, 'o/r', green, 'green', res, half, asks, 'Author')
+    body = pr_format.render('o/r', green, rv, NAME, 'Author')
+    checks = {'a follow-up: the answered ask is cleared with the answer, the open one stays, the line says so':
+              rv['outcome'] == 'questions' and len(rv['cleared']) == 1 and rv['cleared'][0]['answered'] and
+              '**Since your answers:** 1 answered, 1 still open in its thread.' in body and
+              pr_format.gate(rv, idx, body, None, '', [], None) == [] and
+              replies == [('E2', 'Does the text say what the visit was for?')]}
+    every = [dict(half[0]), {'id': 'E2', 'status': 'answered', 'why': 'The text says only the date and the clinic name.'}]
+    rv, _ = rebuild(cfg, 'o/r', green, 'green', res, every, asks, 'Author')
+    rv['approve'] = not pr_format.gate_approve(rv, green, green['headRefOid'], [], idx)
+    body = pr_format.render('o/r', green, rv, NAME, 'Author')
+    checks['everything answered on a green PR: an approval under the bar (R27)'] = rv['outcome'] == 'low-risk' and \
+        rv['approve'] and pr_format.event_of(rv) == 'APPROVE' and pr_format.gate(rv, idx, body, None, '', [], None) == []
+    money = dict(res, fallback=True, not_checked='billing, plans, credits or pricing', summary='',
+                 items=[dict(i, money=True) for i in res['items']], others=[])
+    rv, _ = rebuild(cfg, 'o/r', green, 'green', money, every, pr_followup.asks_of(money), 'Author')
+    body = pr_format.render('o/r', green, rv, NAME, 'Author')
+    checks['a fallback whose money questions are all answered: low risk, never an approval, no "for" on line 1'] = \
+        rv['outcome'] == 'low-risk' and rv['fallback'] and rv['signed_off'] and not rv['approve'] and \
+        ' · for ' not in body.splitlines()[0] and pr_format.gate(rv, idx, body, None, '', [], None) == []
     return checks
 
 
@@ -1612,20 +1814,31 @@ def selftest_client_once(cfg, tmp):
                     [{'path': 'a', 'line': 1, 'side': 'RIGHT', 'body': 'x'}], {'flagged': []}, {'ci': 'green'})
             with pr_state.locked(tmp) as st:
                 e5 = dict(st['prs']['o/r#1'])
+            # decision-57b6d9bb: a same-head follow-up posts a new client line only when the status moved
+            pr_client_slack.deliver_entry = lambda c, key, e, review, pr=None, summary='', turn=None: \
+                sent.append((e['review_url'], review['confidence'])) or ('ok', {'ts': '1793385999.000001'})
+            e6, posts = e5, []
+            for x in (rv, rv, dict(rv, outcome='changes', items=[{'kind': 'change'}])):
+                deliver(dcfg, 'o/r#1', e6, fresh, x, 'body', [], {'flagged': []}, {'ci': 'green'}, rereview=True)
+                with pr_state.locked(tmp) as st:
+                    e6 = dict(st['prs']['o/r#1'])
+                posts.append(len(sent))
     finally:
         g.update(saved)
         for (m, n), f in zip(mods, kept):
             setattr(m, n, f)
     return {
         'our Slack empty + a same-head re-review: no second client line, no Slack call; a new head posts once':
-            [s[1] for s in sent] == ['medium', 'medium'] and sent[0][0] != sent[1][0] and not slack and
+            [s[1] for s in sent[:2]] == ['medium', 'medium'] and sent[0][0] != sent[1][0] and not slack and
             e2.get('review_url') == e1.get('review_url'),
         'the entry keeps the client post per head, its ts and the confidence for the queue':
-            e1.get('client_posts') == {head: {'status': 'ok', 'ts': '1793385205.766639'}} and
+            e1.get('client_posts') == {head: {'status': 'ok', 'ts': '1793385205.766639', 'ready': 'Needs answers'}} and
             e1.get('client_ts') == '1793385205.766639' and e1.get('confidence') == 'medium' and
             list(e3.get('client_posts') or {}) == [head, 'd' * 40],
         'a failed client entry still records the delivered review':
             'e' * 40 in (e4.get('review_heads') or []) and e4.get('client_slack') == 'error:RuntimeError',
+        'same head: a new client line once per status (Needs answers, then nothing, then Needs changes)':
+            posts == [3, 3, 4] and (e6.get('client_posts') or {}).get('f' * 40, {}).get('ready') == 'Needs changes',
         'a fallback whose inline comments GitHub refuses goes out without them, never silent (R33)':
             tries == [1, 0] and 'f' * 40 in (e5.get('review_heads') or []) and e5.get('inline_dropped') == 1 and
             e5.get('inline') == 0,
@@ -1639,6 +1852,7 @@ def main():
     ap.add_argument('--redeliver', metavar='REPO#N')
     ap.add_argument('--rereview', metavar='REPO#N')
     ap.add_argument('--no-deliver', action='store_true')
+    ap.add_argument('--followup', metavar='REPO#N', help="the same-head follow-up on the author's answers")
     ap.add_argument('--selftest', action='store_true', help='the note and its floor on synthetic data')
     a = ap.parse_args()
     if a.selftest:
@@ -1655,6 +1869,15 @@ def main():
         return
     if a.redeliver:
         redeliver(cfg, a.redeliver)
+        return
+    if a.followup:  # decision-57b6d9bb: the same-head follow-up on the author's answers, by hand
+        cfg['no_deliver'] = a.no_deliver
+        with pr_state.locked(cfg['state']) as st:
+            entry = dict(st['prs'].get(a.followup) or {})
+        if not entry.get('review_heads'):
+            print(json.dumps({'pr': a.followup, 'followup': 'no review of ours on this PR'}))
+            return
+        answer_review(cfg, a.followup, dict(entry, followup='answer'), a.dry_run)
         return
     if a.rereview:
         a.pr = a.rereview
@@ -1686,8 +1909,11 @@ def main():
         finish(cfg, k, snap[k], 'over-cap', {'model': False})
     for k in ci_keys:
         ci_escalation(cfg, k, snap[k], a.dry_run)
-    for k in chosen:  # hands the PR to model_review unless only CI is wrong
-        ci_escalation(cfg, k, snap[k], a.dry_run, rereview=bool(a.rereview))
+    for k in chosen:  # hands the PR to model_review unless only CI is wrong; answers go to their follow-up
+        if snap[k].get('followup') in ('answer', 'cap'):
+            answer_review(cfg, k, snap[k], a.dry_run)
+        else:
+            ci_escalation(cfg, k, snap[k], a.dry_run, rereview=bool(a.rereview))
     if not (chosen or ci_keys or expiring):
         print(json.dumps({'idle': True, 'reviews_today': used, 'cap': cfg['cap']}))
 

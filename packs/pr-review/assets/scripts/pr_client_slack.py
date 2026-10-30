@@ -547,19 +547,30 @@ def sent_reviews(state_dir):
     return out
 
 
-def posted_on(e, head, sent=()):
-    """Whether the client channel has (or may have) the line for this head: the entry's own record of client
-    posts per head, never our channel's ts (the mayor, 19:12Z: our Slack is off). An entry from before the
-    record: the run log's landed line for its review on this head."""
-    if head in (e.get('client_posts') or {}):
-        return True
+def posted_on(e, head, sent=(), ready=None):
+    """Whether the client channel has (or may have) the line for this head and its readiness `ready`
+    (decision-57b6d9bb: a follow-up posts again only when the status moved, say Needs answers to Ready to
+    merge): the entry's own record of client posts per head, never our channel's ts (the mayor, 19:12Z: our
+    Slack is off). A record from before readiness was kept stands for the status the delivered review on
+    the head gave. An entry from before the record: the run log's landed line for its review on this head."""
+    rec = (e.get('client_posts') or {}).get(head)
+    if rec is not None:
+        return ready is None or (rec.get('ready') or ready_before(e)) == ready
     return not e.get('client_posts') and head in (e.get('review_heads') or []) and e.get('review_url') in sent
 
 
-def record_post(e, head, status, ts):
-    """The entry's client posts with this head's, the last 20 heads (ids and the status only)."""
+def ready_before(e):
+    """The readiness the entry's delivered review gave (for a client post recorded without it)."""
+    full = e.get('outcome') in FULL and not e.get('fallback')
+    ours = None if not full else 'approved' if e.get('approved') else \
+        {'changes': 'changes', 'questions': 'questions', 'escalate': 'questions'}.get(e.get('outcome'))
+    return readiness(None, e.get('ci'), ours, 'OPEN')
+
+
+def record_post(e, head, status, ts, ready=None):
+    """The entry's client posts with this head's, the last 20 heads (ids, the status and the readiness only)."""
     posts = {h: p for h, p in (e.get('client_posts') or {}).items() if h != head}
-    posts[head] = {'status': status, 'ts': ts}
+    posts[head] = {'status': status, 'ts': ts, **({'ready': ready} if ready else {})}
     return dict(list(posts.items())[-20:])
 
 

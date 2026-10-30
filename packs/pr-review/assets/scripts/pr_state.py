@@ -85,6 +85,12 @@ def config():
         'context': e('PR_REVIEW_CONTEXT', 'off') == 'on',
         'suggestions': e('PR_REVIEW_SUGGESTIONS', 'off') == 'on',
         'incremental': e('PR_REVIEW_INCREMENTAL', 'off') == 'on',
+        # decision-57b6d9bb: a PR we reviewed is reviewed again on a new head (incremental) and followed up on
+        # the author's answers, at most PR_REVIEW_FOLLOWUP_ROUNDS rounds per head. PR_REVIEW_QUEUE=requested:
+        # only PRs that request the reviewer, and those follow-ups, enter the queue.
+        'followups': e('PR_REVIEW_FOLLOWUPS', 'on') == 'on',
+        'followup_rounds': int(e('PR_REVIEW_FOLLOWUP_ROUNDS', '3')),
+        'queue': 'requested' if e('PR_REVIEW_QUEUE', 'all') == 'requested' else 'all',
         # decision-ed7320b7: 'reviewer' = the review speaks as the reviewer (no disclosure line); the pack
         # default 'disclose' says on line 1 that it is automated and the reviewer hasn't read the PR.
         'voice': 'reviewer' if e('PR_REVIEW_VOICE', 'disclose') == 'reviewer' else 'disclose',

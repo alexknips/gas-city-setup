@@ -14,6 +14,8 @@ python3 "$here/pr_sweep.py" --selftest > /dev/null || { echo 'pr_sweep selftest:
 python3 "$here/pr_client_slack.py" --selftest > /dev/null || { echo 'pr_client_slack selftest: FAIL'; rc=1; }
 python3 "$here/pr_review.py" --selftest > /dev/null || { echo 'pr_review selftest: FAIL'; rc=1; }
 python3 "$here/pr_fallback.py" --selftest > /dev/null || { echo 'pr_fallback selftest: FAIL'; rc=1; }
+python3 "$here/pr_followup.py" --selftest > /dev/null || { echo 'pr_followup selftest: FAIL'; rc=1; }
+python3 "$here/pr_incremental.py" --selftest > /dev/null || { echo 'pr_incremental selftest: FAIL'; rc=1; }
 # Host-local: no public file names a town person or repository (skipped without the town overrides).
 python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
 exit $rc

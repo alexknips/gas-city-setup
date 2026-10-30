@@ -1,0 +1,22 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "followup_push",
+ "want": true,
+ "args": {
+  "old": {
+   "review_heads": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "done",
+   "review_id": 77,
+   "head_review_ids": [
+    77
+   ],
+   "outcome": "not-reviewed",
+   "fallback": "not-reviewed"
+  },
+  "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ }
+}

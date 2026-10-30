@@ -389,11 +389,27 @@ def event_of(rv):
     return 'COMMENT'
 
 
+def author_asks(rv):
+    """What the author has to do: items, blockers and their decisions."""
+    return len(rv.get('items') or []) + len(rv.get('blockers') or []) + len(split(rv.get('decisions') or [])[1])
+
+
+def answers_text(rv, author):
+    """decision-57b6d9bb: the follow-up's line on what became of the asks after the author's answers."""
+    a = rv['answers']
+    parts = ([f"{a['answered']} answered"] if a.get('answered') else []) + \
+        ([f"{a['open']} still open" + (' in its thread' if a['open'] == 1 else ' in their threads')] if a.get('open') else []) + \
+        ([f"{a['change']} now {'a change' if a['change'] == 1 else 'changes'}"] if a.get('change') else [])
+    who = 'your' if voiced(rv) else f"{author}'s"
+    return f"**Since {who} answers:** {', '.join(parts) or 'nothing changed'}."
+
+
 def headline(rv, name, author=''):
     """R28: line 1, the verdict, then the automated note; in the reviewer's voice the verdict and the
     invisible marker (decision-ed7320b7)."""
     if voiced(rv):  # a fallback says who acts (R33): the author answers, the reviewer has nothing to do
-        return f"**{word_of(rv)}**{VOICE_FALLBACK.format(author=author) if rv.get('fallback') else ''} {MARK}"
+        said = VOICE_FALLBACK.format(author=author) if rv.get('fallback') and author_asks(rv) else ''
+        return f"**{word_of(rv)}**{said} {MARK}"
     return f'**{word_of(rv)}**' + SUFFIX.format(name=name)
 
 
@@ -437,6 +453,8 @@ def render(repo, pr, rv, name, author):
         lines += [f"**What it does:** {rv['summary']}", '']
     if since:
         lines += [since, '']
+    if rv.get('answers'):  # decision-57b6d9bb: a follow-up on the author's answers
+        lines += [answers_text(rv, author), '']
     mine, theirs = split(rv['decisions'])
     if mine:
         lines.append(f'**For {name}:**')
@@ -1078,7 +1096,7 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
     nc = [d for d in decisions if d.get('area') == NOT_CHECKED_AREA]
     # R33 (the mayor, 21:39Z): a fallback asks its own question on each money place it links instead.
     asks_money = rv.get('fallback') and not decisions and any(it.get('money') for it in items)
-    if rv.get('not_checked') and not nc and not asks_money:
+    if rv.get('not_checked') and not nc and not asks_money and not rv.get('signed_off'):
         why.append(f"R20: the PR touches {rv['not_checked']}, which is not checked, so it gets the sign-off question")
     if any(for_reviewer(d) is not False for d in nc):
         why.append(f'R20: the sign-off on {NOT_CHECKED_AREA} code is a question for the author, not a decision for '
@@ -1216,7 +1234,7 @@ def voice_reasons(lines, l2, word, rv, asks, n_dec, comments):
         why.append(f'R28: line 1 is not the verdict and the marker ("**{word}** {MARK}")')
     elif m1.group(1) != word:
         why.append(f"{'R35' if rv['outcome'] == 'changes' else 'R1'}: line 1 says \"{m1.group(1)}\" for {rv['outcome']}")
-    elif bool(m1.group(2)) != bool(rv.get('fallback')):  # the mayor, 21:39Z: say plainly who acts
+    elif bool(m1.group(2)) != bool(rv.get('fallback') and asks):  # the mayor, 21:39Z: say plainly who acts
         said = VOICE_FALLBACK.format(author='<author>')
         why.append(f'R28: a fallback\'s line 1 says who acts ("**{word}**{said}"), a full review\'s does not')
     nothing = bool(NOTHING_NEEDED_RE.match(l2))
@@ -1323,7 +1341,7 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
     said = len(re.findall(rf'(?i)\b{phrase}\b', body))
     if asked and said:
         why.append(f'R33: the fallback says "{phrase}"; its questions are about the lines, never a scope sentence')
-    elif rv.get('not_checked') and said != 1 and not asked:
+    elif rv.get('not_checked') and said != 1 and not asked and not rv.get('signed_off'):
         why.append(f'R32: "{phrase}" is said {said} times; say it once')
     elif not rv.get('not_checked') and said:
         why.append(f'R23: "{phrase}" on a PR that does not touch that area')

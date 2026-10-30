@@ -1,0 +1,11 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "in_queue",
+ "want": false,
+ "args": {
+  "queue": "requested",
+  "requested": false,
+  "reviewed": false
+ }
+}

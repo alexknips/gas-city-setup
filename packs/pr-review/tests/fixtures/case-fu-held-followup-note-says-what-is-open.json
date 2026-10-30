@@ -1,0 +1,76 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "not-reviewed",
+ "diff": "diff --git a/src/notify/send.ts b/src/notify/send.ts\nindex 1111111..2222222 100644\n--- a/src/notify/send.ts\n+++ b/src/notify/send.ts\n@@ -10,6 +10,9 @@ export async function remind(visit: Visit) {\n   const contact = await loadContact(visit.contactId);\n   if (!contact.optIn) return;\n-  await queue.add(visit.id);\n+  const body = `Reminder for ${contact.fullName}, born ${contact.dob}`;\n+  await smsClient.send(contact.phone, body);\n+  logger.info(`sent reminder ${body}`);\n+  await queue.add(visit.id);\n   return true;\n }\ndiff --git a/test/notify.test.ts b/test/notify.test.ts\nindex 3333333..4444444 100644\n--- a/test/notify.test.ts\n+++ b/test/notify.test.ts\n@@ -1,3 +1,4 @@\n import { remind } from '../src/notify/send';\n+it('sends', async () => expect(await remind(fake)).toBe(true));\n\n",
+ "items": [],
+ "model": false,
+ "tree_lines": {
+  "src/notify/send.ts": 40,
+  "test/notify.test.ts": 4
+ },
+ "decisions": [
+  {
+   "question": "Who reviews this PR before it merges?",
+   "options": [
+    "You ask a teammate who knows this code to review it",
+    "You state in the PR description what it changes and why that is safe",
+    "You merge it as is"
+   ],
+   "option_reasons": [
+    "a teammate who knows the code can check it in one pass",
+    "you know the change best, and the account stays on record",
+    "when a wrong change here would be cheap to undo"
+   ],
+   "actors": [
+    "author",
+    "author",
+    "author"
+   ],
+   "recommended": 0,
+   "reason": "It costs you one message, and it is the only option where someone else checks the code.",
+   "why": "This one needs a second reviewer who knows this code.",
+   "area": "other",
+   "rule": "",
+   "verified": "zero-token rules",
+   "confidence": 10,
+   "auto": true,
+   "where": [
+    {
+     "path": "src/notify/send.ts",
+     "line_start": 13,
+     "line_end": 15,
+     "what": "a message sent to people (SMS, email, push)",
+     "kind": null
+    }
+   ],
+   "link": {
+    "kind": "code",
+    "path": "src/notify/send.ts",
+    "line_start": 13,
+    "line_end": 15
+   }
+  }
+ ],
+ "fallback": true,
+ "gaps": [
+  {
+   "kind": "below-bar"
+  }
+ ],
+ "since": {
+  "old": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "new": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "review_id": 77,
+  "fixed": 0,
+  "again": 0,
+  "open": 2,
+  "gone": 0,
+  "changed": 1,
+  "resolve": []
+ },
+ "body_re": [
+  "^\\*\\*Since the last review\\*\\* \\(\\[new commits\\]\\(https://github\\.com/example/repo/compare/a{40}\\.\\.\\.b{40}\\)\\): 1 earlier ask on lines the new commits changed, 2 still open in their threads\\.$",
+  "^\\*\\*Questions\\*\\* \u00b7 for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$"
+ ]
+}

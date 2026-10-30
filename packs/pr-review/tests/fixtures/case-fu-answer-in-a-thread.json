@@ -1,0 +1,60 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "answer_activity",
+ "want": {
+  "replies": 1,
+  "comments": 0,
+  "reviews": 0,
+  "resolved": 0,
+  "newest": 501,
+  "key": "501"
+ },
+ "args": {
+  "pr": {
+   "author": {
+    "login": "author"
+   },
+   "reviewThreads": {
+    "nodes": [
+     {
+      "id": "T1",
+      "isResolved": false,
+      "resolvedBy": null,
+      "comments": {
+       "nodes": [
+        {
+         "databaseId": 1,
+         "author": {
+          "login": "reviewer"
+         },
+         "createdAt": "2026-10-30T22:00:00Z",
+         "submittedAt": "2026-10-30T22:00:00Z",
+         "pullRequestReview": {
+          "databaseId": 77
+         }
+        },
+        {
+         "databaseId": 501,
+         "author": {
+          "login": "author"
+         },
+         "createdAt": "2026-10-30T23:00:00Z",
+         "submittedAt": "2026-10-30T23:00:00Z",
+         "pullRequestReview": {
+          "databaseId": null
+         }
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  "us": "Reviewer",
+  "since": "2026-10-30T22:00:00Z",
+  "our_reviews": [
+   77
+  ]
+ }
+}

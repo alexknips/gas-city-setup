@@ -55,6 +55,9 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_SUGGESTIONS` | `off` | `on` lets each "change" item carry a one-click fix: the schema gets a `suggestion` field (the whole replacement for the item's lines) and the inline comment ends with it as a GitHub suggestion block (R4). The script drops a fix the gate would refuse (on a question or the old side, more than 12 lines, a code fence inside, or no change) and keeps the item. With `off` the schema and prompt are unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_GAP_ASK_TO` | (unset) | Where `pr-review-feedback` mails the one rule-level ask per new kind of gap in our method (`gc mail send <address>`; decision-3aeec149). Unset: the kinds are counted in its output only. |
 | `PR_REVIEW_VOICE` | `disclose` | `reviewer` makes the review speak as the reviewer (decision-ed7320b7): line 1 is the verdict word and an invisible marker, line 2 what the author must do, a not-checked area is said as scope, and the gate refuses any disclosure phrase (R28, R38). `disclose` keeps the honesty note on line 1. Set it only for repositories whose reviewer asked for it. |
+| `PR_REVIEW_FOLLOWUPS` | `on` | A new head on a PR we reviewed is reviewed again (incremental) once its CI settles, and the author's answers on a reviewed head get a same-head follow-up ([Follow-ups](#follow-ups)). `off`: neither. |
+| `PR_REVIEW_FOLLOWUP_ROUNDS` | `3` | Follow-ups on the author's answers per head; then one line tells the author and it stops until a new head. |
+| `PR_REVIEW_QUEUE` | `all` | `requested`: only PRs that request the reviewer and follow-ups of PRs we reviewed enter the queue (the run without a hand start); `all`: every PR a rule selects. |
 | `PR_REVIEW_INCREMENTAL` | `off` | `on` makes the review of a new head of a PR we reviewed incremental ([The review prompt](#the-review-prompt)): the prompt gets our earlier asks and the new commits' diff, the body says what became of the asks, and our earlier threads are resolved where the new commits back it. With `off`, or when there is no earlier review, the prompt is unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
@@ -251,7 +254,9 @@ distinct areas, then the oldest. A tier-2 PR runs only while more than `PR_REVIE
 the day's cap are left. A PR the cap never reaches closes as `over-cap` after
 `PR_REVIEW_MAX_WAIT_H`. Its bead says so, and Slack gets nothing.
 
-A new push to a PR already reviewed is not reviewed again, unless the new head trips a serious rule
+A new push to a PR already reviewed is reviewed again once its CI settles, the incremental way, and the
+author's answers on a reviewed head get a follow-up ([Follow-ups](#follow-ups); `PR_REVIEW_FOLLOWUPS=on`, the
+default). With `PR_REVIEW_FOLLOWUPS=off` a new push is not reviewed again, unless the new head trips a serious rule
 the reviewed head did not, or the reviewer's review is requested again. A PR that requests the reviewer
 is always selected: a request added after the sweep set the PR aside (`no-rule`) queues it, and so does
 a request on a new head after a review (a submitted review clears the request, so a pending one is
@@ -274,7 +279,9 @@ from [anthropics/claude-code-security-review](https://github.com/anthropics/clau
   350k characters is left in a file the model reads in parts.
 - The checklist (`PR_REVIEW_CHECKLIST`), the style guide (`assets/style-guide.md`), the repository's
   rules digest (R37) and the hunks the rules flagged (path and line, found in memory) go in before
-  `START ANALYSIS`.
+  `START ANALYSIS`. The guide's parts the script alone writes (the fallback's own questions, the follow-ups)
+  sit in a block marked `<!-- not in the review prompt -->` that is cut out, so the first review's prompt stays
+  byte-identical to the benchmark's pin (the mayor, 2026-10-30 22:22Z).
 - The closing steps are rewritten. Who reads the review (the reviewer, who does not know the codebase,
   and the author, who wrote and reviewed the change) and its job: consistency with the repository's
   goals and rules, plus the scan's issues. The upstream command starts sub-tasks; here the model finds
@@ -366,6 +373,66 @@ PR's text can sway the review; it cannot act.
 - It withholds the whole review text if it contains a credential from this host (`gh` token, Slack
   tokens, Claude and Loomtracer credentials) or a secret or SSN shape. The PR then escalates with a
   note to review it by hand.
+
+## Follow-ups
+
+decision-57b6d9bb (the reviewer, 2026-10-30 22:18Z: "make sure our system is able to re-review things when [the
+author] addresses questions or makes changes"). Two zero-token triggers in the sweep, for a PR with a delivered
+review of ours (an approval, a comment, a change request, a fallback or the note):
+
+- **A push.** A new head is queued once its CI settles (`waiting-ci`, `PR_REVIEW_CI_WAIT_H` from when the sweep
+  first saw that head): only the newest head, never one we reviewed or held. Its review is the incremental one
+  whatever `PR_REVIEW_INCREMENTAL` says: our earlier asks first, as fixed, open or gone; threads resolved where
+  the new commits back it; our change request dismissed once nothing is left. A force-push is a new head too
+  (its review is whole: "rewritten").
+- **An answer.** On the head we reviewed: since our first review of it, the PR's author replied in one of our
+  review threads, posted a PR comment or a review, or resolved one of our threads (one GraphQL read per PR the
+  sweep sees updated; our own posts never count). It queues a same-head follow-up, first in line.
+
+The follow-up (`pr_followup.py`, `pr_review.py --followup REPO#N [--dry-run | --no-deliver]` by hand) gives the
+review model our delivered asks for the author with the replies in their threads and the author's other comments
+(read from GitHub into the prompt only: never in logs, beads, mail or Slack), in the PR's worktree at the head with
+Read, Grep and Glob, at most 16 turns. Its prompt is its own; the first review's prompt does not change. It calls
+each ask:
+- **answered**: a cleared entry on the ask's lines, the answer as its reason;
+- **still open**: the ask stays, and one short follow-up (at most 25 words, plain, no disclosure phrase in the
+  reviewer's voice) goes into its thread once the review is up; none when nobody answered that ask;
+- **now a change**: the ask becomes a change.
+
+The review is then built again from the delivered one, with the blockers and status as they stand, and a line
+"**Since your answers:** 2 answered, 1 still open in its thread." It is gated like any review and delivered as a
+re-review: updated in place when it keeps its event and had no inline comments, else a new review with the old
+one cut to a pointer; our change request dismissed when nothing is left; an approval when everything is cleared
+and the PR meets the bar (R27). A follow-up on a fallback stays a fallback and never approves (the full review is
+still owed), and a not-checked area whose questions were all answered counts as signed off (R20).
+
+Loop guard: one follow-up per batch of answers, keyed on the newest reply's id (a reply to our follow-up starts
+the next batch); at most `PR_REVIEW_FOLLOWUP_ROUNDS` (3) per head, then one line tells the author ("I've followed
+up 3 times on this commit, so I'll leave it here; your next push gets a new review.") and it stops until a new
+head. The entry keeps `answers_key`, `answer_rounds` per head and `answer_capped`; the log keeps the calls'
+counts (`followup_calls`: answered, open, change) and `followup_replies` sent.
+
+**Never silent** (the mayor, 2026-10-30 22:26Z: a held review of a new head on a PR that did not request the
+reviewer posted nothing, and our change request stood on a head that was gone). A held review of a PR with a
+delivered review of ours gets the fallback as a requested PR does (R33), and that fallback says what of our earlier
+asks is still open, from zero tokens: an ask whose lines the new commits did not change is "still open in its
+thread", one on changed lines is said as such, one in a deleted file is gone. If even that cannot go out (the floor
+matched a secret's shape), our change request is dismissed: it never stands on a head we did not review.
+
+**The run without a hand start.** `PR_REVIEW_QUEUE=requested` (on the sweep and the run) reviews only PRs that
+request the reviewer and the follow-ups of PRs we reviewed; an unrequested new PR is set aside as `unrequested`
+(it enters the queue once it requests the reviewer). The default `all` queues every PR a rule selects.
+
+**#code-reviews.** A follow-up posts a new entry when the PR's readiness moved (say Needs answers to Ready to
+merge): once per head and readiness; the same readiness, nothing. An entry recorded before this keeps the
+readiness its delivered review gave.
+
+Checked by `pr_followup.py --selftest` (the asks, threads, calls), `pr_review.py --selftest` (the rebuilt review:
+half answered, all answered and approved, an answered money fallback; a client line per status), `pr_sweep.py
+--selftest` (the whole sweep with GitHub stubbed: a push waits for CI then queues; an answer queues first in line;
+the queue knob) and the `case-fu-*` fixtures: a push after each outcome kind, a held head, a force-push, an answer in
+a thread, as a PR comment, a resolved thread, our own reply ignored, a second round, the same batch once, the round
+cap and after it, the queue knob, and the never-silent note.
 
 ## Outcomes
 

@@ -1,0 +1,86 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "answer_activity",
+ "want": {
+  "replies": 0,
+  "comments": 0,
+  "reviews": 0,
+  "resolved": 0,
+  "newest": null,
+  "key": ""
+ },
+ "args": {
+  "pr": {
+   "author": {
+    "login": "author"
+   },
+   "reviewThreads": {
+    "nodes": [
+     {
+      "id": "T1",
+      "isResolved": false,
+      "resolvedBy": null,
+      "comments": {
+       "nodes": [
+        {
+         "databaseId": 1,
+         "author": {
+          "login": "reviewer"
+         },
+         "createdAt": "2026-10-30T22:00:00Z",
+         "submittedAt": "2026-10-30T22:00:00Z",
+         "pullRequestReview": {
+          "databaseId": 77
+         }
+        },
+        {
+         "databaseId": 503,
+         "author": {
+          "login": "Reviewer"
+         },
+         "createdAt": "2026-10-30T23:00:00Z",
+         "submittedAt": "2026-10-30T23:00:00Z",
+         "pullRequestReview": {
+          "databaseId": null
+         }
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "comments": {
+    "nodes": [
+     {
+      "databaseId": 504,
+      "author": {
+       "login": "reviewer"
+      },
+      "createdAt": "2026-10-30T23:00:00Z",
+      "submittedAt": "2026-10-30T23:00:00Z",
+      "pullRequestReview": {
+       "databaseId": null
+      }
+     },
+     {
+      "databaseId": 400,
+      "author": {
+       "login": "author"
+      },
+      "createdAt": "2026-10-30T21:00:00Z",
+      "submittedAt": "2026-10-30T21:00:00Z",
+      "pullRequestReview": {
+       "databaseId": null
+      }
+     }
+    ]
+   }
+  },
+  "us": "Reviewer",
+  "since": "2026-10-30T22:00:00Z",
+  "our_reviews": [
+   77
+  ]
+ }
+}

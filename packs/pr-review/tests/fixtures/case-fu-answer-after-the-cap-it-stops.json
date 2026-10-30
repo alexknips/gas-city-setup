@@ -1,0 +1,32 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "answer_batch",
+ "want": {
+  "do": null,
+  "key": "991"
+ },
+ "args": {
+  "old": {
+   "review_heads": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "done",
+   "review_id": 77,
+   "head_review_ids": [
+    77
+   ],
+   "answers_key": "901",
+   "answer_rounds": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 3
+   },
+   "answer_capped": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "act": {
+   "key": "991"
+  },
+  "cap": 3
+ }
+}

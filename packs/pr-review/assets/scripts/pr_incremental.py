@@ -193,6 +193,18 @@ def outcome(rs, answers, items, prev, new_head):
     return out
 
 
+def held(rs, prev, new_head):
+    """The mayor, 2026-10-30 22:26Z: when the review of the new head is held, its fallback still says what of
+    our earlier asks is still open, from zero tokens alone: an ask whose lines the new commits did not
+    change is still open in its thread; one on changed lines is said as such; one in a deleted file is gone.
+    No thread is resolved on this."""
+    out = {'old': prev['head'], 'new': new_head, 'review_id': prev['review_id'], 'fixed': 0, 'again': 0,
+           'open': 0, 'gone': 0, 'changed': 0, 'resolve': []}
+    for r in rs:
+        out['gone' if r['gone'] else 'changed' if r['touched'] else 'open'] += 1
+    return out
+
+
 def text(repo, s):
     """The body's line on what happened since the last review ('' when there were no earlier asks)."""
     parts = []
@@ -203,6 +215,8 @@ def text(repo, s):
         parts.append(f"{s['gone']} about code no longer in the PR")
     if s['again']:
         parts.append(f"{s['again']} asked again below")
+    if s.get('changed'):
+        parts.append(f"{s['changed']} earlier {plural(s['changed'], 'ask', 'asks')} on lines the new commits changed")
     if s['open']:
         parts.append(f"{s['open']} still open in {plural(s['open'], 'its thread', 'their threads')}")
     if not parts:

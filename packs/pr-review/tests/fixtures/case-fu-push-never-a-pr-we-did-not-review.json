@@ -1,0 +1,14 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "followup_push",
+ "want": false,
+ "args": {
+  "old": {
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "done",
+   "outcome": "no-rule"
+  },
+  "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+ }
+}

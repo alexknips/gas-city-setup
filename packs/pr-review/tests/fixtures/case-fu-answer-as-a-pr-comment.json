@@ -1,0 +1,40 @@
+{
+ "expect": "pass",
+ "rule": "followup",
+ "route": "answer_activity",
+ "want": {
+  "replies": 0,
+  "comments": 1,
+  "reviews": 0,
+  "resolved": 0,
+  "newest": 502,
+  "key": "502"
+ },
+ "args": {
+  "pr": {
+   "author": {
+    "login": "author"
+   },
+   "comments": {
+    "nodes": [
+     {
+      "databaseId": 502,
+      "author": {
+       "login": "author"
+      },
+      "createdAt": "2026-10-30T23:00:00Z",
+      "submittedAt": "2026-10-30T23:00:00Z",
+      "pullRequestReview": {
+       "databaseId": null
+      }
+     }
+    ]
+   }
+  },
+  "us": "Reviewer",
+  "since": "2026-10-30T22:00:00Z",
+  "our_reviews": [
+   77
+  ]
+ }
+}
