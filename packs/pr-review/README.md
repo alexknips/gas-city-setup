@@ -53,6 +53,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
 | `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
 | `PR_REVIEW_SUGGESTIONS` | `off` | `on` lets each "change" item carry a one-click fix: the schema gets a `suggestion` field (the whole replacement for the item's lines) and the inline comment ends with it as a GitHub suggestion block (R4). The script drops a fix the gate would refuse (on a question or the old side, more than 12 lines, a code fence inside, or no change) and keeps the item. With `off` the schema and prompt are unchanged. Part of the benchmark's version. |
+| `PR_REVIEW_INCREMENTAL` | `off` | `on` makes the review of a new head of a PR we reviewed incremental ([The review prompt](#the-review-prompt)): the prompt gets our earlier asks and the new commits' diff, the body says what became of the asks, and our earlier threads are resolved where the new commits back it. With `off`, or when there is no earlier review, the prompt is unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
 | `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
@@ -203,6 +204,27 @@ and capture off, at most 40 rules, each with its doc lines. It is cached by the 
 tip of the base branch the PR merges into, so it is rebuilt only when the docs change, and kept host-local
 (`PR_REVIEW_WORK_DIR/digest`, mode 600): it is the repository's text. The review links each cited rule
 to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of time (counts only).
+
+**Incremental reviews** (`pr_incremental.py`, gc-sy1hm.2 c; `PR_REVIEW_INCREMENTAL=on`). The sweep queues a new
+head of a reviewed PR as before (the reviewer asked again, a new serious rule, or our formal block rested
+on content), and the review of that head is still a whole review, one per head (R18). Three things are added:
+- **The prompt.** It lists our earlier asks for the author (from the delivered review's host-local copy):
+  where their lines sit at the new head and whether the new commits changed them. It also carries the new
+  commits' diff (old head..new head). Step 0 has the model call each earlier ask fixed, open (then it is
+  an item again) or gone, and review the new commits first.
+- **The threads.** After the new review is posted, our earlier threads are resolved only where the zero-token
+  check backs the model: an ask called fixed or gone whose lines the new commits changed, or one the new
+  review raises again on overlapping lines. Every other thread stays open.
+- **The body.** One line, linked to the new commits, says what became of the earlier asks; in an approval
+  it is the first line of "What was checked". A low-risk review, and so an approval, is refused while an
+  earlier ask is still open (R2).
+
+If the history was rewritten (the old head is not an ancestor of the new one) or GitHub no longer serves the
+old head, the review is the whole review it always was. Blind spots: an ask the model calls fixed by a change
+elsewhere (a caller, say) keeps its thread open, and an ask anchored on removed lines is not mapped to the
+new head. Traffic on 10-30: of 17 reviewed PRs, none had a review of a second head yet (most merge within
+half an hour). Checked by `pr_incremental.py --selftest` (line mapping, buckets, thread choice, the line)
+and fixtures case78-case80. The thread resolution itself has not run against GitHub yet.
 
 **One-click fixes** (gc-sy1hm.2 b; `PR_REVIEW_SUGGESTIONS=on`). A fix is code, so it is not cleaned like the
 model's prose (that would break generics and JSX). It is shown only inside a suggestion block it cannot
@@ -395,7 +417,7 @@ resumable, a spend cap) and `--score REPO` reports recall, recall on labelled de
 (entries on the fixed lines over all entries), controls with a change ask, and cost per PR, per
 version. The run also keeps the model's own entries with their confidence, so `by_confidence` scores the
 same run at the bars 8 (what the script posts), 9 and 10. The version hashes the files that shape a review
-and the settings `PR_REVIEW_PROMPT`, `PR_REVIEW_CONTEXT` and `PR_REVIEW_SUGGESTIONS`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
+and the settings `PR_REVIEW_PROMPT`, `PR_REVIEW_CONTEXT`, `PR_REVIEW_SUGGESTIONS` and `PR_REVIEW_INCREMENTAL`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
 
 ## Calibration
 

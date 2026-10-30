@@ -20,6 +20,8 @@ import os
 import re
 import sys
 
+import pr_incremental
+
 AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'behaviour patients notice',
          'product', 'compliance', 'other']
 NOT_CHECKED_AREA = 'not checked'  # the area of the decision R20 adds; the model never uses it
@@ -297,15 +299,18 @@ def render(repo, pr, rv, name, author):
     status line only when something did not pass (R30)."""
     n, head = pr['number'], pr['headRefOid']
     lines = [headline(rv, name), who_acts(rv, name, author)]
+    since = pr_incremental.text(repo, rv['since']) if rv.get('since') else ''  # gc-sy1hm.2 c
     if rv.get('approve'):
-        if rv.get('cleared'):
+        if rv.get('cleared') or since:
             lines += ['', '<details><summary>What was checked</summary>', '']
-            lines += [cleared_line(repo, n, rv, c) for c in rv['cleared']]
+            lines += ([f'- {since}'] if since else []) + [cleared_line(repo, n, rv, c) for c in rv.get('cleared') or []]
             lines += ['', '</details>']
         return '\n'.join(lines)
     lines.append('')
     if rv.get('summary'):
         lines += [f"**What it does:** {rv['summary']}", '']
+    if since:
+        lines += [since, '']
     if rv['decisions']:
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
@@ -617,6 +622,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         why.append(f'R16: {len(decisions)} decisions, at most {MAX_DECISIONS}')
     if outcome == 'low-risk' and (items or decisions or rv['blockers']):
         why.append('R2: low risk with items, decisions or blockers')
+    if outcome == 'low-risk' and (rv.get('since') or {}).get('open'):  # gc-sy1hm.2 c
+        why.append(f"R2: low risk while {rv['since']['open']} earlier asks are still open in their threads; raise each "
+                   f'again as an item on its lines, or say why it is fixed')
     if outcome == 'escalate' and not decisions:
         why.append('R16: needs you without a decision for the reviewer')
     if rv.get('approve') and outcome != 'low-risk':
@@ -934,7 +942,7 @@ def review_of(fx):
             'facts': fx.get('facts', 'CI passed · no merge conflict · open'),
             'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True),
             'request_changes': fx.get('request_changes', False), 'rules': fx.get('rules', {}),
-            'rules_sha': 'c' * 40}
+            'rules_sha': 'c' * 40, 'since': fx.get('since')}
 
 
 def route(fx):

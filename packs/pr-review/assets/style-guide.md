@@ -113,7 +113,7 @@ Nothing for Reviewer or Author.
 | R1 | The outcome word in line 1 (R28): `Needs you`, `Changes requested` (`Changes suggested` on a COMMENT review, R35), `Questions`, `Low risk`, `Approved as low risk`. | [gate] | v1, v3, v4 |
 | R2 | At most 5 items for the author, worst first; low risk has none. | [gate] | v1 |
 | R3 | Each item links to the exact changed lines in the PR's Files view (path and line range as link text), and the range is inside one hunk of the diff on the side it names. | [gate] | v1: "no markers" |
-| R4 | Each item is also an inline comment on its exact lines, so the markers show in "Files changed". With `PR_REVIEW_SUGGESTIONS=on`, a change whose fix rewrites exactly its own lines ends with that fix as a GitHub suggestion block, which the author applies with one click: only a change on the new side, at most 12 lines, never a code fence inside it, never the same lines again. | [gate] | v1: "no markers"; gc-sy1hm.2 b (one-click fixes) |
+| R4 | Each item is also an inline comment on its exact lines, so the markers show in "Files changed". | [gate] | v1: "no markers" |
 | R5 | Each item says what changed (R29), why it matters, and the exact change, or the exact question or evidence to ask the author for. Its body line (what changed, change or question, the link) points at its inline comment, which carries the text (R21). | [gate] | v1; the mayor, 02:11Z |
 | R6 | No filler: no praise, no "make sure", "consider", "please review", "best practices", "potential issues". | [gate] (deny-list) | v1: "fluff" |
 | R7 | Whenever a model read the PR (and it is not an approval): one `What it does:` sentence. The rest of the diff goes in `Safe to skip:` (R30). | [gate] | v1; the mayor, 01:40Z: summary and skip list mixed |

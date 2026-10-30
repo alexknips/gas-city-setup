@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pr_context  # noqa: E402
 import pr_digest  # noqa: E402
 import pr_format  # noqa: E402
+import pr_incremental  # noqa: E402
 import pr_judge  # noqa: E402
 import pr_money  # noqa: E402
 import pr_rules  # noqa: E402
@@ -167,7 +168,7 @@ PR for CONSISTENCY WITH THE REPOSITORY'S GOALS AND RULES, as THE REPOSITORY'S RU
 down, and for the vulnerabilities and issues the scan instructions ask about. Do these steps yourself,
 in order:
 
-1. Open every FLAGGED HUNK listed above (F1, F2, ...) in its file, and open its callers and the code it
+{since_step}1. Open every FLAGGED HUNK listed above (F1, F2, ...) in its file, and open its callers and the code it
    calls (Grep for the changed functions and types). Do not write an entry about code you have not opened;
    name what you opened in `verified`.{context_step}
 2. Read the rest of the diff the same way, with the repository's rules at hand. Find where the PR goes
@@ -280,7 +281,7 @@ def cleanup(cfg, mirror, run_id):
 
 
 def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked, digest_block='', author='the author',
-                 context_block=''):
+                 context_block='', since_block=''):
     text = open(PROMPTS.get(cfg.get('prompt'), UPSTREAM)).read()
     text = re.sub(r'\A---\n.*?\n---\n', '', text, flags=re.S)  # the slash command's frontmatter
     status = (f"Pull request {pr['url']}, head {pr['headRefOid']}, forked from the base branch at {fork}. Open.\n"
@@ -307,10 +308,11 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
     final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
     final = final.replace('{name}', NAME).replace('{author}', author)
     final = final.replace('{context_step}', CONTEXT_STEP if context_block else '')
+    final = final.replace('{since_step}', pr_incremental.STEP if since_block else '')
     final = final.replace('{suggest_step}', SUGGEST_STEP.replace('{author}', author) if cfg.get('suggestions') else '')
     return (f'{head}{checklist}\n\nSTYLE GUIDE (how your answer will be rendered and checked):\n\n{style}\n\n'
             f'{digest_block}\n\n'
-            + (f'{context_block}\n\n' if context_block else '') +
+            + (f'{context_block}\n\n' if context_block else '') + (f'{since_block}\n\n' if since_block else '') +
             f'FLAGGED HUNKS (pattern matches on the diff, not findings; open each one, step 1; each needs a '
             f'decision, an item or a cleared entry, step 3):\n'
             f'{hunks}\n\nVALID ITEM RANGES (an item\'s line_start and line_end must both fall inside ONE of these '
@@ -335,13 +337,18 @@ SUGGESTION = {'type': 'string', 'maxLength': 2000, 'description': (
 
 
 def schema(cfg):
-    """The answer's JSON schema; with suggestions on, each item has a one-click fix field."""
-    if not cfg.get('suggestions'):
+    """The answer's JSON schema; with suggestions on, each item has a one-click fix field; on an incremental
+    review (gc-sy1hm.2 c), the answer says what became of each earlier ask."""
+    if not cfg.get('suggestions') and not cfg.get('_since'):
         return SCHEMA
     s = json.loads(json.dumps(SCHEMA))
-    it = s['properties']['items']['items']
-    it['properties']['suggestion'] = SUGGESTION
-    it['required'] = it['required'] + ['suggestion']
+    if cfg.get('suggestions'):
+        it = s['properties']['items']['items']
+        it['properties']['suggestion'] = SUGGESTION
+        it['required'] = it['required'] + ['suggestion']
+    if cfg.get('_since'):
+        s['properties']['earlier'] = pr_incremental.SCHEMA
+        s['required'] = s['required'] + ['earlier']
     return s
 
 
@@ -601,6 +608,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
                        capture_output=True, text=True, timeout=60)
     elif posted == 'ok':
         extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'])
+        if cfg.get('incremental') and rv.get('since'):  # gc-sy1hm.2 c: only once the new review is up
+            extra['threads_resolved'], extra['threads_resolve_failed'] = pr_incremental.resolve_threads(repo, n, rv['since'])
     if not url:
         finish(cfg, key, dict(entry, head=head), 'held-inline' if comments else 'error', {**extra, 'posted': posted})
         return
@@ -898,8 +907,19 @@ def model_review(cfg, key, entry, dry, rereview=False):
         conflicts = conflict_files(mirror, pr)
         # gc-sy1hm.2 a: where the changed code is used and tested, found by a word search (zero tokens)
         context_block, cstats = pr_context.build(tree, pr_format.diff_index(diff)) if cfg.get('context') else ('', {})
+        # gc-sy1hm.2 c: our earlier asks on this PR and the new commits since the head we reviewed
+        prev, since_rows, since_block, inc = None, [], '', {}
+        if cfg.get('incremental'):
+            prev = pr_incremental.earlier(cfg, entry, pr['headRefOid'], pr_state.private_dir(cfg, 'feedback', 'posted'))
+            if prev:
+                sdiff, su0, why = pr_incremental.since(mirror, prev['head'], pr['headRefOid'])
+                inc = {'incremental': why, 'earlier_asks': len(prev['items'])}
+                if why == 'ok':
+                    since_rows = pr_incremental.rows(prev, su0)
+                    since_block = pr_incremental.prompt_block(prev, pr['headRefOid'], since_rows, sdiff, ctx)
+        mcfg = dict(cfg, _since=bool(since_block))
         prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'),
-                              pr_digest.prompt_block(digest), author, context_block)
+                              pr_digest.prompt_block(digest), author, context_block, since_block)
         if dry:
             print(json.dumps({'pr': entry['url'], 'dry_run': True, 'prompt_chars': len(prompt),
                               'context_chars': len(context_block), **{f'context_{k}': v for k, v in cstats.items()},
@@ -910,7 +930,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
                  'digest_cost_usd': dmeta.get('cost_usd', 0),
-                 **{f'context_{k}': v for k, v in cstats.items()}}
+                 **{f'context_{k}': v for k, v in cstats.items()}, **inc}
         reasons, problems, model, risky, risky_q, money_memo = [], [], None, [], {}, {}
         for attempt in (1, 2):
             p = prompt if attempt == 1 else (
@@ -918,7 +938,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 + '\n'.join(f'- {r}' for r in reasons)
                 + ''.join(f"\n- a reader found: {x['what']} Fix: {x['fix']}" for x in problems)
                 + '\n\nYour previous answer:\n' + json.dumps(model))
-            model, meta = run_model(cfg, tree, ctx, p)
+            model, meta = run_model(mcfg, tree, ctx, p)
             extra['attempts'] = attempt
             extra['cost_usd'] += meta.get('cost_usd') or 0
             extra.update({k: v for k, v in meta.items() if k != 'cost_usd'})
@@ -939,6 +959,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             money, money_info = money_memo[nc_key]
             rv = assemble(cfg, repo, pr, ci, decisions, items, model['cleared'], model, flagged,
                           flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info, conflicts=conflicts)
+            if since_block:
+                rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
             comments = pr_format.inline_comments(rv['items'], author)
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
@@ -977,6 +999,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                           conflicts=conflicts)
             if in_skip:
                 rv['approve'] = False
+            if since_block:
+                rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
             comments = pr_format.inline_comments(rv['items'], author)
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
@@ -989,6 +1013,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      kinds=sorted(i['kind'] for i in items), severity=sorted(i['severity'] for i in items),
                      checks=model['checks'], flagged_hunks=len(flagged), flags_cut=flags_cut, ci=ci,
                      money_places=len(money), money_unlined=sum(1 for x in money if not x.get('what')),
+                     **({f'since_{k}': rv['since'][k] for k in ('fixed', 'again', 'open', 'gone')}
+                        | {'since_to_resolve': len(rv['since']['resolve'])} if rv.get('since') else {}),
                      gate=sorted({r.split(':')[0] for r in reasons}))
         if cfg.get('collect') is not None:  # the benchmark (pr_bench.py): the review as it stands, nothing delivered
             cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra),

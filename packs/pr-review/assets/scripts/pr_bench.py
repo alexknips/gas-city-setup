@@ -264,13 +264,15 @@ def label(cfg, repo, limit=None):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VERSIONED = ['pr_review.py', 'pr_format.py', 'pr_judge.py', 'pr_money.py', 'pr_digest.py', 'pr_context.py',
+             'pr_incremental.py',
              '../style-guide.md']
 TOLERANCE = 3  # lines: an entry this close to a fixed line counts as pointing at it
 
 
 def version(cfg):
     """The reviewer's version for the report: a hash of the files that shape a review, and the prompt it uses."""
-    flags = ('+context' if cfg.get('context') else '') + ('+suggestions' if cfg.get('suggestions') else '')
+    flags = ('+context' if cfg.get('context') else '') + ('+suggestions' if cfg.get('suggestions') else '') + \
+        ('+incremental' if cfg.get('incremental') else '')
     h = hashlib.sha256(((cfg.get('prompt') or 'security') + flags).encode())
     for f in VERSIONED + ['../correctness-review.md', '../upstream/security-review.md']:
         h.update(open(os.path.join(HERE, f), 'rb').read())

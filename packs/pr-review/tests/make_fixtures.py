@@ -52,6 +52,11 @@ SUGGEST_ITEM = dict(GOOD_ITEM, line_start=14, line_end=14, change='Log line prin
                     ask='Log the visit id instead of the message text.',
                     suggestion='  logger.info(`sent reminder for visit ${visit.id}`);')
 
+# gc-sy1hm.2 c: what became of the earlier review's asks (pr_incremental.outcome).
+SINCE = {'old': 'b' * 40, 'new': 'a' * 40, 'review_id': 1000, 'fixed': 2, 'again': 1, 'open': 1, 'gone': 0,
+         'resolve': [['src/notify/send.ts', 14, 'fixed'], ['src/notify/send.ts', 15, 'fixed'],
+                     ['src/notify/send.ts', 13, 'asked-again']]}
+
 DECISION = {
     'question': 'May the reminder SMS name the patient and show the date of birth?',
     'options': ['Allow it, with the SMS vendor under a BAA', 'Send only the clinic name and time'],
@@ -401,6 +406,15 @@ CASES = {
     'case77-one-click-fix-too-long': {
         'expect': 'fail', 'expect_reasons': ['R4'], 'only_reasons': ['R4'], 'outcome': 'changes', 'diff': DIFF,
         'items': [dict(SUGGEST_ITEM, suggestion='\n'.join(['  logger.info(visit.id);'] * 13))], **SKIP},
+    # gc-sy1hm.2 c (incremental reviews): a review of a new head says, in one line linked to the new commits,
+    # what became of our earlier asks; in an approval the line sits in "What was checked" (R36).
+    'case78-rereview-says-what-happened-since': {
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM], **SKIP, 'since': SINCE},
+    'case79-approval-says-what-happened-since': {
+        'expect': 'pass', **dict(LOW, approve=True), 'approve_check': GREEN,
+        'since': dict(SINCE, again=0, open=0, resolve=[['src/notify/send.ts', 14, 'fixed']])},
+    'case80-low-risk-with-an-earlier-ask-still-open': {
+        'expect': 'fail', 'expect_reasons': ['R2'], 'only_reasons': ['R2'], **LOW, 'since': dict(SINCE, again=0)},
 }
 
 if __name__ == '__main__':
