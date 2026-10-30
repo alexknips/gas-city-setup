@@ -33,7 +33,7 @@ import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
 
 DELIVERED = {'low-risk', 'questions', 'changes', 'escalate', 'not-reviewed'}
-OURS_JQ = ' or '.join(f'(.body | startswith("{m}"))' for m in pr_format.MARKERS)
+OURS_JQ = pr_format.ours_jq()
 GOOD, BAD = {'+1', 'thumbsup', 'white_check_mark', 'heavy_check_mark'}, {'-1', 'thumbsdown', 'x'}
 VERDICTS = {'good', 'bad', 'rejected'}
 

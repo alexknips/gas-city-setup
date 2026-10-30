@@ -1,0 +1,11 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R32"
+ ],
+ "outcome": "escalate",
+ "n_decisions": 1,
+ "not_checked": "billing, plans, credits or pricing",
+ "facts": "CI passed \u00b7 no merge conflict \u00b7 open",
+ "body": "**Needs you** \u00b7 automated, Reviewer hasn't read this PR\nReviewer: 1 decision (billing, plans, credits or pricing not checked). Author: nothing.\n\n**For Reviewer:**\n1. **Who confirms what this PR changes in billing, plans, credits or pricing before it merges?**\n   No agent checks money logic, so a person has to confirm what it changes.\n   **What changes:**\n   - Other \u00b7 [`send.ts` L13-L16](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/notify/send.ts#L13-L16): Each reminder now takes one SMS credit from the clinic balance.\n   A. Author states in the PR description what changes for customers\n   B. A person who owns billing reviews the changes\n   C. Accept as is\n   **Recommended: A.** One paragraph from Author puts on record what customers will see, and nobody has to read code.\n\n<sub>Not checked: billing, plans, credits or pricing.</sub>"
+}

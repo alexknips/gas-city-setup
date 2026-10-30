@@ -21,8 +21,18 @@
    "path": "src/notify/send.ts",
    "line_start": 30,
    "line_end": 31,
+   "rule": "",
+   "change": "Reminder now sent by SMS",
    "why": "The send call is the existing reminder path; only the text changes and it carries no new recipient."
   }
  ],
- "safe_to_skip": "1 test file."
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ]
 }

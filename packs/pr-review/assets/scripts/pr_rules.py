@@ -219,6 +219,18 @@ def asked_again(old, head, asked):
     return old.get('head') != head or old.get('outcome') == 'no-rule'
 
 
+def formal_block(old, head, mergeable, ci):
+    """The sweep and our live REQUEST_CHANGES (R35; the mayor, 2026-10-30 01:40Z: a block on a merge
+    conflict outlived the conflict). On a head we have not reviewed: 'lift' when the block rested only on
+    a conflict or CI and both are fixed (mergeable, CI green); 'review' when it rested on content and the
+    sweep has not looked at this head yet (so a held review never loops). None otherwise."""
+    if old.get('event') != 'REQUEST_CHANGES' or not old.get('rc_live') or head in (old.get('review_heads') or []):
+        return None
+    if old.get('block') == 'mechanical':
+        return 'lift' if mergeable == 'MERGEABLE' and ci == 'green' else None
+    return 'review' if old.get('head') != head else None
+
+
 def ci_only(ci, requested, content):
     """R11, R34: CI red, missing or skipped on a PR with no content rule gets the CI blockers without a
     model run, unless the PR requests the reviewer: then the model reviews it and the CI blocker is one
@@ -226,11 +238,12 @@ def ci_only(ci, requested, content):
     return ci in ('red', 'none', 'skipped') and not content and not requested
 
 
-def held_fallback(requested, not_checked, reader_only):
+def held_fallback(requested, not_checked, gate_held):
     """R33: a held review is never silent on a PR that requests the reviewer, and never on a PR in a
-    not-checked area that the reader test held: 'not-checked-minimal' (the money decision and the facts
-    line), 'not-reviewed' (the short note), or None (held, silent: nobody asked for this review)."""
-    if not_checked and reader_only:
+    not-checked area that the gate or the reader test held: 'not-checked-minimal' (the money decision and
+    the status line), 'not-reviewed' (the short note), or None (held, silent: nobody asked for this
+    review)."""
+    if not_checked and gate_held:
         return 'not-checked-minimal'
     return 'not-reviewed' if requested else None
 

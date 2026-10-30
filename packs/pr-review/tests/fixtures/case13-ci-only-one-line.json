@@ -6,6 +6,7 @@
  "blockers": [
   {
    "kind": "question",
+   "cause": "ci",
    "short": "get CI running",
    "label": "Get CI running",
    "url": "https://github.com/example/repo/pull/1/checks",

@@ -7,11 +7,13 @@ run the regression:
 """
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'assets', 'scripts'))
 import pr_format  # noqa: E402
+import pr_review  # noqa: E402
 DIFF = """diff --git a/src/notify/send.ts b/src/notify/send.ts
 index 1111111..2222222 100644
 --- a/src/notify/send.ts
@@ -39,15 +41,15 @@ index 3333333..4444444 100644
 GOOD_ITEM = {
     'path': 'src/notify/send.ts', 'side': 'new', 'line_start': 13, 'line_end': 15, 'kind': 'change',
     'severity': 'medium', 'area': 'patient data',
-    'what': 'The reminder SMS now carries the full name and date of birth, and the same text is written to the info log.',
+    'change': 'Reminder text names the patient',
     'why': 'Patient data goes to the SMS provider and into application logs, which are not meant to hold PHI.',
-    'ask': 'Drop the message body from the info log line and log the visit id instead.',
+    'ask': 'Drop the message body from the info log line and log the visit id instead.', 'rule': '',
     'verified': 'read remind() and the logger config', 'confidence': 9}
 
 DECISION = {
     'question': 'May the reminder SMS name the patient and show the date of birth?',
     'options': ['Allow it, with the SMS vendor under a BAA', 'Send only the clinic name and time'],
-    'recommendation': 'Send only the clinic name and time; nothing in the ticket needs the patient name.',
+    'recommended': 1, 'reason': 'Nothing in the ticket needs the patient name.', 'rule': '',
     'why': 'Which patient data may go to a third party is a compliance call, not a code fix the author can make.',
     'area': 'compliance', 'link': {'kind': 'code', 'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 14},
     'verified': 'read remind() and the smsClient wrapper', 'confidence': 9}
@@ -57,12 +59,25 @@ PAGE = 'http://dash.example/pr-review/repo-1-aaaaaaa.html'
 QUESTION = dict(GOOD_ITEM, kind='question', ask='Does the SMS text need the full name at all?')
 FLAG = {'id': 'F1', 'rule': 'irrev-messages', 'label': 'a message sent to people (SMS, email, push)',
         'path': 'src/notify/send.ts', 'line': 14}
-CLEARED = {'flag': 'F1', 'path': 'src/notify/send.ts', 'line_start': 14, 'line_end': 14,
+CLEARED = {'flag': 'F1', 'path': 'src/notify/send.ts', 'line_start': 14, 'line_end': 14, 'rule': '',
+           'change': 'Reminder now sent by SMS',
            'why': 'The send call is the existing reminder path; only the text changes and it carries no new recipient.'}
 NO_CI = pr_format.blockers('example/repo', {'number': 1}, 'none')
 NOT_CHECKED = 'billing, plans, credits or pricing'
-MONEY = pr_format.not_checked_decision([{'path': 'src/notify/send.ts', 'line': 13}], NOT_CHECKED, 'Author',
-                                      'Each reminder now takes one SMS credit from the clinic balance.')
+MONEY = pr_format.not_checked_decision(
+    [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16,
+      'what': 'Each reminder now takes one SMS credit from the clinic balance.'}], NOT_CHECKED, 'Author')
+# What the PR does and the rest of the diff, linked (R7, R30).
+SKIP = {'summary': 'Reminders now name the patient and log the message text.',
+        'skip': [{'group': 'tests', 'paths': ['test/notify.test.ts']}]}
+# R37: a repository rule the digest found (synthetic).
+RULES = {'D1': {'rule': 'Never write patient data to logs or third-party messages.', 'area': 'patient data',
+                'path': 'AGENTS.md', 'line_start': 3, 'line_end': 3}}
+# Our live formal block on head a…a, resting on a merge conflict (R35, the sweep).
+RC_OLD = {'event': 'REQUEST_CHANGES', 'rc_live': True, 'block': 'mechanical', 'review_id': 1001,
+          'review_heads': ['a' * 40], 'head': 'a' * 40, 'status': 'done', 'outcome': 'changes'}
+# The same diff with the log line turned into a comment (R36: a cleared link on comment lines only).
+COMMENT_DIFF = DIFF.replace('+  logger.info(`sent reminder ${body}`);', '+  // log the reminder for support')
 GREEN = {'head': 'a' * 40, 'fresh': {'state': 'OPEN', 'checks': ['SUCCESS', 'SKIPPED']}}
 PR = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': 'a' * 40}
 
@@ -72,7 +87,7 @@ def body(**fx):
     return pr_format.render('example/repo', PR, pr_format.review_of(fx), 'Reviewer', 'Author')
 
 
-LOW = dict(outcome='low-risk', diff=DIFF, items=[], flagged=[FLAG], cleared=[CLEARED], safe_to_skip='1 test file.')
+LOW = dict(outcome='low-risk', diff=DIFF, items=[], flagged=[FLAG], cleared=[CLEARED], **SKIP)
 
 LEGACY_CI_BODY = """**Automated review** by Alex's review agents (Claude Code). Alex has not read this PR unless he says so.
 Shadow mode: this review is pending and only Alex sees it; he submits or discards it.
@@ -88,76 +103,76 @@ CASES = {
     # Case 1 (2026-10-29 19:56Z, the reviewer: "it just fluff and really hard to read. there are no
     # markers in the review what I actually need to manually review"): rule labels only, no markers.
     'case01-ci-escalation-without-markers': {
-        'expect': 'fail', 'expect_reasons': ['R1', 'R3', 'R7', 'R8', 'R9', 'R10'],
+        'expect': 'fail', 'expect_reasons': ['R28', 'R3', 'R7', 'R9', 'R10'],
         'body': LEGACY_CI_BODY, 'outcome': 'escalate', 'n_items': 0},
     # Case 2 (20:19Z, on a merged PR: "was merged. we don't need to review it"): R15.
     'case02-delivered-on-a-merged-pr': {
         'expect': 'fail', 'expect_reasons': ['R15'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'MERGED', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
+        **SKIP, 'delivery': {'pr_state': 'MERGED', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     # Case 3 (20:21Z: "that review comment needs to link to the human decisions ... otherwise you do not
     # need me!"): needs you without a linked decision for the reviewer. R16.
     'case03-needs-you-without-decisions': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'items': [GOOD_ITEM],
-        'safe_to_skip': '1 test file.'},
+        **SKIP},
     # Case 4 (20:21Z, 20:45Z): a delivered review without its own GitHub review URL. R17.
     'case04-delivered-without-own-url': {
         'expect': 'fail', 'expect_reasons': ['R17'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': None}},
+        **SKIP, 'delivery': {'pr_state': 'OPEN', 'review_url': None}},
     # 20:45Z ("don't link to the dashboard but actually leave a review comment every single time on the PR
     # and then link to that"): a page instead of a review comment. R17.
     'case05-delivered-as-a-page': {
         'expect': 'fail', 'expect_reasons': ['R17'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': PAGE}},
+        **SKIP, 'delivery': {'pr_state': 'OPEN', 'review_url': PAGE}},
     # Case 6 (20:08Z: pending reviews took the reviewer's own review slot): a pending review created. R0.
     'case17-pending-review-created': {
         'expect': 'fail', 'expect_reasons': ['R0'], 'outcome': 'questions', 'diff': DIFF, 'items': [QUESTION],
-        'safe_to_skip': '1 test file.', 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'PENDING'}},
+        **SKIP, 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'PENDING'}},
     # R18 (20:42Z, the mayor: two runs of the same head both posted to Slack): one message per head.
     'case16-second-slack-post-for-the-same-head': {
         'expect': 'fail', 'expect_reasons': ['R18'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
-        'safe_to_skip': '1 test file.',
+        **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED', 'post_slack': True, 'head': 'a' * 40,
                      'slack_heads': ['a' * 40]}},
     'case06-needs-you-with-a-linked-decision': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
-        'items': [GOOD_ITEM], 'safe_to_skip': '1 test file: a happy-path test.',
+        'items': [GOOD_ITEM], **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     'case07-decision-links-a-missing-file': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
         'decisions': [dict(DECISION, link={'kind': 'code', 'path': 'src/notify/gone.ts', 'line_start': 1, 'line_end': 2})],
-        'items': [], 'safe_to_skip': 'everything: 2 files.'},
+        'items': [], **SKIP},
     'case08-decision-is-not-a-question': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
         'decisions': [dict(DECISION, question='Decide what the reminder SMS may contain.')],
-        'items': [], 'safe_to_skip': 'everything: 2 files.'},
+        'items': [], **SKIP},
     'case09-item-outside-the-diff': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'outcome': 'changes', 'diff': DIFF,
-        'items': [dict(GOOD_ITEM, line_start=40, line_end=44)], 'safe_to_skip': '1 test file.'},
+        'items': [dict(GOOD_ITEM, line_start=40, line_end=44)], **SKIP},
     'case10-filler': {
         'expect': 'fail', 'expect_reasons': ['R6'], 'outcome': 'changes', 'diff': DIFF,
         'items': [dict(GOOD_ITEM, ask='Please review this change and make sure it follows best practices.')],
-        'safe_to_skip': '1 test file.'},
+        **SKIP},
     'case11-question-without-question-mark': {
         'expect': 'fail', 'expect_reasons': ['R13'], 'outcome': 'questions', 'diff': DIFF,
         'items': [dict(QUESTION, ask='Tell us which ticket asked for the name in the reminder text.')],
-        'safe_to_skip': '1 test file.'},
+        **SKIP},
     'case12-low-risk-clean': {
         'expect': 'pass', 'outcome': 'low-risk', 'diff': DIFF, 'items': [],
-        'safe_to_skip': 'all 2 files: a queue call and a test.', 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
+        **SKIP, 'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     'case13-ci-only-one-line': {
         'expect': 'pass', 'outcome': 'questions', 'diff': DIFF, 'items': [], 'blockers': NO_CI, 'model': False,
         'facts': 'No CI ran · no merge conflict · open'},
     'case14-rule-code-in-a-field': {
         'expect': 'fail', 'expect_reasons': ['R10'], 'outcome': 'changes', 'diff': DIFF,
         'items': [dict(GOOD_ITEM, why='This trips phi-logs: patient data goes into application logs.')],
-        'safe_to_skip': '1 test file.'},
+        **SKIP},
     'case15-removed-line-on-old-side': {
         'expect': 'pass', 'outcome': 'questions', 'diff': DIFF,
         'items': [dict(QUESTION, side='old', line_start=12, line_end=12, area='behaviour patients notice',
-                       what='The plain queue call that used to run first is removed and re-added after the send.',
+                       change='Queue call moved after send',
                        why='Reminders now go out before the visit is queued, so a failed send skips the queue.',
                        ask='Should a send failure still queue the visit?')],
-        'safe_to_skip': '1 test file.'},
+        **SKIP},
     # 2026-10-29 21:05Z, the reader test of the 7 delivered reviews ("they scan fast, but 'nothing to
     # check' hides real points"): R19-R26, each a case.
     'case18-low-risk-with-an-uncleared-flag': {
@@ -169,22 +184,22 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R20'], **dict(LOW, not_checked=NOT_CHECKED)},
     'case22-billing-is-a-decision-for-the-reviewer': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'decisions': [MONEY], 'tree_lines': TREE,
-        'flagged': [FLAG], 'cleared': [CLEARED], 'not_checked': NOT_CHECKED, 'safe_to_skip': '1 test file.'},
+        'flagged': [FLAG], 'cleared': [CLEARED], 'not_checked': NOT_CHECKED, **SKIP},
     'case23-finding-said-twice': {
-        'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'changes', 'diff': DIFF, 'safe_to_skip': '1 test file.',
+        'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'changes', 'diff': DIFF, **SKIP,
         'items': [GOOD_ITEM, dict(GOOD_ITEM, line_start=14, line_end=15, kind='question',
                                   ask='Why does the info log need the message body?')]},
     'case24-suggested-reply-repeats-the-items': {
         'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'changes', 'n_items': 1,
-        'body': body(outcome='changes', items=[GOOD_ITEM], safe_to_skip='1 test file.').replace(
-            '\n\nCI passed', '\n\n**Suggested reply to Author:** drop the body from the log line.\n\nCI passed')},
+        'body': body(outcome='changes', items=[GOOD_ITEM], **SKIP).replace(
+            '\n\n**Safe to skip:**', '\n\n**Suggested reply to Author:** drop the body from the log line.\n\n**Safe to skip:**')},
     'case25-inline-comment-not-anchored': {
         'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
-        'safe_to_skip': '1 test file.',
+        **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED', 'inline_lines': [None]}},
     'case26-line-1-does-not-say-who-acts': {
         'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'low-risk',
-        'body': body(**LOW).replace('**Low risk. Reviewer: nothing. Author: nothing.**', '**Low risk: nothing to check**')},
+        'body': body(**LOW).replace('Nothing for Reviewer or Author.', 'Nothing to check here.')},
     'case27-blocker-only-in-the-facts-line': {
         'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'low-risk',
         'body': body(**dict(LOW, facts='No CI ran · merge conflict · open'))},
@@ -198,7 +213,7 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R24'], **dict(LOW, approve=True), 'approve_check': GREEN,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'APPROVED', 'ours_on_head': 2}},
     'case31-link-removed-fragment': {
-        'expect': 'fail', 'expect_reasons': ['R25'], 'outcome': 'changes', 'diff': DIFF, 'safe_to_skip': '1 test file.',
+        'expect': 'fail', 'expect_reasons': ['R25'], 'outcome': 'changes', 'diff': DIFF, **SKIP,
         'items': [dict(GOOD_ITEM, why='The vendor terms at [link removed] do not cover patient names in SMS text.')]},
     'case32-reader-test-below-the-bar': {
         'expect': 'fail', 'expect_reasons': ['R26'], **LOW,
@@ -207,7 +222,7 @@ CASES = {
     # the minimal review: line 2, the money decision, the facts line, nothing the model wrote. R33.
     'case37-billing-minimal-after-reader-holds': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
-        'decisions': [dict(MONEY, what='')], 'not_checked': NOT_CHECKED},
+        'decisions': [MONEY], 'not_checked': NOT_CHECKED},
     # 2026-10-29 21:01Z (Alex: "actually approve low risk PRs not just say you do"): the approval bar, R27.
     'case33-approve-with-an-uncleared-flag': {
         'expect': 'fail', 'expect_reasons': ['R19', 'R27'], **dict(LOW, cleared=[], approve=True), 'approve_check': GREEN},
@@ -221,6 +236,76 @@ CASES = {
         'expect': 'pass', **dict(LOW, approve=True), 'approve_check': GREEN,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'APPROVED', 'ours_on_head': 1},
         'judge': {'scan': 5, 'markers': 5, 'decisions': 0, 'plain': 5, 'length': 5, 'useful': 4}},
+    # 2026-10-29 22:03Z-22:41Z (the mayor; the reviewer on the #1970 shape: "much better ... we should check
+    # for consistency with the goals and high level rules of the repo"): R28-R32, R36, R37.
+    'case49-honesty-line-above-the-verdict': {
+        'expect': 'fail', 'expect_reasons': ['R28'], 'outcome': 'low-risk', 'facts': pr_format.GREEN_FACTS,
+        'body': "Automated review by Reviewer's review agents (Claude Code); Reviewer hasn't read this PR yet.\n\n" + body(**LOW)},
+    'case50-cleared-entry-leads-with-a-category-label': {
+        'expect': 'fail', 'expect_reasons': ['R29'], **dict(LOW, cleared=[dict(CLEARED, change='Behaviour patients notice')])},
+    'case51-status-line-on-a-green-pr': {
+        'expect': 'fail', 'expect_reasons': ['R30'], 'outcome': 'low-risk', 'facts': pr_format.GREEN_FACTS,
+        'body': body(**LOW) + '\n\n' + pr_format.GREEN_FACTS},
+    'case52-safe-to-skip-without-the-files-link': {
+        'expect': 'fail', 'expect_reasons': ['R30'], 'outcome': 'low-risk', 'facts': pr_format.GREEN_FACTS,
+        'body': re.sub(r'^\*\*Safe to skip:\*\* .*$', '**Safe to skip:** tests: notify.test.ts', body(**LOW), flags=re.M)},
+    'case53-cleared-risk-without-a-reason': {
+        'expect': 'fail', 'expect_reasons': ['R31'], **LOW, 'judge_risky': [1],
+        'judge': {'scan': 5, 'markers': 5, 'decisions': 0, 'plain': 5, 'length': 5, 'useful': 4}},
+    'case54-risky-cleared-entry-as-a-question': {
+        'expect': 'pass', 'outcome': 'questions', 'diff': DIFF, 'flagged': [FLAG], 'cleared': [],
+        'items': [pr_review.question_from(CLEARED)], **SKIP},
+    'case55-money-place-without-its-line': {
+        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'tree_lines': TREE, 'not_checked': NOT_CHECKED,
+        'decisions': [dict(MONEY, where=[dict(MONEY['where'][0], what='')])]},
+    'case56-not-checked-said-twice': {
+        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'n_decisions': 1, 'not_checked': NOT_CHECKED,
+        'facts': pr_format.GREEN_FACTS,
+        'body': body(outcome='escalate', decisions=[MONEY], not_checked=NOT_CHECKED, model=False)
+        + '\n\n<sub>Not checked: billing, plans, credits or pricing.</sub>'},
+    'case57-approval-with-more-than-what-was-checked': {
+        'expect': 'fail', 'expect_reasons': ['R36'], 'outcome': 'low-risk', 'approve': True, 'facts': pr_format.GREEN_FACTS,
+        'body': body(**dict(LOW, approve=True)) + '\n\n**Safe to skip:** 1 test file.'},
+    'case58-cleared-entries-repeat': {
+        'expect': 'fail', 'expect_reasons': ['R36'], **dict(LOW, cleared=[CLEARED, dict(CLEARED, change='SMS send added here')])},
+    'case59-cleared-link-on-a-comment-line': {
+        'expect': 'fail', 'expect_reasons': ['R36'],
+        **dict(LOW, diff=COMMENT_DIFF)},
+    'case60-decision-asks-the-reviewer-to-read-code': {
+        'expect': 'fail', 'expect_reasons': ['R37'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
+        'items': [], **SKIP,
+        'decisions': [dict(DECISION, options=['You review the changed lines yourself', 'Send only the clinic name and time'])]},
+    'case61-finding-without-its-rule': {
+        'expect': 'fail', 'expect_reasons': ['R37'], 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM],
+        **SKIP, 'rules': RULES},
+    'case62-finding-cites-its-rule': {
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [dict(GOOD_ITEM, rule='D1')],
+        **SKIP, 'rules': RULES},
+    # 2026-10-30 01:40Z (the mayor's reader on 9a62c85: a cleared entry opened with a raw identifier; a
+    # conflict blocker named no files).
+    'case67-cleared-change-names-an-identifier': {
+        'expect': 'fail', 'expect_reasons': ['R29'], **dict(LOW, cleared=[dict(CLEARED, change='Calls sendReminder after queueing')])},
+    'case68-conflict-names-its-files': {
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [], 'model': False,
+        'facts': 'CI passed · merge conflict · open',
+        'blockers': pr_format.blockers('example/repo', {'number': 1, 'mergeable': 'CONFLICTING'}, 'green', (),
+                                       ['src/notify/send.ts'])},
+    # 2026-10-30 01:40Z (the mayor: a formal block on a merge conflict outlived the conflict): the sweep lifts
+    # a block that rested only on a conflict or CI once both are fixed; a block on content gets a review of
+    # the new head, once.
+    'case63-mechanical-block-lifted': {
+        'expect': 'pass', 'rule': 'R35', 'route': 'formal_block', 'want': 'lift',
+        'args': {'old': RC_OLD, 'head': 'b' * 40, 'mergeable': 'MERGEABLE', 'ci': 'green'}},
+    'case64-mechanical-block-kept-while-ci-is-red': {
+        'expect': 'pass', 'rule': 'R35', 'route': 'formal_block', 'want': None,
+        'args': {'old': RC_OLD, 'head': 'b' * 40, 'mergeable': 'MERGEABLE', 'ci': 'red'}},
+    'case65-content-block-gets-a-review': {
+        'expect': 'pass', 'rule': 'R35', 'route': 'formal_block', 'want': 'review',
+        'args': {'old': dict(RC_OLD, block='content'), 'head': 'b' * 40, 'mergeable': 'MERGEABLE', 'ci': 'green'}},
+    'case66-content-block-held-head-not-looped': {
+        'expect': 'pass', 'rule': 'R35', 'route': 'formal_block', 'want': None,
+        'args': {'old': dict(RC_OLD, block='content', head='b' * 40), 'head': 'b' * 40, 'mergeable': 'MERGEABLE', 'ci': 'green'}},
     # 2026-10-29 22:11Z (the mayor's test batch): three PRs requested the reviewer after the first sweep had
     # set them aside (no rule) and were never selected. The sweep queues a requested PR again, but never
     # a head it already reviewed or held (that would loop).
@@ -244,10 +329,10 @@ CASES = {
     # 22:30Z (6 of 17 requested PRs were held and silent, "the worst failure"): never silent. R33.
     'case43-held-requested-pr-gets-the-note': {
         'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-reviewed',
-        'args': {'requested': True, 'not_checked': False, 'reader_only': True}},
+        'args': {'requested': True, 'not_checked': False, 'gate_held': True}},
     'case44-held-billing-pr-gets-the-money-review': {
         'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-checked-minimal',
-        'args': {'requested': False, 'not_checked': True, 'reader_only': True}},
+        'args': {'requested': False, 'not_checked': True, 'gate_held': True}},
     'case45-not-reviewed-note': {
         'expect': 'pass', 'note': pr_format.note('Reviewer', 'No CI ran · no merge conflict · open')},
     'case46-not-reviewed-note-without-the-facts-line': {
@@ -257,9 +342,9 @@ CASES = {
     # word matches the event. R35.
     'case47-comment-review-says-changes-requested': {
         'expect': 'fail', 'expect_reasons': ['R35'], 'outcome': 'changes', 'n_items': 1,
-        'body': body(outcome='changes', items=[GOOD_ITEM], safe_to_skip='1 test file.', request_changes=True)},
+        'body': body(outcome='changes', items=[GOOD_ITEM], **SKIP, request_changes=True)},
     'case48-formal-request-changes': {
-        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM], 'safe_to_skip': '1 test file.',
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM], **SKIP,
         'request_changes': True,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'CHANGES_REQUESTED', 'ours_on_head': 1}},
 }

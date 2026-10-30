@@ -6,6 +6,6 @@
  "args": {
   "requested": true,
   "not_checked": false,
-  "reader_only": true
+  "gate_held": true
  }
 }

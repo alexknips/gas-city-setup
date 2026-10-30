@@ -17,6 +17,7 @@ import concurrent.futures as cf
 import datetime as dt
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -207,13 +208,16 @@ def sweep(cfg, dry):
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
             continue
-        again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer']))
+        block = pr_rules.formal_block(old, pr['headRefOid'], pr.get('mergeable'), pr_rules.ci_state(pr))
+        again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer'])) or \
+            block == 'review'  # our block rested on content: the new head gets a review
         if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci' and not again:
             counts['seen'] += 1
             continue
         files = pr_rules.pr_files(repo, pr['number'])
         rec = record(cfg, repo, pr, files, ruleset, area_of, heads)
-        entry = {'repo': repo, 'number': pr['number'], 'url': pr['url'], 'rig': cfg['repos'][repo],
+        entry = {**{k: old[k] for k in CARRY if k in old}, **{k: v for k, v in old.items() if k.startswith('fb_')},
+                 'repo': repo, 'number': pr['number'], 'url': pr['url'], 'rig': cfg['repos'][repo],
                  'head': rec['head'], 'state': rec['state'], 'created': rec['created'], 'merged': rec['merged'],
                  'rules': sorted(rec['hits']), 'tier': rec['tier'], 'areas': rec['areas'], 'ci': rec['ci'],
                  'seen_at': old.get('seen_at') or pr_state.iso(t0), 'bead': old.get('bead')}
@@ -229,6 +233,10 @@ def sweep(cfg, dry):
             entry.update(status='done', outcome='no-rule')
         else:
             entry.update(status='queued', queued_at=pr_state.iso(t0))
+        if block == 'lift' and not dry and old.get('review_id'):
+            ok = lift_block(repo, pr, old['review_id'])
+            counts['block_lifted' if ok else 'block_lift_failed'] += 1
+            entry.update(rc_live=not ok and old.get('rc_live'), lifted_at=pr_state.iso(t0) if ok else None)
         counts[entry['status'] if entry['status'] != 'done' else entry.get('outcome', 'done')] += 1
         if dry:
             print(json.dumps({'pr': entry['url'], 'status': entry['status'], 'outcome': entry.get('outcome'),
@@ -244,6 +252,20 @@ def sweep(cfg, dry):
     pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts, 'partial': partial,
                                 'secs': round((pr_state.now() - t0).total_seconds())})
     print(json.dumps({'sweep': pr_state.iso(t0), 'partial': partial, 'counts': counts}))
+
+
+# What a PR's entry keeps across new heads: the delivered review, for re-reviews, the feedback order and
+# the formal block (before 2026-10-30 a new head dropped them).
+CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block', 'rc_live', 'slack', 'slack_ts',
+         'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky')
+
+
+def lift_block(repo, pr, review_id):
+    """Dismiss our formal block once the merge conflict and the failing checks it rested on are fixed."""
+    msg = f"Lifted: the merge conflict and failing checks are fixed on {pr['headRefOid'][:7]}."
+    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{repo}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
+                        '-f', f'message={msg}', '-f', 'event=DISMISS'], capture_output=True, text=True, timeout=60)
+    return r.returncode == 0
 
 
 def record_one(cfg, beads, key, entry, old, counts):

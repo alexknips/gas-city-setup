@@ -1,0 +1,23 @@
+{
+ "expect": "pass",
+ "rule": "R35",
+ "route": "formal_block",
+ "want": "lift",
+ "args": {
+  "old": {
+   "event": "REQUEST_CHANGES",
+   "rc_live": true,
+   "block": "mechanical",
+   "review_id": 1001,
+   "review_heads": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "done",
+   "outcome": "changes"
+  },
+  "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "mergeable": "MERGEABLE",
+  "ci": "green"
+ }
+}

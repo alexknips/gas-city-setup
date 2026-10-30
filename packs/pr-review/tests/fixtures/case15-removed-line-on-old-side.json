@@ -11,12 +11,21 @@
    "kind": "question",
    "severity": "medium",
    "area": "behaviour patients notice",
-   "what": "The plain queue call that used to run first is removed and re-added after the send.",
+   "change": "Queue call moved after send",
    "why": "Reminders now go out before the visit is queued, so a failed send skips the queue.",
    "ask": "Should a send failure still queue the visit?",
+   "rule": "",
    "verified": "read remind() and the logger config",
    "confidence": 9
   }
  ],
- "safe_to_skip": "1 test file."
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ]
 }

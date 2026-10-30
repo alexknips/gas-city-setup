@@ -17,7 +17,15 @@
   }
  ],
  "cleared": [],
- "safe_to_skip": "1 test file.",
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ],
  "approve": true,
  "approve_check": {
   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

@@ -50,7 +50,9 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_APPROVE` | `off` | `on`: a low-risk PR that meets the bar (R27) gets a SUBMITTED APPROVE review; `off`: a COMMENT review that says "Low risk". Only on the reviewer's word: SOC 2 reads an approval as human review. |
 | `PR_REVIEW_JUDGE` | `on` | The reader test (R26): a second model scores each review before delivery and holds it below markers 4 or useful 3; the feedback order scores delivered reviews that have no scores yet. |
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
-| `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test. |
+| `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
+| `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
+| `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
 | `PR_REVIEW_JUDGE_PER_RUN` | `5` | Delivered reviews the feedback order scores per run. |
 | `PR_REVIEW_EFFORT` | `high` | `claude --effort` for the review run. |
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
@@ -162,6 +164,11 @@ a request on a new head after a review (a submitted review clears the request, s
 new). A head already reviewed or held is never queued again. A PR that requests the reviewer always
 gets the model, whatever CI says (R34).
 
+The sweep also tends our formal blocks (R35). On a new head of a PR whose live REQUEST_CHANGES of ours
+rested only on a merge conflict or CI, it dismisses the block once the PR is mergeable and CI is green
+("Lifted: …", zero tokens). A block that rested on content queues the new head for a review instead,
+once. A PR's entry keeps its delivered review (id, heads, event, Slack ts, feedback) across new heads.
+
 ## The review prompt
 
 The prompt is Claude Code's `/security-review` command, copied unchanged into `assets/upstream/`
@@ -171,16 +178,33 @@ from [anthropics/claude-code-security-review](https://github.com/anthropics/clau
 - The command's `git status / diff / log` substitutions become the PR's link, title and description,
   its changed files, its commits and its diff (from where the PR forked off its base). A diff over
   350k characters is left in a file the model reads in parts.
-- The checklist (`PR_REVIEW_CHECKLIST`), the style guide (`assets/style-guide.md`) and the hunks the
-  rules flagged (path and line, found in memory) go in before `START ANALYSIS`.
-- The closing steps are rewritten. The upstream command starts sub-tasks; here the model finds the
-  issues, filters false positives and drops anything below confidence 8 itself, because the run has
-  no Task tool. Each flagged hunk must become an item: a problem, or "nothing wrong here" with what to
-  look at (R12).
-- The answer is JSON (`--json-schema`): at most 5 items, worst first, each anchored to a line range on
-  one side of the diff, with a kind (check for the reviewer, question for the author, change to make),
-  severity, area, what changed, why it matters, what to decide or ask, what was verified, and a
-  confidence; then a "safe to skip" line and the B3 checks. The model does not pick the outcome.
+- The checklist (`PR_REVIEW_CHECKLIST`), the style guide (`assets/style-guide.md`), the repository's
+  rules digest (R37) and the hunks the rules flagged (path and line, found in memory) go in before
+  `START ANALYSIS`.
+- The closing steps are rewritten. Who reads the review (the reviewer, who does not know the codebase,
+  and the author, who wrote and reviewed the change) and its job: consistency with the repository's
+  goals and rules, plus the scan's issues. The upstream command starts sub-tasks; here the model finds
+  the issues, filters false positives and drops anything below confidence 8 itself, because the run
+  has no Task tool. Each flagged hunk becomes a decision, an item or a cleared entry (R19).
+- The answer is JSON (`--json-schema`): decisions at the level of goals and rules (options, the
+  recommended one and a reason); at most 5 items, worst first, each anchored to a line range on one
+  side of the diff, with a kind, severity, area, what changed in 3-6 plain words, why it matters and
+  the ask (at most 25 words each), the repository rule it is about, what was verified, and a
+  confidence; the cleared entries; a one-sentence summary and the skip list by group; the B3 checks.
+  The model does not pick the outcome.
+
+**The rules digest** (`pr_digest.py`, R37). The repository's goals and high-level rules, as its own
+docs write them down (README, AGENTS.md and CLAUDE.md, CONTRIBUTING, SECURITY, docs/, the PR template,
+the CI workflows; at most 160k characters, policy docs first), taken by one model pass with no tools
+and capture off, at most 40 rules, each with its doc lines. It is cached by the docs' blob SHAs at the
+tip of the base branch the PR merges into, so it is rebuilt only when the docs change, and kept host-local
+(`PR_REVIEW_WORK_DIR/digest`, mode 600): it is the repository's text. The review links each cited rule
+to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of time (counts only).
+
+**The money lines** (`pr_money.py`, R32). For a PR that touches billing, plans, credits or pricing, one
+call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
+charges, credits, plans or limits) and its kind. It runs apart from the review, so the money decision
+keeps its lines even when the full review is held.
 
 `assets/checklist-health.md` is the default checklist for health-care code: HIPAA Security Rule
 technical safeguards (45 CFR 164.312), SOC 2 Trust Services Criteria CC6, CC7 and CC8.1, actions
@@ -202,16 +226,16 @@ PR's text can sway the review; it cannot act.
 
 ## Outcomes
 
-One per reviewed PR, derived by the script (`pr_format.decide`), not chosen by the model. Line 2 of
-every review starts with the outcome word, then says who acts (R22).
+One per reviewed PR, derived by the script (`pr_format.decide`), not chosen by the model. Line 1 of
+every review is the outcome word with the automated note (R28); line 2 says who acts (R22).
 
 | Outcome | When | Line 2 | Event | Slack |
 | --- | --- | --- | --- | --- |
-| `escalate` | one or more decisions only the reviewer can make (R16): a product, risk or compliance trade-off, each one question with options, a recommendation and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20) | **Needs you. Alex: N decisions. Nils: …** | COMMENT | "Needs you" |
-| `changes` | a change for the author, a merge conflict or failing checks | **Changes requested. Alex: nothing. Nils: 1 change, …** (**Changes suggested. …** with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
-| `questions` | only questions for the author, or CI that did not run, was skipped or is still running | **Questions. Alex: nothing. Nils: 2 questions** | COMMENT | "Questions for the author" |
-| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | **Not reviewed automatically.** Our review didn't reach the quality bar on this PR, so Alex reviews it instead. (then the facts line, nothing else) | COMMENT | "Not reviewed" |
-| `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | **Approved as low risk. Alex: nothing. Nils: nothing.** (or **Low risk. …** with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
+| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each one question with lettered options, a recommendation with its reason and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20, R32) | `**Needs you** · automated, Alex hasn't read this PR` / `Alex: N decisions. Nils: …` | COMMENT | "Needs you" |
+| `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Alex: nothing. Nils: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
+| `questions` | only questions for the author, or CI that did not run, was skipped or is still running | `**Questions** · …` / `Alex: nothing. Nils: 2 questions.` | COMMENT | "Questions for the author" |
+| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically.** Our review of this PR didn't reach the quality bar, so it has no automated review; Alex decides who reviews it.` (then the status line, nothing else) | COMMENT | "Not reviewed" |
+| `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | `**Approved as low risk** · …` / `Nothing for Alex or Nils.` and "What was checked" collapsed (R36) (or `**Low risk**` with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
 
 Rule flags alone never route a PR to the reviewer: they tell the model where to look first, and the
 review shows each one cleared (with a link) or acted on (R19). `pr_review.py --redeliver REPO#N` posts
@@ -240,24 +264,31 @@ reviews in his name blocking his own; then "that review comment needs to link to
 measure is the reviewer's effort: time from the Slack post to his own decision on the PR, what he
 opened, his thumbs on the Slack link. Not review volume.
 
-1. **Style guide** (`assets/style-guide.md`, versioned, v4.2). Rules R0 to R27 and R33 to R35, each with the complaint it
-   came from: never a pending review (R0); the honesty line, then the outcome and who acts (R1, R22);
-   "needs you" only for decisions only the reviewer can make, each linked to the code or text (R16); at
-   most 5 items for the author, each linked to the exact diff lines, with what changed, why it matters
-   and the change or question, said once (R21); every flagged hunk cleared with a link or acted on
-   (R19); a not-checked area said and handed to the reviewer (R20); a "Safe to skip" line; one facts
-   line, its blockers as linked asks (R22); no rule codes or boilerplate (R10, R23); never for a merged
-   PR (R15); every review at its own URL (R17), one per head (R18, R24); an approval only under the bar
-   (R27). The model reads it in its prompt.
+1. **Style guide** (`assets/style-guide.md`, versioned, v5). Rules R0 to R37 (no R12), each with the
+   complaint it came from: never a pending review (R0); the verdict first with the automated note, then
+   who acts (R28, R22); "needs you" only for decisions only the reviewer can make, at the level of goals
+   and rules, each linked (R16, R37); at most 5 items for the author, each linked to the exact diff
+   lines, leading with what changed in plain words, said once (R21, R29); every flagged hunk cleared
+   with a link or acted on (R19), a risky "cleared" turned into a question (R31); a not-checked area
+   handed to a person with one line per changed place (R20, R32); what the PR does and a linked skip
+   list (R7, R30); the status line only when something did not pass (R30); no rule codes or boilerplate
+   (R10, R23); never for a merged PR (R15); every review at its own URL (R17), one per head (R18, R24);
+   an approval only under the bar, and short (R27, R36); never silent on a requested PR (R33); the word
+   matches the event (R35). The model reads it in its prompt.
 2. **Gate** (`pr_format.gate`, zero tokens). Every machine-checkable rule, against the model's items and
    the rendered text: each item's range resolved against the diff's hunks on its side, each decision's
    code link resolved against the head (the file exists, the lines are within it) and asked as one
    question with options, fields of at least four words with no filler (a deny-list) and no rule codes,
    the sizes, line 1 and 2, every flagged hunk covered (R19), the not-checked area (R20), repeats (R21),
-   cut links (R25), "Safe to skip", the facts line and the footer. Then the **reader test** (R26,
+   cut links (R25), the leading words of each entry (R29), the status line and the skip list (R30), the
+   money places (R32), the approval's short form and its links on code, not comments (R36), the rule
+   links and decisions that ask the reviewer to read code (R37). Then the **reader test** (R26,
    `pr_judge.py`): a second, cheap model with no tools and capture off scores the review 1-5 on scan,
    markers, decisions, plain, length and useful, the rubric of the town's first reader test; below
-   markers 4 or useful 3 the review is held. Right before delivery: the PR is still open and on the
+   markers 4 or useful 3 the review is held. The reader also names cleared entries that describe a
+   possible risk without a reason (R31; still named after the second answer, they become questions for
+   the author) and a behaviour change in the skip list (R37; still there after the second answer, the
+   review is not an approval). Right before delivery: the PR is still open and on the
    reviewed head (R15), the approval bar if it is one (R27), and after posting: its own review URL, not
    pending (R0, R17), every inline comment anchored to a line (R21), one review of ours on the head
    (R24). On a gate or reader failure the model answers again with the reasons (and the reader's
@@ -293,6 +324,16 @@ its hunk (R19), billing called low risk (R20), a finding said twice, a suggested
 inline comment (R21), line 2 without who acts or a blocker only in the facts line (R22), a rule-codes
 section or a stray not-checked footer (R23), a comment plus an approval (R24), a "[link removed]"
 fragment (R25), a reader score below the bar (R26). Case 37: the minimal billing review (R33).
+Cases 49-62 (v5): the honesty line above the verdict (R28), a cleared entry that leads with a
+category label (R29), the status line on a green PR and a skip list without links (R30), a risky
+cleared entry and the question it becomes (R31), a money place without its line and "not checked" said
+twice (R32), an approval with more than "What was checked", repeated cleared entries and a cleared link
+on a comment line (R36), a decision that asks the reviewer to read code, a finding without its rule and
+one that cites it (R37). Case 67: a cleared entry that names a raw identifier (R29); case 68: a
+conflict blocker that names and links its files (R22). Cases 63-66: the sweep lifts a block that rested on a conflict once it is
+fixed, keeps it while CI is red, sends a block on content to a review of the new head, and never loops
+on a held head (R35). Host-local cases 09-11: the mayor's 9a62c85 runs on three real PRs (two expected
+to fail; one passes with only the v5 format rules firing).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a

@@ -41,8 +41,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_digest  # noqa: E402
 import pr_format  # noqa: E402
 import pr_judge  # noqa: E402
+import pr_money  # noqa: E402
 import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
 
@@ -57,17 +59,21 @@ NAMES = dict(x.split('=', 1) for x in os.environ.get('PR_REVIEW_NAMES', '').spli
 _TEXT = {'type': 'string'}
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
-    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'not_checked_summary', 'safe_to_skip', 'checks'],
+    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'summary', 'skip', 'checks'],
     'properties': {
         'decisions': {'type': 'array', 'maxItems': 3, 'description': (
             'Only decisions the reviewer alone can make: a product, risk or compliance trade-off, never a code '
             'fix the author can make. Empty when there is none.'), 'items': {
             'type': 'object', 'additionalProperties': False,
-            'required': ['question', 'options', 'recommendation', 'why', 'area', 'link', 'verified', 'confidence'],
+            'required': ['question', 'options', 'recommended', 'reason', 'why', 'area', 'rule', 'link', 'verified',
+                         'confidence'],
             'properties': {
                 'question': {'type': 'string', 'maxLength': 280, 'description': 'One question ending in "?", at most 280 characters.'},
                 'options': {'type': 'array', 'minItems': 2, 'maxItems': 4, 'items': _TEXT},
-                'recommendation': {'type': 'string', 'maxLength': 280},
+                'recommended': {'type': 'integer', 'minimum': 0, 'maximum': 3,
+                                'description': 'The index of the option you recommend (0 = the first).'},
+                'reason': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence: why that option.'},
+                'rule': {'type': 'string', 'description': 'The id of the repository rule this is about (e.g. "D3"), or "" when none is.'},
                 'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why only the reviewer can decide this.'},
                 'area': {'type': 'string', 'enum': pr_format.AREAS},
                 'link': {'type': 'object', 'additionalProperties': False, 'required': ['kind'], 'properties': {
@@ -80,8 +86,8 @@ SCHEMA = {
                 'confidence': {'type': 'integer', 'minimum': 1, 'maximum': 10}}}},
         'items': {'type': 'array', 'maxItems': 5, 'description': 'For the author, worst first.', 'items': {
             'type': 'object', 'additionalProperties': False,
-            'required': ['path', 'side', 'line_start', 'line_end', 'kind', 'severity', 'area', 'what', 'why', 'ask',
-                         'verified', 'confidence'],
+            'required': ['path', 'side', 'line_start', 'line_end', 'kind', 'severity', 'area', 'change', 'why', 'ask',
+                         'rule', 'verified', 'confidence'],
             'properties': {
                 'path': {'type': 'string', 'description': 'File path as in the diff.'},
                 'side': {'type': 'string', 'enum': ['new', 'old'],
@@ -92,32 +98,45 @@ SCHEMA = {
                          'description': 'question = ask the author; change = the author must fix.'},
                 'severity': {'type': 'string', 'enum': ['high', 'medium', 'low']},
                 'area': {'type': 'string', 'enum': pr_format.AREAS},
-                'what': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: what these lines change.'},
-                'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why it matters, naming the area in words.'},
-                'ask': {'type': 'string', 'maxLength': 280, 'description': 'At most 280 characters: the exact change, or the exact question or evidence to ask for.'},
+                'change': {'type': 'string', 'maxLength': 60, 'description': (
+                    '3-6 plain words: what this PR changed on these lines, e.g. "Reminder text names the patient". '
+                    'Never a category label.')},
+                'why': {'type': 'string', 'maxLength': 200, 'description': 'The one fact that makes it matter, at most 25 words.'},
+                'ask': {'type': 'string', 'maxLength': 200, 'description': 'The one change, or the one question, at most 25 words.'},
+                'rule': {'type': 'string', 'description': 'The id of the repository rule this is about (e.g. "D3"), or "" when none is.'},
                 'verified': {'type': 'string', 'description': 'The files you opened to confirm it.'},
                 'confidence': {'type': 'integer', 'minimum': 1, 'maximum': 10}}}},
         'cleared': {'type': 'array', 'maxItems': 12, 'description': (
             'One entry per FLAGGED HUNK that needs no decision and no item: why it is safe.'), 'items': {
-            'type': 'object', 'additionalProperties': False, 'required': ['flag', 'path', 'line_start', 'line_end', 'why'],
+            'type': 'object', 'additionalProperties': False,
+            'required': ['flag', 'path', 'line_start', 'line_end', 'change', 'why', 'rule'],
             'properties': {
                 'flag': {'type': 'string', 'description': 'The flag id from the FLAGGED HUNKS list, e.g. "F1".'},
                 'path': {'type': 'string', 'description': "The flag's file."},
                 'line_start': {'type': 'integer', 'minimum': 1,
                                'description': "New-side line inside the flag's hunk where the flagged code is."},
                 'line_end': {'type': 'integer', 'minimum': 1},
-                'why': {'type': 'string', 'maxLength': 240, 'description': (
-                    'One plain sentence, at most 240 characters: why this flagged code is safe, e.g. "The new '
-                    'log line prints only the visit id."')}}}},
+                'change': {'type': 'string', 'maxLength': 60, 'description': (
+                    '3-6 plain words: what this PR changed there, e.g. "Log line prints the visit id". Never a '
+                    'category label.')},
+                'why': {'type': 'string', 'maxLength': 200, 'description': (
+                    'The one fact that makes it safe, at most 25 words, e.g. "Only the visit id is logged, no '
+                    'patient field." A possible risk needs the reason it is acceptable or intended.')},
+                'rule': {'type': 'string', 'description': 'The id of the repository rule this is about (e.g. "D3"), or "" when none is.'}}}},
         'not_checked_lines': {'type': 'array', 'maxItems': 10, 'description': (
             'New-side lines of the diff that change billing, plans, credits or pricing (not checked by this '
             'review). Empty when there are none.'), 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['path', 'line'],
             'properties': {'path': _TEXT, 'line': {'type': 'integer', 'minimum': 1}}}},
-        'not_checked_summary': {'type': 'string', 'maxLength': 240, 'description': (
-            'One plain sentence, at most 240 characters: what the not_checked_lines change for customers or '
-            'accounts (what changes, not whether it is right). Empty when there are none.')},
-        'safe_to_skip': {'type': 'string', 'maxLength': 220, 'description': 'One line, at most 220 characters: what the rest of the diff is, e.g. "14 files: tests, UI copy, types".'},
+        'summary': {'type': 'string', 'maxLength': 200, 'description': (
+            'One plain sentence, at most 200 characters: what this PR does, for someone who does not know the code.')},
+        'skip': {'type': 'array', 'maxItems': 6, 'description': (
+            'The rest of the diff that needs no look, by group. Never a change in product behaviour: that is a '
+            'cleared entry (intended, default safe) or a decision.'), 'items': {
+            'type': 'object', 'additionalProperties': False, 'required': ['group', 'paths'],
+            'properties': {
+                'group': {'type': 'string', 'maxLength': 30, 'description': '1-3 plain words, e.g. "tests", "types", "UI copy".'},
+                'paths': {'type': 'array', 'maxItems': 40, 'items': _TEXT, 'description': 'File paths as in the diff.'}}}},
         'checks': {'type': 'object', 'additionalProperties': False,
                    'required': ['description_matches_diff', 'behaviour_changes_have_tests',
                                 'migrations_reversible_and_ordered'],
@@ -137,40 +156,57 @@ DENY_ROOTS = ['//home/**', '//root/**', '//etc/**', '//proc/**', '//sys/**', '//
 FINAL = """START ANALYSIS:
 
 This review runs headless with read-only tools (Read, Grep, Glob) and no sub-tasks; your working
-directory is the repository at the PR head. Do these steps yourself, in order:
+directory is the repository at the PR head. Two people read it: {name}, the harness engineer, who does
+not know this codebase, and {author}, who wrote the change and has reviewed it. Its job is to check the
+PR for CONSISTENCY WITH THE REPOSITORY'S GOALS AND RULES, as THE REPOSITORY'S RULES above write them
+down, and for the vulnerabilities and issues the scan instructions ask about. Do these steps yourself,
+in order:
 
 1. Open every FLAGGED HUNK listed above (F1, F2, ...) in its file, and open its callers and the code it
    calls (Grep for the changed functions and types). Do not write an entry about code you have not opened;
    name what you opened in `verified`.
-2. Read the rest of the diff the same way. Find the vulnerabilities and every issue the custom scan
-   instructions ask about. Apply the FALSE POSITIVE FILTERING rules, give each candidate a confidence from
-   1 to 10, and drop anything below 8.
+2. Read the rest of the diff the same way, with the repository's rules at hand. Find where the PR goes
+   against a rule or a goal, the vulnerabilities, and every issue the custom scan instructions ask about.
+   Apply the FALSE POSITIVE FILTERING rules, give each candidate a confidence from 1 to 10, and drop
+   anything below 8.
 3. Sort what is left into these lists:
-   - `decisions`: only what the reviewer alone can decide, a product, risk or compliance trade-off (for
-     example whether patient data may go to a vendor, or whether a destructive step may run in production).
-     Each is ONE question ending in "?", with 2 to 4 options, your recommendation, why only the reviewer can
-     decide it, and a link to where it lives: lines of a file at the head ("code"), the PR description
-     ("description"), or a ticket URL that appears in the description ("ticket"). A code fix the author can
+   - `decisions`: only what {name} alone can decide, at the level of goals and rules, never of code. For
+     example: "Rule D3 says X; this PR does Y. Accept it as an exception, ask {author} to change it, or
+     update the rule?" A product, risk or compliance trade-off (whether patient data may go to a vendor,
+     whether a destructive step may run in production) is one too. Each is ONE question ending in "?",
+     with 2 to 4 options, `recommended` (the index of the option you recommend) and `reason` (one short
+     sentence on why), `why` (why only {name} can decide it), `rule`, and a link to where it lives: lines
+     of a file at the head ("code"), the PR description ("description"), or a ticket URL that appears in
+     the description ("ticket"). Never ask {name} to read, review or check code. A code fix the author can
      make is never a decision.
-   - `items` for the author: a "change" they must make or a "question" they must answer, each anchored to
-     lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). Say each
-     finding once: never two items on the same lines.
+   - `items` for {author}: a "change" they must make or a "question" they must answer, each anchored to
+     lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). `change`
+     is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter and `ask`
+     the one thing to do, at most 25 words each. Say each finding once: never two items on the same lines.
    - `cleared`: EVERY flagged hunk that is not covered by a decision or an item gets one entry: its flag
-     id, its file, a new-side line range inside that hunk where the flagged code is, and one plain sentence
-     on why it is safe. A flagged hunk with no entry anywhere fails the review.
+     id, its file, a new-side line range inside that hunk on the CODE that makes it safe (not a comment),
+     `change` (3-6 plain words on what the PR changed, never a category label) and `why` (the one fact
+     that makes it safe, at most 25 words). "Consistent with rule D2" is such a fact when the rule covers
+     it. A behaviour that could be a risk is cleared only when `why` says why it is acceptable or
+     intended; otherwise it is a question item for {author}. A flagged hunk with no entry anywhere fails
+     the review.
+   - `rule` on every decision, item and cleared entry: the id of the repository rule it is about, or "".
+     A finding in an area where the repository has a written rule must cite it. Judge patient data,
+     security and compliance against the repository's own rules; where it has none, say so in `why`.
    - `not_checked_lines`: new-side lines that change {not_checked}. This review does NOT check that area:
-     never write decisions, items or cleared entries about it; list where it is, and say in
-     `not_checked_summary` what those lines change for customers or accounts (a description, not a
-     verdict). The reviewer is asked to look at it himself.
-4. Keep at most 3 decisions and 5 items, worst first. Write `safe_to_skip`.
+     never write decisions, items or cleared entries about it; only list where it is.
+4. Keep at most 3 decisions and 5 items, worst first. Write `summary`, one sentence on what the PR does,
+   and `skip`, the files that need no look, by group. A change in product behaviour never goes in `skip`:
+   it is a cleared entry that says it is intended and its default is safe, or a decision. `change` is
+   plain words about the line, never an identifier (no function, variable or type names).
 
 Your answer is the JSON object of the schema you were given; it replaces the markdown output format
-described above. You do not pick the outcome: the script derives it (a decision means the reviewer is
-needed; a change means changes are requested; only questions means questions for the author; nothing
-means low risk). Follow the STYLE GUIDE above to the letter: one sentence each for `what` and `why`, no
-filler, no rule codes or flag ids in any text, no praise, and no link to any site but github.com (write
-the sentence without it). Never copy secrets, tokens or personal data into your answer; point at them by
-path and line instead.
+described above. You do not pick the outcome: the script derives it (a decision means {name} is needed;
+a change means changes are requested; only questions means questions for {author}; nothing means low
+risk). Follow the STYLE GUIDE above to the letter: plain words, no filler, no rule codes or flag ids in
+any text (cite a repository rule only through `rule`), no praise, and no link to any site but github.com
+(write the sentence without it). Never copy secrets, tokens or personal data into your answer; point at
+them by path and line instead.
 """
 
 
@@ -214,6 +250,21 @@ def prepare(cfg, repo, pr, run_id):
     return mirror, tree, ctx, diff, files, commits, fork
 
 
+def conflict_files(mirror, pr):
+    """The files that conflict with the base branch (git merge-tree in the mirror, no tokens), so the
+    conflict blocker names and links them. [] when GitHub reports no conflict or git cannot tell."""
+    if pr.get('mergeable') != 'CONFLICTING':
+        return []
+    out = git(mirror, 'merge-tree', '--write-tree', '--name-only', '--no-messages',
+              f"refs/heads/{pr['baseRefName']}", pr['headRefOid'], check=False)
+    names = []
+    for line in out.splitlines()[1:]:
+        if not line.strip():
+            break
+        names.append(line.strip())
+    return sorted(set(names))
+
+
 def cleanup(cfg, mirror, run_id):
     run = os.path.join(cfg['work'], 'runs', run_id)
     if mirror and os.path.isdir(os.path.join(run, 'tree')):
@@ -223,7 +274,7 @@ def cleanup(cfg, mirror, run_id):
         git(mirror, 'worktree', 'prune', check=False)
 
 
-def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked):
+def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked, digest_block='', author='the author'):
     text = open(UPSTREAM).read()
     text = re.sub(r'\A---\n.*?\n---\n', '', text, flags=re.S)  # the slash command's frontmatter
     status = (f"Pull request {pr['url']}, head {pr['headRefOid']}, forked from the base branch at {fork}. Open.\n"
@@ -247,12 +298,15 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked)
     idx = pr_format.diff_index(diff)
     hunks = '\n'.join(f"- {f['id']}: {f['path']} line {f['line']} (new side), hunk {hunk_span(idx, f)}: {f['label']}"
                       for f in flagged) or '- none'
+    final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
+    final = final.replace('{name}', NAME).replace('{author}', author)
     return (f'{head}{checklist}\n\nSTYLE GUIDE (how your answer will be rendered and checked):\n\n{style}\n\n'
+            f'{digest_block}\n\n'
             f'FLAGGED HUNKS (pattern matches on the diff, not findings; open each one, step 1; each needs a '
             f'decision, an item or a cleared entry, step 3):\n'
             f'{hunks}\n\nVALID ITEM RANGES (an item\'s line_start and line_end must both fall inside ONE of these '
             f'ranges on its side, or the review is rejected):\n{hunk_ranges(diff)}\n\n'
-            f"{FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')}")
+            f"{final}")
 
 
 def hunk_span(idx, flag):
@@ -319,15 +373,17 @@ def run_model(cfg, tree, ctx, prompt):
     so = out.get('structured_output')
     if out.get('is_error') or not isinstance(so, dict):
         return None, {**meta, 'error': out.get('subtype') or 'no-structured-output'}
-    so['safe_to_skip'] = clean(so['safe_to_skip'])
-    so['not_checked_summary'] = clean(so.get('not_checked_summary') or '')
+    so['summary'] = clean(so['summary'])
+    for g in so['skip']:
+        g['group'] = clean(g['group'])
     for c in so['cleared']:
-        c['why'] = clean(c['why'])
+        for k in ('change', 'why'):
+            c[k] = clean(c[k])
     for it in so['items']:
-        for k in ('what', 'why', 'ask', 'verified'):
+        for k in ('change', 'why', 'ask', 'verified'):
             it[k] = clean(it[k])
     for d in so['decisions']:
-        for k in ('question', 'recommendation', 'why', 'verified'):
+        for k in ('question', 'reason', 'why', 'verified'):
             d[k] = clean(d[k])
         d['options'] = [clean(o) for o in d['options']]
     return so, meta
@@ -429,15 +485,16 @@ def ours_on_head(repo, number, head):
 
 
 POINTER = 'Replaced by [the new review of this commit]'
-OURS_JQ = ' or '.join(f'(.body | startswith("{m}"))' for m in pr_format.MARKERS)
-DISMISSAL = 'Replaced by the automated review of a newer commit.'
+OURS_JQ = pr_format.ours_jq()
+DISMISSAL = 'Replaced by a newer automated review.'
 
 
-def dismiss_changes(repo, number, keep_id, reviewer):
-    """R35: at most one live REQUEST_CHANGES of ours on a PR, the newest. A later COMMENT review would leave
-    an earlier one blocking, so every newer review dismisses the earlier ones. Only automated reviews
-    (their body starts with a marker); never one the reviewer wrote. Returns (dismissed, failed)."""
-    jq = (f'.[] | select(.state == "CHANGES_REQUESTED" and .id != {int(keep_id)} and '
+def dismiss_stale(repo, number, keep_id, reviewer):
+    """R35, R31: our newest review is our only live verdict on a PR. A later COMMENT review would leave an
+    earlier REQUEST_CHANGES blocking, or an earlier APPROVE standing after the review found a question, so
+    every newer review dismisses our earlier ones in those states. Only automated reviews (their body
+    begins the way ours do); never one the reviewer wrote. Returns (dismissed, failed)."""
+    jq = (f'.[] | select((.state == "CHANGES_REQUESTED" or .state == "APPROVED") and .id != {int(keep_id)} and '
           f'(.user.login | ascii_downcase) == "{reviewer.lower()}" and ({OURS_JQ})) | .id')
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
@@ -454,8 +511,16 @@ def dismiss_changes(repo, number, keep_id, reviewer):
 
 def pointer_body(name, new_url):
     """What an earlier review of the same head becomes when a new one replaces it (R24)."""
-    return (pr_format.HONEST.format(what='review', name=name) + '\n\n'
-            f'{POINTER}({new_url}).')
+    return f"**Replaced**{pr_format.SUFFIX.format(name=name)}\n\n{POINTER}({new_url})."
+
+
+def block_kind(rv):
+    """What a formal block rests on: 'mechanical' (only a merge conflict or CI) the sweep lifts once the
+    cause is gone; 'content' (an item or a decision) needs a review of the new head."""
+    if not rv['items'] and not rv['decisions'] and rv['blockers'] and \
+            all(b.get('cause') in ('conflict', 'ci') for b in rv['blockers']):
+        return 'mechanical'
+    return 'content'
 
 
 def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), idx=None, rereview=False):
@@ -499,7 +564,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{repo}/pulls/{n}/reviews/{rid}'],
                        capture_output=True, text=True, timeout=60)
     elif posted == 'ok':
-        extra['dismissed'], extra['dismiss_failed'] = dismiss_changes(repo, n, rid, cfg['reviewer'])
+        extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'])
     if not url:
         finish(cfg, key, dict(entry, head=head), 'held-inline' if comments else 'error', {**extra, 'posted': posted})
         return
@@ -513,7 +578,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     pr_state.keep_posted(cfg, entry, head, body, comments, result)
     extra.update(review_url=url, review_id=rid, review_heads=heads[-20:], body_sha=body_sha(body), posted=posted,
                  delivered_at=pr_state.iso(pr_state.now()), approved=event == 'APPROVE', event=event,
-                 inline=len(comments))
+                 inline=len(comments), rc_live=event == 'REQUEST_CHANGES',
+                 block=block_kind(rv) if event == 'REQUEST_CHANGES' else None)
     if reasons:  # posted, but it broke a delivery rule: no Slack link, and the log says which
         finish(cfg, key, dict(entry, head=head), 'error', {**extra, 'gate': [r.split(':')[0] for r in reasons]})
         return
@@ -537,7 +603,8 @@ def redeliver(cfg, key):
         print(json.dumps({'pr': entry['url'], 'redeliver': 'no stored result for this head'}))
         return
     res = json.load(open(p)).get('result') or {}
-    if 'blockers' not in res or res.get('outcome') == 'not-reviewed':  # pre-v4, or the R33 note: no stored review
+    if 'blockers' not in res or res.get('outcome') == 'not-reviewed' or \
+            any('change' not in x for x in res.get('items', []) + res.get('cleared', [])):  # pre-v5, or the R33 note
         print(json.dumps({'pr': entry['url'], 'redeliver': 'no stored review for this head; use --rereview'}))
         return
     author = author_of(pr)
@@ -615,20 +682,25 @@ def flags_for(files, ruleset, hits, area_of):
     return flagged, max(0, len(located) - MAX_FLAGS), nc
 
 
-def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_cut, nc, ruleset, author, model,
-             idx=None, nc_summary=''):
-    """The review dict (pr_format): the not-checked decision first when the PR touches that area (R20);
-    blockers for a conflict or CI that did not pass (R22); an approval only when the bar holds (R27), and
+def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_cut, money, ruleset, author, model,
+             idx=None, digest=None, conflicts=()):
+    """The review dict (pr_format): the not-checked decision first when the PR touches that area (R20,
+    R32; `money` holds its changed ranges with their lines); blockers for a conflict or CI that did not
+    pass (R22); the repository's rules for the links (R37); an approval only when the bar holds (R27), and
     a low-risk review that misses the bar asks the author for what is missing instead."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
-    if nc:
-        decisions = [pr_format.not_checked_decision(nc, words, author, nc_summary)] + decisions[:pr_format.MAX_DECISIONS - 1]
+    if money:
+        decisions = [pr_format.not_checked_decision(money, words, author)] + decisions[:pr_format.MAX_DECISIONS - 1]
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
-    rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'safe_to_skip': safe,
-          'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
-          'not_checked': words if nc else '', 'model': model, 'flags_cut': flags_cut, 'approve': False,
-          'request_changes': cfg['request_changes']}
+    skip = [dict(g, paths=[x for x in g['paths'] if idx is None or x in idx]) for g in (skim or {}).get('skip') or []]
+    rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'summary': (skim or {}).get('summary') or '',
+          'skip': [g for g in skip if g['paths']],
+          'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr), conflicts),
+          'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
+          'not_checked': words if money else '', 'model': model, 'flags_cut': flags_cut, 'approve': False,
+          'request_changes': cfg['request_changes'], 'rules': (digest or {}).get('rules') or {},
+          'rules_sha': (digest or {}).get('sha') or ''}
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     if rv['outcome'] == 'low-risk' and cfg['approve']:
         if not pr_format.ci_strict(pr):
@@ -644,19 +716,35 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_
     return rv
 
 
-def minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author):
+def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author):
     """R33 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
-    reader test held the full one twice: line 2, the money decision (each file linked at the head) and the
-    facts line, nothing the model wrote."""
-    rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, nc, ruleset, author, model=False)
-    rv['decisions'] = [dict(d, what='') for d in rv['decisions']]
+    reader test held the full one twice: line 2, the money decision (each place linked to its changed range
+    with its one line, R32) and the status line, nothing the review model wrote."""
+    rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False)
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
+
+
+def describe_money(cfg, idx, located, ruleset):
+    """R32: the not-checked places as changed ranges, each with one neutral line and its kind from pr_money
+    (every place is linked; the mayor, 2026-10-30 01:40Z: never a bare count). Returns (ranges, meta)."""
+    ranges = pr_format.money_ranges(idx, located)
+    shown, meta = pr_money.describe(cfg, idx, ranges[:pr_money.MAX_PLACES],
+                                    ruleset.get('not_checked') or 'billing, plans, credits or pricing')
+    return [dict(r, what=clean(r['what'])) for r in shown] + ranges[pr_money.MAX_PLACES:], meta
+
+
+def question_from(c):
+    """R31: a cleared entry the reader still finds risky without a reason becomes a question for the author."""
+    return {'path': c['path'], 'side': 'new', 'line_start': c['line_start'], 'line_end': c['line_end'],
+            'kind': 'question', 'severity': 'low', 'area': 'other', 'change': c['change'], 'why': c['why'],
+            'ask': 'Is this intended, and what keeps it safe?', 'rule': c.get('rule') or '', 'verified': '',
+            'confidence': 8}
 
 
 def not_reviewed(pr, ci):
     """R33 (the mayor, 2026-10-29 22:30Z): a PR that requests the reviewer is never silent. When its review
     was held, it gets the short honest note and the facts line instead."""
-    rv = {'outcome': 'not-reviewed', 'decisions': [], 'items': [], 'cleared': [], 'blockers': [], 'safe_to_skip': '',
+    rv = {'outcome': 'not-reviewed', 'decisions': [], 'items': [], 'cleared': [], 'blockers': [], 'summary': '', 'skip': [],
           'not_checked': '', 'approve': False}
     return rv, pr_format.note(NAME, pr_format.facts_line(pr, ci, ci_detail(pr))), []
 
@@ -692,7 +780,9 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
         return model_review(cfg, key, entry, dry, rereview)
     _, _, nc = flags_for(files, ruleset, hits, area_of)
     author = author_of(pr)
-    rv = assemble(cfg, entry['repo'], pr, ci, [], [], [], '', [], 0, nc, ruleset, author, model=False)
+    money, mmeta = describe_money(cfg, pr_format.diff_index(pr_diff(entry['repo'], pr['number'])), nc, ruleset) \
+        if nc else ([], {})
+    rv = assemble(cfg, entry['repo'], pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False)
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
     reasons = pr_format.gate(rv, {}, body, None, pr.get('body') or '', [], [])
     if dry:
@@ -701,9 +791,10 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     if reasons:
         finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-gate', {'model': False, 'gate': [r.split(':')[0] for r in reasons]})
         return
-    result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'safe_to_skip', 'not_checked')}
+    result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
     result.update(rule_ids=rule_ids(hits), flagged=[])
-    deliver(cfg, key, entry, pr, rv, body, [], result, {'model': False, 'ci': ci, 'gate': []}, rereview=rereview)
+    deliver(cfg, key, entry, pr, rv, body, [], result, {'model': False, 'ci': ci, 'gate': [],
+                                                        'money_cost_usd': mmeta.get('cost_usd', 0)}, rereview=rereview)
 
 
 def model_review(cfg, key, entry, dry, rereview=False):
@@ -724,15 +815,21 @@ def model_review(cfg, key, entry, dry, rereview=False):
     mirror = None
     try:
         mirror, tree, ctx, diff, files, commits, fork = prepare(cfg, repo, pr, run_id)
-        prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'))
+        # R37: the repository's own rules, as they stand on the base branch the PR merges into
+        digest, dmeta = pr_digest.get(cfg, repo, mirror, git(mirror, 'rev-parse', f"refs/heads/{pr['baseRefName']}").strip())
+        conflicts = conflict_files(mirror, pr)
+        prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'),
+                              pr_digest.prompt_block(digest), author)
         if dry:
             print(json.dumps({'pr': entry['url'], 'dry_run': True, 'prompt_chars': len(prompt),
                               'diff_chars': len(diff), 'files': len(files.splitlines()), 'rules': sorted(hits),
                               'flagged_hunks': len(flagged), 'flags_cut': flags_cut, 'not_checked_hunks': len(nc_rule)}))
             return
         idx = pr_format.diff_index(diff)
-        extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0}
-        reasons, problems, model = [], [], None
+        extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
+                 'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
+                 'digest_cost_usd': dmeta.get('cost_usd', 0)}
+        reasons, problems, model, risky, money_memo = [], [], None, [], {}
         for attempt in (1, 2):
             p = prompt if attempt == 1 else (
                 prompt + '\n\nYOUR PREVIOUS ANSWER FAILED THE STYLE GUIDE GATE. Fix every reason and answer again:\n'
@@ -751,9 +848,13 @@ def model_review(cfg, key, entry, dry, rereview=False):
             # R20: the rule's hunks, plus the money lines the model saw that are in the diff.
             nc = nc_rule + [dict(x, rule='model') for x in model['not_checked_lines']
                             if x['line'] in (idx.get(x['path']) or {}).get('new', set())]
-            rv = assemble(cfg, repo, pr, ci, decisions, items, model['cleared'], model['safe_to_skip'], flagged,
-                          flags_cut, nc, ruleset, author, model=True, idx=idx,
-                          nc_summary=model['not_checked_summary'] if len(model['not_checked_summary'].split()) >= 4 else '')
+            nc_key = tuple(sorted({(x['path'], x['line']) for x in nc}))
+            if nc_key not in money_memo:  # R32: the money lines, once per set of places
+                money_memo[nc_key], mm = describe_money(cfg, idx, nc, ruleset) if nc else ([], {})
+                extra['money_cost_usd'] += mm.get('cost_usd') or 0
+            money = money_memo[nc_key]
+            rv = assemble(cfg, repo, pr, ci, decisions, items, model['cleared'], model, flagged,
+                          flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, conflicts=conflicts)
             body = pr_format.render(repo, pr, rv, NAME, author)
             comments = pr_format.inline_comments(rv['items'], author)
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
@@ -763,7 +864,15 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 scores, problems, jm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra['judge_cost_usd'] += jm.get('cost_usd') or 0
                 extra['judge'] = scores
-                reasons = pr_judge.below_bar(scores)
+                risky = [j for j in jm.get('risky_cleared') or [] if j <= len(rv['cleared'])]
+                extra['risky_cleared'] = len(risky)
+                reasons = pr_judge.below_bar(scores) + ([
+                    f'R31: cleared entries {risky} describe a possible risk without saying why it is acceptable or '
+                    f'intended; give the fact that makes each one safe, or make it a question for the author']
+                    if risky and scores is not None else []) + ([
+                    'R37: a change in product behaviour sits in "Safe to skip"; give it its own linked line saying '
+                    'it is intended and its default is safe, or make it a decision'] if jm.get('behaviour_in_skip') else [])
+                extra['behaviour_in_skip'] = bool(jm.get('behaviour_in_skip'))
                 if reasons and scores is not None:
                     keep_reader(cfg, entry, pr['headRefOid'], attempt, scores, problems)
                 if scores is None:  # the reader test did not run: hold without a second model run
@@ -771,6 +880,23 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if not reasons:
                 break
             extra.setdefault('gate_first', sorted({r.split(':')[0] for r in reasons}))
+        in_skip = [r for r in reasons if r.startswith('R37: a change in product behaviour')]
+        if reasons and all(r.startswith('R31') or r in in_skip for r in reasons):
+            # R31: what the reader still finds risky after the second answer is not cleared; it becomes a
+            # question for the author. A behaviour change the reader still finds in the skip list means no
+            # approval (R37). Either way the PR is not approved.
+            asked = [question_from(c) for j, c in enumerate(rv['cleared'], 1) if j in risky]
+            rv = assemble(cfg, repo, pr, ci, decisions, (items + asked)[:pr_format.MAX_ITEMS],
+                          [c for j, c in enumerate(model['cleared'], 1) if j not in risky], model,
+                          flagged, flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest,
+                          conflicts=conflicts)
+            if in_skip:
+                rv['approve'] = False
+            body = pr_format.render(repo, pr, rv, NAME, author)
+            comments = pr_format.inline_comments(rv['items'], author)
+            links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
+            reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
+            extra['r31_questions'] = len(asked)
         # Enum values, counts and rule ids only, so the log can say why reviews end where they do.
         extra.update(decisions=len(rv['decisions']), items=len(rv['items']), cleared=len(rv['cleared']),
                      blockers=len(rv['blockers']), not_checked=bool(rv['not_checked']), approve=rv['approve'],
@@ -781,11 +907,11 @@ def model_review(cfg, key, entry, dry, rereview=False):
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         fallback = held and pr_rules.held_fallback(
             'requested' in hits, bool(rv['not_checked']),
-            held == 'held-gate' and bool(extra.get('judge')) and all(r.startswith('R26') for r in reasons))
+            held == 'held-gate')
         if fallback == 'not-checked-minimal':
-            # The reader test held it twice, but a PR that touches a not-checked area is never silent:
+            # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
             # deliver only line 2, the money decision and the facts line, with no model findings (R33).
-            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author)
+            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author)
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,
@@ -802,8 +928,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
         if held:
             finish(cfg, key, dict(entry, head=pr['headRefOid']), held, extra)
             return
-        result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'safe_to_skip', 'not_checked')}
-        result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [])
+        result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
+        result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [],
+                      rules=rv.get('rules') or {}, rules_sha=rv.get('rules_sha') or '')
         deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged, idx, rereview)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         # Only our own RuntimeError texts are kept; an OSError can name a file of the repository.

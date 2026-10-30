@@ -9,7 +9,9 @@
     "Allow it, with the SMS vendor under a BAA",
     "Send only the clinic name and time"
    ],
-   "recommendation": "Send only the clinic name and time; nothing in the ticket needs the patient name.",
+   "recommended": 1,
+   "reason": "Nothing in the ticket needs the patient name.",
+   "rule": "",
    "why": "Which patient data may go to a third party is a compliance call, not a code fix the author can make.",
    "area": "compliance",
    "link": {
@@ -35,14 +37,23 @@
    "kind": "change",
    "severity": "medium",
    "area": "patient data",
-   "what": "The reminder SMS now carries the full name and date of birth, and the same text is written to the info log.",
+   "change": "Reminder text names the patient",
    "why": "Patient data goes to the SMS provider and into application logs, which are not meant to hold PHI.",
    "ask": "Drop the message body from the info log line and log the visit id instead.",
+   "rule": "",
    "verified": "read remind() and the logger config",
    "confidence": 9
   }
  ],
- "safe_to_skip": "1 test file: a happy-path test.",
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ],
  "delivery": {
   "pr_state": "OPEN",
   "review_url": "https://github.com/example/repo/pull/1#pullrequestreview-1001",

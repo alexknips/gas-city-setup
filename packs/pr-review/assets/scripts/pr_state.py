@@ -77,6 +77,8 @@ def config():
         'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
         'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
         'judge_max_usd': e('PR_REVIEW_JUDGE_MAX_USD', '0.25'),
+        'digest_model': e('PR_REVIEW_DIGEST_MODEL', 'sonnet'),
+        'digest_max_usd': e('PR_REVIEW_DIGEST_MAX_USD', '1'),
         'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),
     }
 

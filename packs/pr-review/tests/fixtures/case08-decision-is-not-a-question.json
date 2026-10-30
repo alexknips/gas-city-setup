@@ -16,7 +16,9 @@
     "Allow it, with the SMS vendor under a BAA",
     "Send only the clinic name and time"
    ],
-   "recommendation": "Send only the clinic name and time; nothing in the ticket needs the patient name.",
+   "recommended": 1,
+   "reason": "Nothing in the ticket needs the patient name.",
+   "rule": "",
    "why": "Which patient data may go to a third party is a compliance call, not a code fix the author can make.",
    "area": "compliance",
    "link": {
@@ -30,5 +32,13 @@
   }
  ],
  "items": [],
- "safe_to_skip": "everything: 2 files."
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ]
 }

@@ -4,12 +4,12 @@
   diff_index(diff)                   which lines of which file an entry may point at
   blockers(repo, pr, ci, ci_bad)     a merge conflict or CI that did not pass, as linked asks for the author (R22)
   decide(decisions, items, blockers) the outcome
-  render(repo, pr, rv, name, author) the review body (markdown), honesty line first ...
+  render(repo, pr, rv, name, author) the review body (markdown), the verdict first (R28) ...
   inline_comments(items, author)     ... and one inline comment per item, on its lines (R4)
   gate(rv, idx, body, ...)           the reasons a review breaks the style guide ([] = it may be delivered)
   gate_approve(...)                  the reasons a low-risk review may not be an APPROVE (R27)
 
-A review `rv` is a dict: outcome, approve (bool), decisions, items, blockers, cleared, safe_to_skip, facts,
+A review `rv` is a dict: outcome, approve (bool), decisions, items, blockers, cleared, summary, skip, facts,
 not_checked (the words for a not-checked area the PR touches, or ''), model (whether a model read the PR).
 
 `pr_format.py --regress DIR...` runs the gate over regression fixtures (README.md, "Quality loop").
@@ -24,19 +24,24 @@ AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'beha
          'product', 'compliance', 'other']
 NOT_CHECKED_AREA = 'not checked'  # the area of the decision R20 adds; the model never uses it
 KINDS = {'question': 'Ask {author}', 'change': 'Change'}
-# Line 1 of every review (it is posted under the reviewer's login, so the author must see it is automated).
-HONEST = "Automated {what} by {name}'s review agents (Claude Code); {name} hasn't read this PR yet."
-HONEST_RE = re.compile(r"^Automated (review|approval) by .+'s review agents \(Claude Code\); .+ hasn't read this PR yet\.$")
+# R28: line 1 is the verdict, then the honesty note as a suffix (the review is posted under the reviewer's
+# login, so the author must see it is automated): "**Approved as low risk** · automated, Alex hasn't read this PR".
+SUFFIX = " · automated, {name} hasn't read this PR"
 # R33: what a requested PR gets when its review was held: never silence.
 NOT_REVIEWED = '**Not reviewed automatically.**'
-NOTE = NOT_REVIEWED + " Our review didn't reach the quality bar on this PR, so {name} reviews it instead."
+NOTE = NOT_REVIEWED + " Our review of this PR didn't reach the quality bar, so it has no automated review; {name} decides who reviews it."
+# How our reviews begin: earlier bodies with a marker, v5 bodies with the verdict and the suffix.
 MARKERS = ('Automated review', 'Automated approval', NOT_REVIEWED)
+OURS_RE = r'^\*\*[A-Z][A-Za-z ]+\*\* · automated, '
+LETTERS = 'ABCD'
 WORDS = {'escalate': 'Needs you', 'changes': 'Changes requested', 'questions': 'Questions', 'low-risk': 'Low risk'}
 APPROVED = 'Approved as low risk'
 # R35: the word matches the event. Changes are "requested" only on a REQUEST_CHANGES review.
 SUGGESTED = 'Changes suggested'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
-MAX_WHERE = 5  # files a not-checked decision links to (R20)
+MAX_SKIP_LINKS = 12  # files the skip list links one by one; then one link to the files view (R30)
+MONEY_KINDS = ['charges', 'credits', 'plans', 'limits', 'other']  # R32: the money places, grouped
+GREEN_FACTS = 'CI passed · no merge conflict · open'  # R30: the status line shows only when it is not this
 
 # R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
 FILLER = [r'\bmake sure\b', r'\bconsider (reviewing|checking|adding)\b', r'\bplease (review|check|verify)\b',
@@ -50,9 +55,28 @@ CODES_RE = re.compile(r'\b(A[1-7]|B[1-4]|R\d{1,2}|F\d{1,2}|ci-(red|none|skipped)
                       r'migration-(order|edit)|no-description|untested)\b')
 # R25: what clean() leaves where it cut a link or an image out of the model's text.
 CUT_RE = re.compile(r'\[(link|image) removed\]')
-# R1, R22: the outcome word, then who acts: "**Changes requested. Alex: nothing. Nils: 1 change, get CI running.**"
-LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk)\. '
-                      r'(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.\*\*$')
+# R28, R1: line 1, the verdict and the automated note.
+LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk)\*\*'
+                      r" · automated, (.+) hasn't read this PR$")
+# R22: line 2, who acts: "Alex: 1 decision. Nils: 1 change, get CI running." or "Nothing for Alex or Nils."
+WHO_RE = re.compile(r'^(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.$')
+NOTHING_RE = re.compile(r'^Nothing for (.+) or (.+)\.$')
+# R37: a decision never asks the reviewer to read or review code (the reviewer does not know the codebase).
+REVIEW_CODE_RE = re.compile(r'(?i)\byou(rself)? (review|read|check|look at)\b|\b(review|read|check)\b[^.?]{0,40}\byourself\b')
+# R29: an entry's change is plain words, never a raw identifier.
+IDENT_RE = re.compile(r'`|\b[a-z]+[A-Z][A-Za-z0-9]*\b|\b[A-Za-z]+_[A-Za-z0-9_]+\b|\w\(\)|::|->')
+# R36: a link that lands only on comment lines does not show why the code is safe.
+COMMENT_RE = re.compile(r'^\s*(//|#|/\*|\*|<!--|--|"""|\'\'\')')
+
+
+def is_ours(body):
+    return (body or '').startswith(MARKERS) or bool(re.match(OURS_RE, body or ''))
+
+
+def ours_jq():
+    """A jq test for "this review body is ours" (every version)."""
+    return ' or '.join([f'(.body | startswith("{m}"))' for m in MARKERS] +
+                       [f'(.body | test("{OURS_RE.replace(chr(92), chr(92) * 2)}"))'])
 
 
 def diff_index(diff):
@@ -68,21 +92,25 @@ def diff_index(diff):
         if raw.startswith('+++ '):
             cur = raw[6:] if raw.startswith('+++ b/') else None
             if cur is not None:
-                idx.setdefault(cur, {'new': set(), 'old': set(), 'hunks': []})
+                idx.setdefault(cur, {'new': set(), 'old': set(), 'hunks': [], 'text': {}, 'hunk_text': []})
             continue
         m = re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@', raw)
         if m and cur is not None:
             old_l, new_l = int(m.group(1)), int(m.group(2))
-            hunk = (set(), set())
+            hunk = (set(), set(), set())  # new side, old side, added lines
             idx[cur]['hunks'].append(hunk)
+            idx[cur]['hunk_text'].append([raw])
             continue
         if cur is None or hunk is None:
             continue
+        idx[cur]['hunk_text'][-1].append(raw)
         if raw.startswith('+'):
-            idx[cur]['new'].add(new_l); hunk[0].add(new_l); new_l += 1
+            idx[cur]['text'][new_l] = raw[1:]
+            idx[cur]['new'].add(new_l); hunk[0].add(new_l); hunk[2].add(new_l); new_l += 1
         elif raw.startswith('-'):
             idx[cur]['old'].add(old_l); hunk[1].add(old_l); old_l += 1
         elif raw.startswith(' ') or raw == '':
+            idx[cur]['text'][new_l] = raw[1:]
             idx[cur]['new'].add(new_l); idx[cur]['old'].add(old_l)
             hunk[0].add(new_l); hunk[1].add(old_l)
             new_l += 1; old_l += 1
@@ -141,26 +169,40 @@ def in_diff(idx, e, hunk=None):
     return any(e['line_start'] in h[k] and e['line_end'] in h[k] for h in hunks)
 
 
-def blockers(repo, pr, ci, ci_bad=()):
+def files_link(repo, number, path):
+    """The Files-view link to one file of a PR's diff."""
+    return f'https://github.com/{repo}/pull/{number}/files#diff-{hashlib.sha256(path.encode()).hexdigest()}'
+
+
+def short_name(path):
+    return path.rsplit('/', 1)[-1]
+
+
+def blockers(repo, pr, ci, ci_bad=(), conflicts=()):
     """A merge conflict and CI that did not pass, as linked asks for the author (R22). `kind` decides the
-    outcome word (a conflict or red CI is a change); `short` goes into line 1."""
+    outcome word (a conflict or red CI is a change); `short` goes into line 2; `cause` lets the sweep lift
+    a formal block once the cause is gone. `conflicts`: the conflicting files (git merge-tree), named and
+    linked."""
     n, out = pr['number'], []
     checks = f'https://github.com/{repo}/pull/{n}/checks'
     if pr.get('mergeable') == 'CONFLICTING':
-        out.append({'kind': 'change', 'short': 'resolve the merge conflict', 'label': 'Resolve the merge conflict',
-                    'url': f'https://github.com/{repo}/pull/{n}/conflicts', 'detail': 'GitHub reports one with the base branch.'})
+        named = ', '.join(f'[`{short_name(c)}`]({files_link(repo, n, c)})' for c in conflicts[:8])
+        more = f' and {plural(len(conflicts) - 8, "more file", "more files")}' if len(conflicts) > 8 else ''
+        out.append({'kind': 'change', 'cause': 'conflict', 'short': 'resolve the merge conflict',
+                    'label': 'Resolve the merge conflict', 'url': f'https://github.com/{repo}/pull/{n}/conflicts',
+                    'detail': f'it is in {named}{more}.' if named else 'GitHub reports one with the base branch.'})
     if ci == 'red':
         names = ', '.join(ci_bad[:4]) or 'see the checks'
-        out.append({'kind': 'change', 'short': 'fix the failing checks', 'label': 'Fix the failing checks',
+        out.append({'kind': 'change', 'cause': 'ci', 'short': 'fix the failing checks', 'label': 'Fix the failing checks',
                     'url': checks, 'detail': f'{names}.'})
     elif ci == 'none':
-        out.append({'kind': 'question', 'short': 'get CI running', 'label': 'Get CI running', 'url': checks,
+        out.append({'kind': 'question', 'cause': 'ci', 'short': 'get CI running', 'label': 'Get CI running', 'url': checks,
                     'detail': 'no check ran on this commit, so nothing has tested it.'})
     elif ci == 'skipped':
-        out.append({'kind': 'question', 'short': 'get the checks to run', 'label': 'Get the checks to run', 'url': checks,
+        out.append({'kind': 'question', 'cause': 'ci', 'short': 'get the checks to run', 'label': 'Get the checks to run', 'url': checks,
                     'detail': 'every check on this commit was skipped, so nothing has tested it.'})
     elif ci == 'pending':
-        out.append({'kind': 'question', 'short': 'get CI to finish', 'label': 'Get CI to finish', 'url': checks,
+        out.append({'kind': 'question', 'cause': 'ci', 'short': 'get CI to finish', 'label': 'Get CI to finish', 'url': checks,
                     'detail': 'it was still running when this review ran.'})
     return out
 
@@ -190,15 +232,17 @@ def facts_line(pr, ci, ci_bad):
 
 
 def who_acts(rv, name, author):
-    """R22: who must do what, in line 1."""
+    """R22: line 2, who must do what; "Nothing for <reviewer> or <author>." when nobody acts."""
     d = rv['decisions']
-    you = plural(len(d), 'decision', 'decisions') if d else 'nothing'
-    if rv.get('not_checked'):
-        you += f" ({rv['not_checked']} not checked)"
     n_change = sum(1 for i in rv['items'] if i['kind'] == 'change')
     n_q = sum(1 for i in rv['items'] if i['kind'] == 'question')
     parts = ([plural(n_change, 'change', 'changes')] if n_change else []) + \
             ([plural(n_q, 'question', 'questions')] if n_q else []) + [b['short'] for b in rv['blockers']]
+    if not d and not parts:
+        return f'Nothing for {name} or {author}.'
+    you = plural(len(d), 'decision', 'decisions') if d else 'nothing'
+    if rv.get('not_checked'):
+        you += f" ({rv['not_checked']} not checked)"
     return f"{name}: {you}. {author}: {', '.join(parts) or 'nothing'}."
 
 
@@ -221,8 +265,9 @@ def event_of(rv):
     return 'COMMENT'
 
 
-def headline(rv, name, author):
-    return f'**{word_of(rv)}. {who_acts(rv, name, author)}**'
+def headline(rv, name):
+    """R28: line 1, the verdict, then the automated note."""
+    return f'**{word_of(rv)}**' + SUFFIX.format(name=name)
 
 
 def note(name, facts):
@@ -238,57 +283,92 @@ def gate_note(body):
     return []
 
 
+def rule_ref(repo, rv, rid):
+    """R37: ' · rule: <the doc lines>' for an entry that cites a rule of the repo's digest."""
+    r = (rv.get('rules') or {}).get(rid) if rid else None
+    if not r:
+        return ''
+    url = code_link(repo, rv['rules_sha'], r['path'], r['line_start'], r['line_end'])
+    return f" · rule: [`{r['path']}` {rng_text(r)}]({url})"
+
+
+def cleared_line(repo, number, rv, c):
+    """R29: what the PR changed in 3-6 plain words, its lines, and the one fact that makes it safe."""
+    url = diff_link(repo, number, c['path'], c.get('side', 'new'), c['line_start'], c['line_end'])
+    return f"- **{c['change']}** · [`{c['path']}` {rng_text(c)}]({url}): {c['why']}{rule_ref(repo, rv, c.get('rule'))}"
+
+
 def render(repo, pr, rv, name, author):
-    """The review body (markdown): the honesty line; the outcome and who acts; the decisions for the
-    reviewer with their links; the asks for the author with links to their lines (each item is also an
-    inline comment) and the blockers with theirs; each fired rule cleared with a link to its lines (R19);
-    safe to skip; the facts line; the not-checked footer only when the PR touches that area (R20, R23)."""
-    lines = [HONEST.format(what='approval' if rv.get('approve') else 'review', name=name), '',
-             headline(rv, name, author), '']
+    """The review body (markdown). Line 1, the verdict and the automated note (R28); line 2, who acts (R22).
+    An approval stops there, with what was checked collapsed (R36). Otherwise: the decisions for the
+    reviewer, each with its options on lettered lines and the recommendation's reason (R16, R32, R37);
+    the asks for the author with links to their lines (each item is also an inline comment) and the
+    blockers; what was checked and cleared (R19, R29); safe to skip with the files view (R30); and the
+    status line only when something did not pass (R30)."""
+    n, head = pr['number'], pr['headRefOid']
+    lines = [headline(rv, name), who_acts(rv, name, author)]
+    if rv.get('approve'):
+        if rv.get('cleared'):
+            lines += ['', '<details><summary>What was checked</summary>', '']
+            lines += [cleared_line(repo, n, rv, c) for c in rv['cleared']]
+            lines += ['', '</details>']
+        return '\n'.join(lines)
+    lines.append('')
+    if rv.get('summary'):
+        lines += [f"**What it does:** {rv['summary']}", '']
     if rv['decisions']:
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
-            area = '' if d['area'] == NOT_CHECKED_AREA else f" · {d['area']}"
-            opener = '' if d.get('where') else f" · [open {link_text(d)}]({decision_link(repo, pr, d)})"
-            lines.append(f"{k}. **{d['question']}**{area}{opener}")
+            opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
+            lines += [f"{k}. **{d['question']}**{opener}", f"   {d['why']}"]
+            if rule_ref(repo, rv, d.get('rule')):
+                lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
             if d.get('where'):
-                w = d['where']
-                links = [f"[`{x['path']}` L{x['line']}]({code_link(repo, pr['headRefOid'], x['path'], x['line'], x['line'])})"
-                         for x in w[:MAX_WHERE]]
-                more = f', and {plural(len(w) - MAX_WHERE, "more file", "more files")}' if len(w) > MAX_WHERE else ''
-                lines.append(f"   **Where:** {', '.join(links)}{more}")
-            if d.get('what'):
-                lines.append(f"   **What changes (not checked):** {d['what']}")
-            lines += [f"   **Why you:** {d['why']}",
-                      f"   **Options:** {'; '.join(d['options'])}",
-                      f"   **Recommended:** {d['recommendation']}"]
+                lines.append('   **What changes:**')
+                order = {k: j for j, k in enumerate(MONEY_KINDS)}
+                for x in sorted(d['where'], key=lambda x: order.get(x.get('kind') or 'other', len(order))):
+                    url = code_link(repo, head, x['path'], x['line_start'], x['line_end'])
+                    kind = (x.get('kind') or 'other').capitalize()
+                    lines.append(f"   - {kind} · [`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
+            lines += [f'   {LETTERS[j]}. {o}' for j, o in enumerate(d['options'][:len(LETTERS)])]
+            rec = d.get('recommended', 0)
+            lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
+                         f"{d['reason']}")
         lines.append('')
     if rv['items'] or rv['blockers']:
         lines.append(f'**For {author}:**')
         k = 0
         for k, it in enumerate(rv['items'], 1):
             old = ' (removed lines)' if it.get('side') == 'old' else ''
-            url = diff_link(repo, pr['number'], it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
+            url = diff_link(repo, n, it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
             label = KINDS[it['kind']].format(author=author)
-            lines += [f"{k}. [`{it['path']}` {rng_text(it)}{old}]({url}) · {it['area']}",
-                      f"   **Changed:** {it['what']}",
-                      f"   **Why it matters:** {it['why']}",
-                      f"   **{label}:** {it['ask']}"]
+            lines += [f"{k}. **{it['change']}** · [`{it['path']}` {rng_text(it)}{old}]({url}){rule_ref(repo, rv, it.get('rule'))}",
+                      f"   {it['why']} **{label}:** {it['ask']}"]
         for j, b in enumerate(rv['blockers'], k + 1):
             lines.append(f"{j}. [{b['label']}]({b['url']}): {b['detail']}")
         lines.append('')
     if rv.get('cleared'):
         lines.append('**Checked and cleared:**')
-        for c in rv['cleared']:
-            url = diff_link(repo, pr['number'], c['path'], c.get('side', 'new'), c['line_start'], c['line_end'])
-            lines.append(f"- {c['label']} at [`{c['path']}` {rng_text(c)}]({url}): {c['why']}")
+        lines += [cleared_line(repo, n, rv, c) for c in rv['cleared']]
         lines.append('')
-    if rv.get('safe_to_skip'):
-        lines += [f"**Safe to skip:** {rv['safe_to_skip']}", '']
-    lines.append(rv['facts'])
-    if rv.get('not_checked'):
-        lines += ['', f"<sub>Not checked: {rv['not_checked']}.</sub>"]
-    return '\n'.join(lines)
+    if rv.get('skip'):
+        lines += [f'**Safe to skip:** {skip_text(repo, n, rv["skip"])}', '']
+    if rv['facts'] != GREEN_FACTS:
+        lines.append(rv['facts'])
+    return '\n'.join(lines).rstrip()
+
+
+def skip_text(repo, number, groups):
+    """R30: the rest of the diff, each file linked, by group: "tests: [`a.ts`](…), [`b.ts`](…); types: …"."""
+    parts, left = [], MAX_SKIP_LINKS
+    for g in groups:
+        shown = g['paths'][:max(left, 0)]
+        left -= len(shown)
+        links = ', '.join(f'[`{short_name(x)}`]({files_link(repo, number, x)})' for x in shown)
+        rest = len(g['paths']) - len(shown)
+        more = f"{', ' if links else ''}[{plural(rest, 'more file', 'more files')}](https://github.com/{repo}/pull/{number}/files)" if rest else ''
+        parts.append(f"{g['group']}: {links}{more}")
+    return '; '.join(parts)
 
 
 def inline_comments(items, author):
@@ -298,30 +378,51 @@ def inline_comments(items, author):
         side = 'RIGHT' if it.get('side', 'new') == 'new' else 'LEFT'
         label = KINDS[it['kind']].format(author=author)
         c = {'path': it['path'], 'line': it['line_end'], 'side': side,
-             'body': f"**{k}. {it['area']}**: {it['what']} {it['why']}\n\n**{label}:** {it['ask']}"}
+             'body': f"**{k}. {it['change']}**: {it['why']}\n\n**{label}:** {it['ask']}"}
         if it['line_start'] != it['line_end']:
             c.update(start_line=it['line_start'], start_side=side)
         out.append(c)
     return out
 
 
-def not_checked_decision(located, words, author, summary=''):
-    """R20: the PR touches an area no agent checks, so the reviewer decides whether to look. `located`:
-    [{path, line}] where the not-checked rule matched; the decision links the first."""
-    first, where = located[0], []
-    for x in located:  # the first line of each file, in order
-        if x['path'] not in {w['path'] for w in where}:
-            where.append({'path': x['path'], 'line': x['line']})
-    return {'question': f'Who reviews the {words} changes before this PR merges?',
-            'options': ['You review the lines under Where yourself',
-                        f'{author} first writes in the PR description what changes for customers, then you decide',
-                        'A person who owns billing reviews them'],
-            'recommendation': f'You review the lines under Where yourself: {plural(len(where), "file", "files")}.',
-            'why': 'No agent checks money logic, so a person has to clear it.',
-            'what': summary,
-            'where': where,
-            'area': NOT_CHECKED_AREA,
-            'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line'], 'line_end': first['line']},
+def changed_range(idx, path, line):
+    """R32: the changed range a not-checked line sits in: the added lines of its hunk (or the line alone
+    when it is not in the diff), as {path, line_start, line_end, hunk}."""
+    k = hunk_of(idx, path, line)
+    if k is None:
+        return {'path': path, 'line_start': line, 'line_end': line, 'hunk': None}
+    h = idx[path]['hunks'][k]
+    span = h[2] or h[0]
+    return {'path': path, 'line_start': min(span), 'line_end': max(span), 'hunk': k}
+
+
+def money_ranges(idx, located):
+    """R32: each not-checked location once: one changed range per hunk, in diff order."""
+    out, seen = [], set()
+    for x in located:
+        r = changed_range(idx, x['path'], x['line'])
+        key = (r['path'], r['hunk'] if r['hunk'] is not None else r['line_start'])
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def not_checked_decision(ranges, words, author):
+    """R20, R32, R37: the PR touches an area no agent checks, so a person must confirm what it changes.
+    `ranges`: [{path, line_start, line_end, what}], each changed range with one neutral line on what it
+    does (money_ranges, then pr_money). The options never ask the reviewer to read code (R37)."""
+    first = ranges[0]
+    return {'question': f'Who confirms what this PR changes in {words} before it merges?',
+            'options': [f'{author} states in the PR description what changes for customers',
+                        'A person who owns billing reviews the changes',
+                        'Accept as is'],
+            'recommended': 0,
+            'reason': f'One paragraph from {author} puts on record what customers will see, and nobody has to read code.',
+            'why': 'No agent checks money logic, so a person has to confirm what it changes.',
+            'where': [{k: x.get(k) for k in ('path', 'line_start', 'line_end', 'what')} for x in ranges],
+            'area': NOT_CHECKED_AREA, 'rule': '',
+            'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line_start'], 'line_end': first['line_end']},
             'verified': 'zero-token rule', 'confidence': 10, 'auto': True}
 
 
@@ -340,6 +441,28 @@ def field_reasons(p, f, v):
     if CUT_RE.search(v):
         why.append(f'R25: {p} {f} had a link to another host; rewrite the sentence without it')
     return why
+
+
+def change_reasons(p, v, label=None):
+    """R29: an entry leads with 3-6 plain words on what the PR changed, never a category label."""
+    v = (v or '').strip()
+    why = []
+    if not 3 <= len(v.split()) <= 6:
+        why.append(f'R29: {p} does not lead with 3-6 plain words on what the PR changed')
+    elif v.lower() in AREAS or (label and v.lower() == label.lower()):
+        why.append(f'R29: {p} leads with a category label, not with what the PR changed')
+    elif IDENT_RE.search(v):
+        why.append(f'R29: {p} names a raw identifier; say what changed in plain words')
+    c = CODES_RE.search(v)
+    if c:
+        why.append(f'R10: {p} change has a rule code ("{c.group(0)}")')
+    return why
+
+
+def words_reasons(p, f, v, most=30):
+    """R29: the one fact (or the one ask) is short."""
+    n = len((v or '').split())
+    return [f'R29: {p} {f} is {n} words, at most {most}'] if n > most else []
 
 
 def covers(idx, flag, entries):
@@ -383,8 +506,19 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R16: {p} is not one question ending in "?"')
         if len(d.get('options') or []) < 2:
             why.append(f'R16: {p} has fewer than 2 options')
-        for f in ('question', 'why', 'recommendation') + (('what',) if d.get('what') else ()):
+        for f in ('question', 'why', 'reason'):
             why += field_reasons(p, f, d.get(f))
+        rec = d.get('recommended')
+        if not isinstance(rec, int) or not 0 <= rec < len(d.get('options') or []):
+            why.append(f'R16: {p} recommends none of its options')
+        if any(REVIEW_CODE_RE.search(t or '') for t in list(d.get('options') or []) + [d.get('reason'), d.get('question')]):
+            why.append(f'R37: {p} asks the reviewer to read or review code; decide at the level of rules and goals')
+        for j, x in enumerate(d.get('where') or [], 1):  # R32: every place, linked, with its line
+            if not isinstance(x.get('line_start'), int) or not isinstance(x.get('line_end'), int):
+                why.append(f'R32: {p} location {j} is not linked to its changed range')
+            if len((x.get('what') or '').split()) < 4:
+                why.append(f'R32: {p} location {j} does not say in one line what it changes')
+            why += [r.replace('R29', 'R32') for r in words_reasons(f'{p} location {j}', 'line', x.get('what'), 25)]
         ln = d.get('link') or {}
         if ln.get('kind') == 'code':
             n = (tree_lines or {}).get(ln.get('path'))
@@ -416,8 +550,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         elif not in_diff(idx, it):
             why.append(f"R3: {p} {it['path']} L{it['line_start']}-L{it['line_end']} ({it.get('side', 'new')} side) "
                        f'is not inside one hunk of the diff')
-        for f in ('what', 'why', 'ask'):
-            why += field_reasons(p, f, it.get(f))
+        why += change_reasons(p, it.get('change'))
+        for f in ('why', 'ask'):
+            why += field_reasons(p, f, it.get(f)) + words_reasons(p, f, it.get(f))
         if it.get('area') not in AREAS:
             why.append(f'R5: {p} area is not one of {AREAS}')
         if it.get('kind') == 'question' and not (it.get('ask') or '').rstrip().endswith('?'):
@@ -427,10 +562,21 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             if o['path'] == it['path'] and o.get('side', 'new') == it.get('side', 'new') and \
                     o['line_start'] <= it['line_end'] and it['line_start'] <= o['line_end']:
                 why.append(f'R21: {p} repeats the lines of item {j}; say each finding once')
-            elif (o.get('what') or '').strip().lower() == (it.get('what') or '').strip().lower():
+            elif (o.get('change') or '').strip().lower() == (it.get('change') or '').strip().lower():
                 why.append(f'R21: {p} repeats item {j}; say each finding once')
         seen.append((k, it))
+    # R37: a finding in an area where the repository has a written rule cites it (rule link).
+    rules = rv.get('rules') or {}
+    ruled = {r['area'] for r in rules.values()} - {'other'}
+    for p, e in [(f'decision {k}', d) for k, d in enumerate(decisions, 1) if not d.get('auto')] + \
+            [(f'item {k}', it) for k, it in enumerate(items, 1)]:
+        rid = e.get('rule') or ''
+        if rid and rid not in rules:
+            why.append(f"R37: {p} cites rule {rid!r}, which is not in the repository's digest")
+        elif not rid and e.get('area') in ruled:
+            why.append(f"R37: {p} is about {e.get('area')}, where the repository has a written rule, but cites none")
     by_id = {f['id']: f for f in flagged}
+    seen_c = []
     for k, c in enumerate(rv.get('cleared') or [], 1):
         p = f'cleared entry {k}'
         f = by_id.get(c.get('flag'))
@@ -443,7 +589,20 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
                                                                             hunk_of(idx, f['path'], f['line'])):
             why.append(f"R19: {p} range L{c['line_start']}-L{c['line_end']} is not inside the hunk of line {f['line']} "
                        f"in {f['path']}")
+        else:
+            for j, o in seen_c:
+                if (o['path'], o['line_start'], o['line_end']) == (c['path'], c['line_start'], c['line_end']) or \
+                        (o.get('change') or '').strip().lower() == (c.get('change') or '').strip().lower():
+                    why.append(f'R36: {p} repeats cleared entry {j}')
+            text = (idx.get(c['path']) or {}).get('text') or {}
+            shown = [text[ln] for ln in range(c['line_start'], c['line_end'] + 1) if (text.get(ln) or '').strip()]
+            if shown and all(COMMENT_RE.match(t) for t in shown):
+                why.append(f'R36: {p} links only comment lines; link the code that makes it safe')
+            seen_c.append((k, c))
         why += [r.replace('R5:', 'R19:', 1) for r in field_reasons(p, 'why', c.get('why'))]
+        why += change_reasons(p, c.get('change'), f['label']) + words_reasons(p, 'why', c.get('why'))
+        if c.get('rule') and c['rule'] not in (rv.get('rules') or {}):
+            why.append(f"R37: {p} cites rule {c['rule']!r}, which is not in the repository's digest")
     entries = [dict(c, side='new') for c in (rv.get('cleared') or []) if c.get('flag') in by_id] + list(items) + \
               [dict(path=(d.get('link') or {}).get('path'), line_start=(d.get('link') or {}).get('line_start'),
                     line_end=(d.get('link') or {}).get('line_end'), _decision=True)
@@ -457,62 +616,77 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
 
 def gate_body(body, rv, comments=None):
     """Reasons the rendered body breaks the style guide (also runs on bodies delivered earlier: rv then
-    needs only outcome, the counts and not_checked). With `comments`, each item has its inline comment (R4)."""
+    needs only outcome, the counts and not_checked; `facts` None = not known). With `comments`, each item
+    has its inline comment (R4)."""
     why = []
     n_dec, n_items = len(rv.get('decisions') or []), len(rv.get('items') or [])
     n_block, n_clear = len(rv.get('blockers') or []), len(rv.get('cleared') or [])
     lines = body.splitlines()
-    if not lines or not HONEST_RE.match(lines[0]):
-        why.append('R1: line 1 is not the honesty line')
-    elif ('approval' in lines[0].split(' by ')[0]) != bool(rv.get('approve')):
-        why.append('R1: the honesty line says approval for a review that is not one, or the other way round')
-    rest = [l for l in lines[1:] if l.strip()]
-    m = LINE1_RE.match(rest[0] if rest else '')
     word = word_of(rv)
-    if not m:
-        why.append(f'R22: line 1 does not say the outcome and who acts ("**{word}. <reviewer>: ... <author>: ...**")')
+    m1 = LINE1_RE.match(lines[0] if lines else '')
+    if not m1:
+        why.append(f'R28: line 1 is not the verdict and the automated note ("**{word}**' + SUFFIX.format(name='<reviewer>') + '")')
+    elif m1.group(1) != word:
+        rule = 'R35' if rv['outcome'] == 'changes' else 'R1'
+        why.append(f'{rule}: line 1 says "{m1.group(1)}" for {rv["outcome"]} ({event_of(rv)} review)')
+    l2 = lines[1] if len(lines) > 1 else ''
+    m, nothing = WHO_RE.match(l2), NOTHING_RE.match(l2)
+    asks = n_items + n_block
+    if nothing:
+        if n_dec or asks or rv.get('not_checked'):
+            why.append('R22: line 2 says nothing for anyone, but the review has decisions or asks')
+    elif not m:
+        why.append('R22: line 2 does not say who acts ("<reviewer>: ... <author>: ..." or "Nothing for <reviewer> or <author>.")')
     else:
-        if m.group(1) != word:
-            rule = 'R35' if rv['outcome'] == 'changes' else 'R1'
-            why.append(f'{rule}: line 1 says "{m.group(1)}" for {rv["outcome"]} ({event_of(rv)} review)')
-        if int(m.group(4) or 0) != n_dec:
-            why.append(f'R22: line 1 counts {m.group(4) or 0} decisions, the review has {n_dec}')
-        if bool(m.group(5)) != bool(rv.get('not_checked')):
-            why.append('R20: line 1 must say when the PR touches a not-checked area, and only then')
-        if (m.group(8) == 'nothing') != (n_items + n_block == 0):
-            why.append(f'R22: line 1 says the author has {m.group(8)!r}, the review has {n_items + n_block} asks')
+        if int(m.group(3) or 0) != n_dec:
+            why.append(f'R22: line 2 counts {m.group(3) or 0} decisions, the review has {n_dec}')
+        if bool(m.group(4)) != bool(rv.get('not_checked')):
+            why.append('R20: line 2 must say when the PR touches a not-checked area, and only then')
+        if (m.group(7) == 'nothing') != (asks == 0):
+            why.append(f'R22: line 2 says the author has {m.group(7)!r}, the review has {asks} asks')
+        if not n_dec and not asks:
+            why.append('R22: line 2 is "Nothing for <reviewer> or <author>." when nobody acts')
+    rest = [l for l in lines[2:] if l.strip()]
+    if rv.get('approve'):
+        if rest and not (rest[0] == '<details><summary>What was checked</summary>' and rest[-1] == '</details>'
+                         and all(l.startswith('- ') for l in rest[1:-1])):
+            why.append('R36: an approval is line 1, line 2 and the collapsed "What was checked", nothing else')
+        if not nothing:
+            why.append('R36: line 2 of an approval is "Nothing for <reviewer> or <author>."')
+    elif '<details>' in body:
+        why.append('R23: a collapsed section in a review that is not an approval')
     if rv['outcome'] != 'low-risk' or n_clear:
         links = re.findall(r'\]\(https://github\.com/[^)]+/(?:pull/\d+/files#diff-[0-9a-f]{64}[RL]\d+(?:-[RL]\d+)?|'
                            r'blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?|pull/\d+(?:/checks|/conflicts)?)\)', body)
         if not links or len(links) < n_items + n_dec + n_block + n_clear:
             why.append(f'R3: {len(links)} links to lines or text for {n_items + n_dec + n_block + n_clear} entries')
-    if rv.get('model') and not re.search(r'^\*\*Safe to skip:\*\* \S', body, re.M):
-        why.append('R7: no "Safe to skip" line')
+    if rv.get('model') and not rv.get('approve') and not re.search(r'^\*\*What it does:\*\* \S', body, re.M):
+        why.append('R7: no "What it does" line')
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', body, re.M)
-    if skip and len(skip.group(1)) > 240:
-        why.append(f'R7: "Safe to skip" is {len(skip.group(1))} characters, at most 240')
-    facts = FACTS_RE
-    fl = next((l for l in lines if facts.match(l)), None)
-    if fl is None:
-        why.append('R8: no facts line')
-    elif m:  # R22: a blocker in the facts line is a linked ask for the author in line 1
-        need = [short for cue, short in FACT_ASKS if cue in fl]
-        missing = [x for x in need if x not in m.group(8)]
-        if missing:
-            why.append(f"R22: the facts line has a blocker but line 1 does not ask for it: {', '.join(missing)}")
-    tail = [l for l in lines if l.strip()]
-    last = tail[-1] if tail else ''
-    if rv.get('not_checked'):
-        if 'Not checked:' not in last:
-            why.append('R20: the not-checked footer is not the last line')
-    elif 'Not checked' in body:
-        why.append('R23: the not-checked footer on a PR that does not touch that area')
-    elif not facts.match(last):
-        why.append('R9: the facts line is not the last line')
+    if skip:
+        groups = [g for g in skip.group(1).split('; ') if g.strip()]
+        if any(not re.search(r'\]\(https://github\.com/[^)]+/pull/\d+/files(#diff-[0-9a-f]{64})?\)', g) for g in groups):
+            why.append('R30: a "Safe to skip" group does not link its files')
+    fl = next((l for l in lines if FACTS_RE.match(l)), None)
+    facts = rv.get('facts')
+    if fl == GREEN_FACTS:
+        why.append('R30: the status line on a PR where everything passed; show it only when something did not')
+    elif fl is None and facts is not None and facts != GREEN_FACTS:
+        why.append('R8: no status line, and something did not pass')
+    if fl and fl != GREEN_FACTS:
+        if m or nothing:  # R22: a blocker in the status line is a linked ask for the author in line 2
+            missing = [short for cue, short in FACT_ASKS if cue in fl and short not in (m.group(7) if m else '')]
+            if missing:
+                why.append(f"R22: the status line has a blocker but line 2 does not ask for it: {', '.join(missing)}")
+        if rest and rest[-1] != fl:
+            why.append('R9: the status line is not the last line')
+    said = len(re.findall(r'(?i)\bnot checked\b', body))
+    if rv.get('not_checked') and said != 1:
+        why.append(f'R32: "not checked" is said {said} times; say it once, in line 2')
+    elif not rv.get('not_checked') and said:
+        why.append('R23: "not checked" on a PR that does not touch that area')
     if re.search(r'(?i)shadow mode|review agents', '\n'.join(lines[1:])):
         why.append('R9: boilerplate in the body')
-    if '<details>' in body:
-        why.append('R23: a rule-codes section in the body')
     if re.search(r'(?im)^\*\*Suggested reply', body):
         why.append('R21: a suggested reply repeats the findings')
     if CUT_RE.search(body):
@@ -523,8 +697,9 @@ def gate_body(body, rv, comments=None):
     c = CODES_RE.search(prose)
     if c:
         why.append(f'R10: rule code "{c.group(0)}" in the body')
-    if len(body) > MAX_BODY:
-        why.append(f'R14: body is {len(body)} characters, at most {MAX_BODY}')
+    shown = len(re.sub(r'\]\([^)]*\)', ']', body))  # what a reader reads: link targets do not count
+    if shown > MAX_BODY:
+        why.append(f'R14: the text is {shown} characters, at most {MAX_BODY}')
     return why
 
 
@@ -608,9 +783,11 @@ def review_of(fx):
     cleared = [dict(c, label=c.get('label') or labels.get(c.get('flag'), 'a flagged change')) for c in fx.get('cleared', [])]
     return {'outcome': fx['outcome'], 'approve': fx.get('approve', False), 'decisions': fx.get('decisions', []),
             'items': fx.get('items', []), 'blockers': fx.get('blockers', []), 'cleared': cleared,
-            'safe_to_skip': fx.get('safe_to_skip', ''), 'facts': fx.get('facts', 'CI passed · no merge conflict · open'),
+            'summary': fx.get('summary', ''), 'skip': fx.get('skip', []),
+            'facts': fx.get('facts', 'CI passed · no merge conflict · open'),
             'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True),
-            'request_changes': fx.get('request_changes', False)}
+            'request_changes': fx.get('request_changes', False), 'rules': fx.get('rules', {}),
+            'rules_sha': 'c' * 40}
 
 
 def route(fx):
@@ -645,7 +822,7 @@ def regress(dirs):
                 rv = {'outcome': fx['outcome'], 'decisions': [{}] * fx.get('n_decisions', 0),
                       'items': [{}] * fx.get('n_items', 0), 'not_checked': fx.get('not_checked', ''),
                       'approve': fx.get('approve', False), 'model': fx.get('model', True),
-                      'request_changes': fx.get('request_changes', False)}
+                      'request_changes': fx.get('request_changes', False), 'facts': fx.get('facts')}
                 reasons = gate_body(fx['body'], rv)
             else:
                 idx = diff_index(fx['diff'])
@@ -671,10 +848,12 @@ def regress(dirs):
             if 'judge' in fx:  # R26: the reader test's scores for this review
                 import pr_judge
                 reasons += pr_judge.below_bar(fx['judge'])
+            if fx.get('judge_risky'):  # R31: cleared entries the reader found risky without a reason
+                reasons.append(f"R31: cleared entries {fx['judge_risky']} describe a possible risk without a reason")
             verdict = 'fail' if reasons else 'pass'
             need = set(fx.get('expect_reasons', []))
             got = {r.split(':')[0] for r in reasons}
-            ok = verdict == fx['expect'] and need <= got
+            ok = verdict == fx['expect'] and need <= got and ('only_reasons' not in fx or got <= set(fx['only_reasons']))
             bad += not ok
             # Fixture names and rule ids only: a host-local fixture's text never reaches the output.
             print(f"{'ok  ' if ok else 'FAIL'} {os.path.basename(d)}/{fn}: expect {fx['expect']}, got {verdict}"

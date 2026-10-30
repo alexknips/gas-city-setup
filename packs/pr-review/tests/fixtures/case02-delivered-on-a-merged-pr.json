@@ -14,14 +14,23 @@
    "kind": "change",
    "severity": "medium",
    "area": "patient data",
-   "what": "The reminder SMS now carries the full name and date of birth, and the same text is written to the info log.",
+   "change": "Reminder text names the patient",
    "why": "Patient data goes to the SMS provider and into application logs, which are not meant to hold PHI.",
    "ask": "Drop the message body from the info log line and log the visit id instead.",
+   "rule": "",
    "verified": "read remind() and the logger config",
    "confidence": 9
   }
  ],
- "safe_to_skip": "1 test file.",
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ],
  "delivery": {
   "pr_state": "MERGED",
   "review_url": "https://github.com/example/repo/pull/1#pullrequestreview-1001",

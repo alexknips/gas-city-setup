@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Reader test (style guide R26): a second, cheap model reads a review as the reviewer and the author will
 and scores it 1-5 on scan, markers, decisions, plain, length and useful. The review run holds a review
-below markers 4 or useful 3 (regenerated once with the judge's problems, then held). The judge sees only
-the review (body and inline comments), runs with no tools, no hooks, no MCP and Loomtracer capture off,
-and what this script prints or keeps in the runtime is scores and counts, never the review's text.
+below markers 4 or useful 3 (regenerated once with the judge's problems, then held). The reader also
+names the cleared entries that describe a possible risk without saying why it is acceptable (R31): those
+become questions for the author. The judge sees only the review (body and inline comments), runs with no
+tools, no hooks, no MCP and Loomtracer capture off, and what this script prints or keeps in the runtime
+is scores and counts, never the review's text.
 
   pr_judge.py --audit [--limit N]   judge delivered reviews that have no scores yet (pr-review-feedback runs it)
   pr_judge.py --review REPO#N ID    judge one delivered review now; prints its scores
@@ -26,9 +28,15 @@ BAR = {'markers': 4, 'useful': 3}
 DIMS = ['scan', 'markers', 'decisions', 'plain', 'length', 'useful']
 _SCORE = {'type': 'integer', 'minimum': 1, 'maximum': 5}
 SCHEMA = {
-    'type': 'object', 'additionalProperties': False, 'required': DIMS + ['problems'],
+    'type': 'object', 'additionalProperties': False, 'required': DIMS + ['problems', 'risky_cleared', 'behaviour_in_skip'],
     'properties': {
         **{d: dict(_SCORE) for d in DIMS},
+        'behaviour_in_skip': {'type': 'boolean', 'description': (
+            'True when the "Safe to skip" line holds a change in product behaviour (what users, patients or '
+            'staff see or get), which needs its own line or a decision.')},
+        'risky_cleared': {'type': 'array', 'maxItems': 12, 'items': {'type': 'integer', 'minimum': 1}, 'description': (
+            'The numbers (1 = the first) of the entries under "Checked and cleared" or "What was checked" that '
+            'describe a behaviour that could be a risk without saying why it is acceptable or intended.')},
         'decisions': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '0 = no decision for the reviewer (n/a)'},
         'problems': {'type': 'array', 'maxItems': 3, 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['what', 'fix'],
@@ -37,7 +45,10 @@ SCHEMA = {
 }
 
 RUBRIC = """You judge one pull-request review written by an AI review agent for {name}, a busy engineering lead.
-It is posted on the PR under {name}'s login; {author}, the PR's author, reads it too. {name} has said:
+It is posted on the PR under {name}'s login; {author}, the PR's author, reads it too. {name} is the
+harness engineer and does not know this codebase; {author} wrote the change and reviewed it. A good
+review checks the change against the repository's own written goals and rules, citing them, and never
+asks {name} to read or review code. {name} has said:
 - "it just fluff and really hard to read. there are no markers in the review what I actually need to manually review"
 - "that review comment needs to link to the human decisions (either in text or code reference that still need to be answered). otherwise you do not need me!"
 
@@ -50,14 +61,19 @@ Score 1-5 (5 = best):
 4. plain: plain words, no rule codes, jargon or boilerplate?
 5. length: no longer than needed; nothing said twice?
 6. useful: would this save {name} time compared with reading the PR himself, or is it empty or obvious?
-Then give at most 3 problems, each with a concrete fix.
+Then give at most 3 problems, each with a concrete fix. Last, list the cleared entries (numbered from 1,
+under "Checked and cleared" or "What was checked") that describe a behaviour that could be a risk
+without saying why it is acceptable or intended, and say whether the "Safe to skip" line holds a change
+in product behaviour (what users, patients or staff see or get).
 
-Required by the style guide, so never a problem and never counted against a score: line 1, the
-disclosure that the review is automated and not yet read by {name}; each item for {author} stated in
-the body AND as an inline comment on its exact line (the inline comment is its marker in GitHub's Files
-view, not a repetition); the "Safe to skip" line, a one-line summary of the rest of the diff that needs
-no link; the facts line (CI, merge conflict, state); and, when the PR touches billing, plans, credits or
-pricing, the not-checked footer.
+Required by the style guide, so never a problem and never counted against a score: line 1, the verdict
+with the note that it is automated and {name} hasn't read the PR; line 2, who acts; each item for
+{author} stated in the body AND as an inline comment on its exact line (the inline comment is its marker
+in GitHub's Files view, not a repetition); the "What it does" sentence; the "Safe to skip" line, the rest of the
+diff by group with each file linked; the status line (CI, merge conflict, state), shown only when
+something did not pass; an approval's short form, two lines and a collapsed list of what was checked;
+and, when the PR touches billing, plans, credits or pricing, the decision on who confirms it, with one
+line per changed place saying what it changes (not checked by the agent).
 
 Never quote or paraphrase the review's content, file names, code or the PR's subject. Refer only to its
 structure: "line 1", "item 2", "the footer", "the inline comment on the second file".
@@ -75,26 +91,39 @@ def review_text(body, comments):
     return f"BODY:\n{body}\n\nINLINE COMMENTS ({len(comments)}):\n{inline or '(none)'}"
 
 
-def judge(cfg, body, comments, name, author):
-    """(scores or None, problems, meta). Scores: {scan, markers, decisions, plain, length, useful}."""
-    prompt = RUBRIC.format(name=name, author=author, review=review_text(body, comments))
+def ask(cfg, prompt, schema, model, max_usd, timeout=300):
+    """One headless `claude -p` answer to `schema`, with no tools, no hooks, no MCP, no session kept and
+    Loomtracer capture off (the prompt holds the repository's text). Returns (structured output or None,
+    meta {cost_usd, model[, error]}). The reader test, the money lines and the rules digest use it."""
     keep = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1')
     claude = os.environ.get('PR_REVIEW_CLAUDE') or 'claude'
-    cmd = [claude, '-p', '--output-format', 'json', '--json-schema', json.dumps(SCHEMA), '--model', cfg['judge_model'],
+    cmd = [claude, '-p', '--output-format', 'json', '--json-schema', json.dumps(schema), '--model', model,
            '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps({'disableAllHooks': True}),
-           '--strict-mcp-config', '--tools', '', '--max-budget-usd', str(cfg['judge_max_usd'])]
+           '--strict-mcp-config', '--tools', '', '--max-budget-usd', str(max_usd)]
     os.makedirs(cfg['work'], mode=0o700, exist_ok=True)
     try:
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=cfg['work'], timeout=300)
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=cfg['work'], timeout=timeout)
         out = json.loads(r.stdout)
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
-        return None, [], {'error': type(e).__name__, 'cost_usd': 0}
-    meta = {'cost_usd': out.get('total_cost_usd') or 0, 'model': cfg['judge_model']}
+        return None, {'error': type(e).__name__, 'cost_usd': 0, 'model': model}
+    meta = {'cost_usd': out.get('total_cost_usd') or 0, 'model': model}
     so = out.get('structured_output')
     if out.get('is_error') or not isinstance(so, dict):
-        return None, [], {**meta, 'error': out.get('subtype') or 'no-structured-output'}
+        return None, {**meta, 'error': out.get('subtype') or 'no-structured-output'}
+    return so, meta
+
+
+def judge(cfg, body, comments, name, author):
+    """(scores or None, problems, meta). Scores: {scan, markers, decisions, plain, length, useful};
+    meta['risky_cleared']: the cleared entries (1 = first) the reader found risky without a reason (R31)."""
+    prompt = RUBRIC.format(name=name, author=author, review=review_text(body, comments))
+    so, meta = ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
+    if so is None:
+        return None, [], meta
+    meta['risky_cleared'] = sorted({int(x) for x in so.get('risky_cleared') or [] if isinstance(x, int)})
+    meta['behaviour_in_skip'] = bool(so.get('behaviour_in_skip'))
     return {d: so[d] for d in DIMS}, so.get('problems') or [], meta
 
 
@@ -136,7 +165,7 @@ def audit(cfg, limit):
         cost += meta.get('cost_usd') or 0
         if scores:
             done[key] = {'judge': scores, 'judge_at': pr_state.iso(pr_state.now()), 'judge_review': e['review_id'],
-                         'judge_below_bar': bool(below_bar(scores))}
+                         'judge_below_bar': bool(below_bar(scores)), 'judge_risky': len(meta.get('risky_cleared') or [])}
     with pr_state.locked(cfg['state']) as st:
         for k, u in done.items():
             if k in st['prs']:
