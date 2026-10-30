@@ -683,7 +683,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     review = pr_client_slack.review_of(rv, event, extra.get('ci') or pr_rules.ci_state(fresh),
                                        extra.get('flagged_hunks', len(result.get('flagged') or [])),
                                        extra.get('flags_cut', rv.get('flags_cut') or 0), extra.get('gaps_open') or ())
-    extra.update(confidence=review['confidence'], flagged_total=review['flagged'], flagged_open=review['open'])
+    extra.update(confidence=review['confidence'], flagged_total=review['flagged'], open_changes=review['changes'],
+                 open_questions=review['questions'])
     if cfg['client_slack'] != 'off' and not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state'])):
         try:
             status, meta = pr_client_slack.deliver_entry(cfg, key, dict(entry, review_url=url), review, fresh, summary,

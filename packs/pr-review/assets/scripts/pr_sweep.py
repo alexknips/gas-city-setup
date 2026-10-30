@@ -267,7 +267,7 @@ def sweep(cfg, dry):
 # head's line goes out once.
 CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block', 'rc_live', 'slack', 'slack_ts',
          'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky',
-         'client_posts', 'confidence', 'flagged_total', 'flagged_open')
+         'client_posts', 'confidence', 'flagged_total', 'open_changes', 'open_questions')
 
 
 def lift_block(repo, pr, review_id):

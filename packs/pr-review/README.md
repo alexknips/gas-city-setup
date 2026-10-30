@@ -129,7 +129,7 @@ The first real post is a test with the town's owner.
 The entry, two lines per PR (the mayor, 2026-10-30 19:40Z and 19:41Z):
 
     <PR link> · <3-5 words on what the PR does> · <high|medium|low> confidence · <status>
-    <readiness> · CI <...> · +<added>/-<removed> in <n> files · <tests> · <n> flagged, <m> open
+    <readiness> · CI <...> · +<added>/-<removed> in <n> files · <tests> · <c> changes, <q> questions open · <n> flagged
 
 - **The words**: the review's summary when it is 3-5 plain words; else one narrow turn (the judge model,
   2 turns at most) gets the summary and its word count and gives up to three versions, and the script
@@ -152,8 +152,12 @@ The entry, two lines per PR (the mayor, 2026-10-30 19:40Z and 19:41Z):
   red check is not a first pass), "green first push" or "green after N pushes".
 - **Tests**: "tests changed" (next to other changes), "tests only" or "no test changes", from the paths
   (the rules' test paths and test or spec names); left out past 100 files.
-- **Flags**: the review's flagged hunks, and those still open (no cleared entry covers them); for a
-  delivered review only. Line 2 over 120 characters drops the files count first.
+- **Open asks**: the changes and questions the delivered review leaves open, counted as the outcome
+  counts them (its items and blockers by kind, each decision a question), flagged by the rules or not;
+  "nothing open" when there are none. So Needs changes always has a change open, Needs answers a
+  question, and Ready to merge nothing (a self-test checks this over every outcome). Then "<n> flagged"
+  only when the rules flagged a hunk. For a delivered review only. Line 2 over 120 characters drops the
+  files count first.
 
 A head's entry goes out once: the PR's state entry keeps the client posts per head (status and ts), so a
 same-head re-review sends no second one, whatever our own channel does.

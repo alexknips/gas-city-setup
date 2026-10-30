@@ -17,7 +17,7 @@ the message's ts. Bounded by turns, capture off, stripped environment, no sessio
 Each PR's entry is two lines (the mayor, 2026-10-30 19:40Z and 19:41Z), built by the script:
 
   <PR link> · <3-5 words on what the PR does> · <high|medium|low> confidence · <status>
-  <readiness> · CI <...> · +<added>/-<removed> in <n> files · <tests> · <n> flagged, <m> open
+  <readiness> · CI <...> · +<added>/-<removed> in <n> files · <tests> · <c> changes, <q> questions open · <n> flagged
 
 The 3-5 words are the only words a model wrote: the review's summary when it is 3-5 plain words, else
 one narrow turn's versions (the script picks), else the PR title's first plain words. Everything else
@@ -170,14 +170,22 @@ def confidence(rv, ci, flags_cut=0, gaps_open=()):
     return 'high' if high else 'medium'
 
 
+def open_asks(rv):
+    """(changes, questions) a delivered review leaves open, counted as pr_format.decide counts its asks: its
+    items and blockers by kind, each decision a question; flagged by the rules or not (the mayor, 2026-10-30
+    20:13Z). So Needs changes always has a change open, Needs answers a question, and an approval nothing."""
+    asks = list(rv.get('items') or []) + list(rv.get('blockers') or [])
+    changes = sum(1 for a in asks if a.get('kind') != 'question')
+    return changes, len(asks) - changes + len(rv.get('decisions') or [])
+
+
 def review_of(rv, event, ci, flagged=0, flags_cut=0, gaps_open=()):
-    """What the entry says about a delivered review: kind, outcome, approved, event, confidence and the
-    flagged hunks (all of them, and those still open: the ones no cleared entry covers)."""
-    fallback = bool(rv.get('fallback'))
-    n = (flagged or 0) + (flags_cut or 0)
-    done = 0 if fallback else len({c.get('flag') for c in rv.get('cleared') or [] if c.get('flag')})
-    return {'kind': 'fallback' if fallback else 'full', 'outcome': rv.get('outcome'), 'approved': event == 'APPROVE',
-            'event': event, 'confidence': confidence(rv, ci, flags_cut, gaps_open), 'flagged': n, 'open': max(0, n - done)}
+    """What the entry says about a delivered review: kind, outcome, approved, event, confidence, the asks it
+    leaves open (changes, questions) and the hunks the rules flagged."""
+    changes, questions = open_asks(rv)
+    return {'kind': 'fallback' if rv.get('fallback') else 'full', 'outcome': rv.get('outcome'),
+            'approved': event == 'APPROVE', 'event': event, 'confidence': confidence(rv, ci, flags_cut, gaps_open),
+            'flagged': (flagged or 0) + (flags_cut or 0), 'changes': changes, 'questions': questions}
 
 
 def ours_of(review):
@@ -231,18 +239,22 @@ def tests_part(paths, test_paths=()):
     return 'no test changes' if not t else ('tests only' if t == len(paths) else 'tests changed')
 
 
-def flags_part(review):
-    n = review.get('flagged')
-    if n is None:
-        return ''
-    return 'nothing flagged' if not n else f"{n} flagged, {review.get('open', n)} open"
+def open_part(review):
+    """'1 change, 2 questions open' or 'nothing open', then '<n> flagged' only when the rules flagged a hunk."""
+    if review.get('changes') is None:
+        return []
+    n = lambda k, one: f"{k} {one}{'' if k == 1 else 's'}"  # noqa: E731
+    asks = ([n(review['changes'], 'change')] if review['changes'] else []) + \
+        ([n(review['questions'], 'question')] if review.get('questions') else [])
+    return [(', '.join(asks) + ' open') if asks else 'nothing open'] + \
+        ([f"{review['flagged']} flagged"] if review.get('flagged') else [])
 
 
 def entry_text(url, words, review, facts):
     """The PR's two lines. `review`: kind full / fallback / held / None (nothing of ours on the head), with
     outcome, approved, event, confidence and the flag counts; `facts`: pr_facts. Confidence shows for what
     we delivered or held on the head (a fallback or a held run is low) and is left out when nothing of ours
-    is on it; the flag counts show for a delivered review only."""
+    is on it; the open asks and the flag count show for a delivered review only."""
     kind = review.get('kind')
     status = client_word(review.get('outcome'), review.get('approved'), review.get('event')) if kind == 'full' else WAITING
     conf = review.get('confidence') if kind == 'full' else ('low' if kind else '')
@@ -251,7 +263,7 @@ def entry_text(url, words, review, facts):
     files = f" in {facts.get('files', 0)} file{'' if facts.get('files') == 1 else 's'}"
     parts = [readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN')),
              ci_part(facts.get('ci'), facts.get('first_pass'), facts.get('pushes', 0)), size + files,
-             facts.get('tests'), flags_part(review) if kind in ('full', 'fallback') else '']
+             facts.get('tests'), *(open_part(review) if kind in ('full', 'fallback') else [])]
     line2 = SEP.join(x for x in parts if x)
     if len(line2) > LINE_MAX:
         parts[2] = size
@@ -293,7 +305,8 @@ def facts_log(facts, review, words, how):
             else ('low' if review.get('kind') else None),
             'readiness': readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN')),
             'ci': ci_part(facts.get('ci'), facts.get('first_pass'), facts.get('pushes', 0)), 'tests': facts.get('tests'),
-            'flagged': review.get('flagged'), 'open': review.get('open'), 'words_from': how, 'words': len(words.split())}
+            'changes': review.get('changes'), 'questions': review.get('questions'), 'flagged': review.get('flagged'),
+            'words_from': how, 'words': len(words.split())}
 
 
 # ---------- the words, host-local ----------
@@ -609,16 +622,16 @@ def review_now(cfg, e, head, fallback=False):
     approved = bool(e.get('approved'))
     event = e.get('event') or ('APPROVE' if approved else 'COMMENT')
     r = {'kind': kind, 'outcome': e.get('outcome'), 'approved': approved, 'event': event,
-         'confidence': e.get('confidence'), 'flagged': e.get('flagged_total'), 'open': e.get('flagged_open')}
-    if kind == 'fallback':
-        r['confidence'] = 'low'
-        if r['flagged'] is None and e.get('flagged_hunks') is not None:
-            r['flagged'] = r['open'] = e['flagged_hunks'] + (e.get('flags_cut') or 0)
-    elif r['confidence'] is None or r['flagged'] is None:  # delivered before the entry kept them
+         'confidence': 'low' if kind == 'fallback' else e.get('confidence'), 'flagged': e.get('flagged_total'),
+         'changes': e.get('open_changes'), 'questions': e.get('open_questions')}
+    if kind == 'fallback' and r['flagged'] is None and e.get('flagged_hunks') is not None:
+        r['flagged'] = e['flagged_hunks'] + (e.get('flags_cut') or 0)
+    if None in (r['confidence'], r['flagged'], r['changes']):  # delivered before the entry kept them
         res = posted_result(cfg, e, head)
         if res:
-            old = review_of(dict(res, fallback=False), event, e.get('ci'), len(res.get('flagged') or []), 0, e.get('gaps_open') or ())
-            r.update({k: r[k] if r[k] is not None else old[k] for k in ('confidence', 'flagged', 'open')})
+            old = review_of(dict(res, fallback=kind == 'fallback'), event, e.get('ci'), len(res.get('flagged') or []), 0,
+                            e.get('gaps_open') or ())
+            r.update({k: r[k] if r[k] is not None else old[k] for k in ('confidence', 'flagged', 'changes', 'questions')})
     return r
 
 
@@ -750,12 +763,12 @@ def selftest():
     facts = {'url': pr_url, 'head': 'a' * 40, 'title': 'feat(api): Add retry to upload job', 'mergeable': 'MERGEABLE',
              'ci': 'green', 'first_pass': True, 'pushes': 1, 'added': 120, 'removed': 8, 'files': 4, 'tests': 'tests changed'}
     full = {'kind': 'full', 'outcome': 'low-risk', 'approved': True, 'event': 'APPROVE', 'confidence': 'high',
-            'flagged': 2, 'open': 0}
+            'flagged': 2, 'changes': 0, 'questions': 0}
     text = entry_text(pr_url, 'Adds retry to uploads', full, facts)
     checks = {
         'the entry is two lines in the shape': text == (
             f'{pr_url} · Adds retry to uploads · high confidence · Approved\n'
-            'Ready to merge · CI green first push · +120/-8 in 4 files · tests changed · 2 flagged, 0 open'),
+            'Ready to merge · CI green first push · +120/-8 in 4 files · tests changed · nothing open · 2 flagged'),
         'never a word for the reviewer only': client_word('escalate') == 'Questions' and
         client_word('not-reviewed') == 'Questions' and client_word('changes', event='REQUEST_CHANGES') == 'Changes requested',
     }
@@ -787,9 +800,28 @@ def selftest():
         confidence(rv, 'green', flags_cut=2) == 'medium' and confidence(rv, 'green', gaps_open=['new-risk']) == 'medium' and \
         confidence(dict(rv, outcome='not-reviewed', fallback=True), 'green') == 'low' and \
         confidence(dict(rv, outcome='questions', fallback=True), 'green') == 'low'
-    checks['flags: all of them, and the open ones are those no cleared entry covers'] = \
-        review_of(dict(rv, cleared=[{'flag': 'F1'}, {'flag': 'F1'}, {'flag': 'F2'}]), 'COMMENT', 'green', 4)[
-            'open'] == 2 and review_of(dict(rv, fallback=True, cleared=[{'flag': 'F1'}]), 'COMMENT', 'green', 3, 1)['open'] == 4
+    # The open asks (the mayor, 20:13Z): a change item the rules never flagged is still a change open.
+    rc = review_of(dict(rv, outcome='changes', items=[{'kind': 'change'}], cleared=[]), 'REQUEST_CHANGES', 'green')
+    checks['open asks: a change item no rule flagged reads "1 change open", and no "flagged" without a flag'] = \
+        entry_text(pr_url, 'Adds retry to uploads', rc, facts).splitlines()[1] == \
+        'Needs changes · CI green first push · +120/-8 in 4 files · tests changed · 1 change open' and \
+        open_part(dict(rc, changes=2, questions=1, flagged=3)) == ['2 changes, 1 question open', '3 flagged']
+    import itertools
+    import pr_format
+    kinds = [[], [{'kind': 'change'}], [{'kind': 'question'}], [{'kind': 'change'}, {'kind': 'question'}]]
+    seen, bad = set(), []
+    for items, blockers, decisions in itertools.product(kinds, kinds[:3], [[], [{'actors': ['author']}],
+                                                                            [{'actors': ['reviewer']}]]):
+        out = pr_format.decide(decisions, items, blockers)
+        r = review_of({'outcome': out, 'items': items, 'blockers': blockers, 'decisions': decisions},
+                      'APPROVE' if out == 'low-risk' else 'COMMENT', 'green')
+        ready = readiness('MERGEABLE', 'green', ours_of(r))
+        seen.add(ready)
+        if (ready == 'Needs changes' and r['changes'] < 1) or (ready == 'Needs answers' and r['questions'] < 1) or \
+                (ready == 'Ready to merge' and r['changes'] + r['questions']):
+            bad.append((out, len(items), len(blockers), len(decisions)))
+    checks['invariant over decide(): Needs changes has a change open, Needs answers a question, Ready to merge nothing'] = \
+        not bad and seen == {'Needs changes', 'Needs answers', 'Ready to merge'}
     # Readiness, one per value, in its order.
     ready = [readiness('CONFLICTING', 'red', 'approved'), readiness('MERGEABLE', 'red', 'approved'),
              readiness('MERGEABLE', 'green', 'changes'), readiness('MERGEABLE', 'green', 'questions'),
@@ -806,17 +838,18 @@ def selftest():
         tests_part(['src/a.ts', 'src/a.test.ts']), tests_part(['tests/a.py', 'src/FooTest.java', 'b_test.go']),
         tests_part(['src/latest.ts', 'src/contest.py']), tests_part([])] == ['tests changed', 'tests only', 'no test changes', None]
     long = dict(facts, added=12345678, removed=87654321, files=123456, first_pass=False, pushes=12, tests='no test changes')
-    l2 = entry_text(pr_url, 'Adds retry to uploads', dict(full, flagged=1234, open=1234), long).splitlines()[1]
+    l2 = entry_text(pr_url, 'Adds retry to uploads', dict(full, flagged=1234), long).splitlines()[1]
     checks['a long line 2 drops the files count first'] = len(l2) <= LINE_MAX and ' in 123456 files' not in l2 and \
-        '+12345678/-87654321' in l2 and len(entry_text(pr_url, '', dict(full, flagged=1234, open=1234), dict(long, tests=None)).splitlines()[1]) > 100
+        '+12345678/-87654321' in l2 and len(entry_text(pr_url, '', dict(full, flagged=1234), long).splitlines()[1]) > 100
     waiting = entry_text(pr_url, 'Adds retry to uploads', {'kind': None}, facts)
     held = entry_text(pr_url, 'Adds retry to uploads', {'kind': 'held'}, facts)
     note = entry_text(pr_url, '', {'kind': 'fallback', 'outcome': 'not-reviewed', 'confidence': 'low', 'flagged': 3,
-                                   'open': 3}, dict(facts, tests='tests only'))
+                                   'changes': 0, 'questions': 1}, dict(facts, tests='tests only'))
     checks['waiting: no confidence with nothing of ours on the head, low for a held run or a fallback'] = \
         waiting.splitlines()[0] == f'{pr_url} · Adds retry to uploads · {WAITING}' and \
         held.splitlines()[0] == f'{pr_url} · Adds retry to uploads · low confidence · {WAITING}' and \
-        note == f'{pr_url} · low confidence · {WAITING}\n{WAITING} · CI green first push · +120/-8 in 4 files · tests only · 3 flagged, 3 open'
+        note == f'{pr_url} · low confidence · {WAITING}\n{WAITING} · CI green first push · +120/-8 in 4 files · tests only · ' \
+        '1 question open · 3 flagged'
     # The hook and the allowlist, on the entry's two lines.
     exp = {'tool': 'mcp__x_Slack__send', 'channel': 'C1', 'text': text, 'allow': ['C1', 'D1']}
     checks.update({
@@ -912,10 +945,10 @@ def selftest():
            {'repo': 'o/r', 'number': 8, 'url': 'https://github.com/o/r/pull/8', 'head': head, 'requested': []}]
     url = pr_url + '#pullrequestreview-5'
     entries = {'o/r#1': {'review_url': url, 'review_heads': [head], 'outcome': 'low-risk', 'approved': True,
-                         'confidence': 'high', 'flagged_total': 2, 'flagged_open': 0},
+                         'confidence': 'high', 'flagged_total': 2, 'open_changes': 0, 'open_questions': 0},
                'o/r#2': {'review_url': url, 'review_heads': [head], 'outcome': 'questions'},
                'o/r#6': {'review_url': url, 'review_heads': [head], 'outcome': 'not-reviewed', 'fallback': 'not-reviewed',
-                         'flagged_total': 3, 'flagged_open': 3},
+                         'flagged_total': 3, 'open_changes': 0, 'open_questions': 1},
                'o/r#7': {'review_url': url, 'review_heads': [head], 'outcome': 'held-gate', 'head': head},
                'o/r#8': {'review_url': url, 'review_heads': [head], 'outcome': 'questions', 'confidence': 'medium'}}
     pfx = lambda cfg, repo, n, pr=None: dict(facts, url=f'https://github.com/{repo}/pull/{n}',  # noqa: E731
@@ -927,8 +960,9 @@ def selftest():
         f'Add audit log · low confidence · {WAITING}', f'Add audit log · low confidence · {WAITING}',
         f'Add audit log · low confidence · {WAITING}']
     checks['the queue: line 2 per entry, the flag counts only for a delivered review'] = \
-        got[0][0].splitlines()[1].endswith('2 flagged, 0 open') and got[3][0].splitlines()[1].endswith('3 flagged, 3 open') and \
-        'flagged' not in got[1][0] and all(log['words_from'] in ('kept', 'title') for _, log in got)
+        got[0][0].splitlines()[1].endswith('nothing open · 2 flagged') and \
+        got[3][0].splitlines()[1].endswith('1 question open · 3 flagged') and 'flagged' not in got[1][0] and \
+        ' open' not in got[1][0] and all(log['words_from'] in ('kept', 'title') for _, log in got)
     berlin = dt.timezone(dt.timedelta(hours=1))
     fri_0805, fri_0755 = dt.datetime(2026, 10, 30, 8, 5, tzinfo=berlin), dt.datetime(2026, 10, 30, 7, 55, tzinfo=berlin)
     checks['due once a weekday from 08:00 local'] = due(fri_0805, None)[0] and not due(fri_0755, None)[0] and \
