@@ -28,7 +28,7 @@ BAR = {'markers': 4, 'useful': 3}
 DIMS = ['scan', 'markers', 'decisions', 'plain', 'length', 'useful']
 _SCORE = {'type': 'integer', 'minimum': 1, 'maximum': 5}
 SCHEMA = {
-    'type': 'object', 'additionalProperties': False, 'required': DIMS + ['problems', 'risky_cleared', 'behaviour_in_skip'],
+    'type': 'object', 'additionalProperties': False, 'required': DIMS + ['problems', 'risky_cleared', 'behaviour_in_skip', 'answered_by_own_text'],
     'properties': {
         **{d: dict(_SCORE) for d in DIMS},
         'behaviour_in_skip': {'type': 'boolean', 'description': (
@@ -43,6 +43,9 @@ SCHEMA = {
                     'The one concrete check the author can answer about those lines, ending in "?", at most 25 '
                     'words; never a stock question.')}}}},
         'decisions': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '0 = no choice for the author (n/a)'},
+        'answered_by_own_text': {'type': 'array', 'maxItems': 5, 'items': {'type': 'integer', 'minimum': 1}, 'description': (
+            'The numbers (as in the body) of the questions for the author whose own explanation, in their inline '
+            'comment, already answers them.')},
         'problems': {'type': 'array', 'maxItems': 3, 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['what', 'fix'],
             'properties': {'what': {'type': 'string', 'maxLength': 240}, 'fix': {'type': 'string', 'maxLength': 240}}}},
@@ -73,7 +76,8 @@ Then give at most 3 problems, each with a concrete fix. Last, list the cleared e
 under "Checked and cleared" or "What was checked") that describe a behaviour that could be a risk
 without saying why it is acceptable or intended, each with the one concrete question its author should
 answer about those lines, and say whether the "Safe to skip" line holds a change
-in product behaviour (what users, patients or staff see or get).
+in product behaviour (what users, patients or staff see or get). And list the questions for {author}
+(by their number in the body) whose own explanation, in their inline comment, already answers them.
 
 Required by the style guide, so never a problem and never counted against a score: line 1, {line1};
 line 2, {line2}; each item for
@@ -140,6 +144,7 @@ def judge(cfg, body, comments, name, author):
              if isinstance(x, dict) and isinstance(x.get('n'), int)}
     meta['risky_cleared'], meta['risky_questions'] = sorted(risky), risky
     meta['behaviour_in_skip'] = bool(so.get('behaviour_in_skip'))
+    meta['answered'] = sorted({n for n in so.get('answered_by_own_text') or [] if isinstance(n, int)})
     return {d: so[d] for d in DIMS}, so.get('problems') or [], meta
 
 

@@ -303,8 +303,10 @@ into the reviewer's voice from the text GitHub holds: line 1 the verdict word an
 the author must do, the disclosure lines dropped, "not checked by any agent" said as scope, a section for
 the reviewer renamed "Open questions"; findings, links and options stay. It knows every shape we delivered
 (v3, v4, v5-v5.5, the notes and pointers) and leaves alone, counted, a review whose text would still hold a
-disclosure phrase (R38). A dry run by default (counts only); `--apply` rewrites the reviews on open PRs,
-`--apply --merged` those on merged and closed PRs too. GitHub keeps each edited review's history, and a
+disclosure phrase (R38). It finds the PRs by GitHub's search (reviewed by the reviewer on the configured
+repositories) as well as the state, so a review older than the state is found too; `--ours ID,...` also
+treats the named review ids as ours (a body whose marker was removed by hand). A dry run by default
+(counts only); `--apply` rewrites the reviews on open PRs, `--apply --merged` those on merged and closed PRs too. GitHub keeps each edited review's history, and a
 dismissal message cannot be edited.
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
@@ -409,7 +411,9 @@ choices goes to the author (passes), a gap of an unknown kind fails (R16), and t
 changes review, billing as scope, an approval, the R33 note as the author's question, choices that start
 with "You" (pass), choices that name the author, a disclosure phrase in the body or an inline comment, the
 old note on line 1 (fail, R22, R38, R28), and a delivered body in the voice (passes). Case 6 ("Needs you"
-with a decision for the reviewer) fails since v5.6. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+with a decision for the reviewer) fails since v5.6. Cases 104-106 (v5.7): a question its own explanation
+answers is cleared (`judge_answered`: the reader's answer), and the PR then passes as low risk and as an
+approval; a body item whose ask runs over 20 words fails (R29). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail

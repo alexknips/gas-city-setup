@@ -391,7 +391,8 @@ def render(repo, pr, rv, name, author):
             old = ' (removed lines)' if it.get('side') == 'old' else ''
             url = diff_link(repo, n, it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
             label = 'Question' if voiced(rv) and it['kind'] == 'question' else KINDS[it['kind']].format(author=author)
-            lines.append(f"{k}. **{it['change']}** · {label} · [`{it['path']}` {rng_text(it)}{old}]({url})"
+            # R4: the body item states its ask; its inline comment carries the evidence (the mayor, 06:4xZ).
+            lines.append(f"{k}. **{it['change']}** · {label}: {it['ask']} · [`{it['path']}` {rng_text(it)}{old}]({url})"
                          f"{rule_ref(repo, rv, it.get('rule'))}")
         for j, b in enumerate(rv['blockers'], k + 1):
             lines.append(f"{j}. [{b['label']}]({b['url']}): {b['detail']}")
@@ -493,14 +494,36 @@ def skip_text(repo, number, groups):
     return '; '.join(parts)
 
 
-def inline_comments(items, author, voice='disclose'):
-    """One inline comment per item, on its exact lines (R4); a range becomes a multi-line comment. A change
-    that carries a one-click fix ends with it as a GitHub suggestion block (gc-sy1hm.2 b)."""
-    out = []
+def self_answered(items, ns, flagged=(), idx=None):
+    """R31's converse (the mayor, 2026-10-30 06:4xZ): a question whose own explanation answers it is not
+    a question. The new-side question items the reader names (`ns`: 1 = the first item) become cleared
+    entries with the item's own reason, keeping the flag they covered. Returns (items, cleared entries)."""
+    keep, out = [], []
     for k, it in enumerate(items, 1):
+        if k in ns and it.get('kind') == 'question' and it.get('side', 'new') == 'new':
+            f = next((f for f in flagged if idx is not None and covers(idx, f, [it])), None)
+            out.append({'flag': f['id'] if f else None, 'path': it['path'], 'line_start': it['line_start'],
+                        'line_end': it['line_end'], 'change': it['change'], 'why': it['why'],
+                        'rule': it.get('rule') or '', 'answered': True})
+        else:
+            keep.append(it)
+    return keep, out
+
+
+def first_item(rv):
+    """The number of the first item in the body: the author's own decisions come before the items."""
+    return len(split(rv.get('decisions') or [])[1]) + 1
+
+
+def inline_comments(items, author, voice='disclose', first=1):
+    """One inline comment per item, on its exact lines (R4), numbered as in the body (`first`: first_item);
+    a range becomes a multi-line comment. It carries the evidence; the ask stands in the body (the mayor,
+    2026-10-30 06:4xZ). A change that carries a one-click fix ends with it as a GitHub suggestion block
+    (gc-sy1hm.2 b)."""
+    out = []
+    for k, it in enumerate(items, first):
         side = 'RIGHT' if it.get('side', 'new') == 'new' else 'LEFT'
-        label = 'Question' if voice == 'reviewer' and it['kind'] == 'question' else KINDS[it['kind']].format(author=author)
-        text = f"**{k}. {it['change']}**: {it['why']}\n\n**{label}:** {it['ask']}"
+        text = f"**{k}. {it['change']}**: {it['why']}"
         if it.get('suggestion'):
             text += f"\n\n```suggestion\n{it['suggestion'].rstrip(chr(10))}\n```"
         c = {'path': it['path'], 'line': it['line_end'], 'side': side, 'body': text}
@@ -824,8 +847,8 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         else:
             why += suggestion_reasons(p, it, idx)
         why += change_reasons(p, it.get('change'))
-        for f in ('why', 'ask'):
-            why += field_reasons(p, f, it.get(f)) + words_reasons(p, f, it.get(f))
+        for f in ('why', 'ask'):  # the ask stands in the body: at most 20 words (R4)
+            why += field_reasons(p, f, it.get(f)) + words_reasons(p, f, it.get(f), 20 if f == 'ask' else 30)
         if it.get('area') not in AREAS:
             why.append(f'R5: {p} area is not one of {AREAS}')
         if it.get('kind') == 'question' and not (it.get('ask') or '').rstrip().endswith('?'):
@@ -853,7 +876,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
     for k, c in enumerate(rv.get('cleared') or [], 1):
         p = f'cleared entry {k}'
         f = by_id.get(c.get('flag'))
-        if f is None:
+        if f is None and c.get('answered'):  # a self-answered question: its own lines, no flag (R31)
+            f = {'path': c.get('path'), 'line': c.get('line_start'), 'label': 'a question its own text answers'}
+        elif f is None:
             why.append(f"R19: {p} names flag {c.get('flag')!r}, which is not one of the flagged hunks"); continue
         if c.get('path') != f['path'] or not isinstance(c.get('line_start'), int) or not isinstance(c.get('line_end'), int) \
                 or c['line_start'] > c['line_end']:
@@ -1204,6 +1229,9 @@ def regress(dirs):
                 reasons = gate_body(fx['body'], rv, fx.get('comments_v'))
             else:
                 idx = diff_index(fx['diff'])
+                if fx.get('judge_answered'):  # the reader found these questions answered by their own text (R31)
+                    kept, more = self_answered(fx.get('items', []), set(fx['judge_answered']), fx.get('flagged', []), idx)
+                    fx = dict(fx, items=kept, cleared=fx.get('cleared', []) + more)
                 pr = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'url': 'https://github.com/example/repo/pull/1',
                       'headRefOid': 'a' * 40}
                 rv = review_of(fx)
@@ -1218,7 +1246,8 @@ def regress(dirs):
                     reasons_l2.append(f"R1: the parts give {decide(rv['decisions'], rv['items'], rv['blockers'])}, "
                                       f"not {rv['outcome']}")
                 reasons = reasons_l2 + gate(rv, idx, body, fx.get('tree_lines'), fx.get('pr_text', ''),
-                                            fx.get('flagged', []), inline_comments(rv['items'], 'Author', rv['voice']))
+                                            fx.get('flagged', []),
+                                            inline_comments(rv['items'], 'Author', rv['voice'], first_item(rv)))
                 if 'approve_check' in fx:
                     ac = fx['approve_check']
                     f = ac['fresh']

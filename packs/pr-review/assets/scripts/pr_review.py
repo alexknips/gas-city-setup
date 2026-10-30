@@ -206,8 +206,10 @@ in order:
      (picked).
    - `items` for {author}: a "change" they must make or a "question" they must answer, each anchored to
      lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). `change`
-     is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter and `ask`
-     the one thing to do, at most 25 words each. Say each finding once: never two items on the same lines.{suggest_step}
+     is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter (at most
+     25 words; it goes in the inline comment) and `ask` the one thing to do (at most 20 words; it stands
+     in the body). A question whose own `why` already answers it is not a question: make it a cleared
+     entry when its lines are a flagged hunk, else leave it out. Say each finding once: never two items on the same lines.{suggest_step}
    - `cleared`: EVERY flagged hunk that is not covered by a decision or an item gets one entry: its flag
      id, its file, a new-side line range inside that hunk on the CODE that makes it safe (not a comment),
      `change` (3-6 plain words on what the PR changed, never a category label) and `why` (the one fact
@@ -689,7 +691,7 @@ def redeliver(cfg, key):
               voice=cfg.get('voice'), names=[NAME, pr_format.YOU if cfg.get('voice') == 'reviewer' else author])
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
-    comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
+    comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'), pr_format.first_item(rv))
     idx = pr_format.diff_index(pr_diff(entry['repo'], pr['number']))
     reasons = pr_format.gate(rv, idx, body, None, pr.get('body') or '', res.get('flagged') or [], comments)
     if reasons:
@@ -973,7 +975,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
                  'digest_cost_usd': dmeta.get('cost_usd', 0),
                  **{f'context_{k}': v for k, v in cstats.items()}, **inc}
-        reasons, problems, model, risky, risky_q, money_memo = [], [], None, [], {}, {}
+        reasons, problems, model, risky, risky_q, money_memo, answered = [], [], None, [], {}, {}, []
         for attempt in (1, 2):
             p = prompt if attempt == 1 else (
                 prompt + '\n\nYOUR PREVIOUS ANSWER FAILED THE STYLE GUIDE GATE. Fix every reason and answer again:\n'
@@ -1004,7 +1006,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if since_block:
                 rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
-            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
+            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'), pr_format.first_item(rv))
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             problems = []
@@ -1014,6 +1016,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra['judge'] = scores
                 risky = [j for j in jm.get('risky_cleared') or [] if j <= len(rv['cleared'])]
                 risky_q = jm.get('risky_questions') or {}
+                answered = [n - pr_format.first_item(rv) + 1 for n in jm.get('answered') or []]  # body no. -> item no.
                 extra['risky_cleared'] = len(risky)
                 reasons = pr_judge.below_bar(scores) + ([
                     f'R31: cleared entries {risky} describe a possible risk without saying why it is acceptable or '
@@ -1029,6 +1032,20 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if not reasons:
                 break
             extra.setdefault('gate_first', sorted({r.split(':')[0] for r in reasons}))
+        if not reasons and answered:  # R31's converse: a question its own text answers is checked, not asked
+            kept, more = pr_format.self_answered(rv['items'], set(answered), flagged, idx)
+            if more:
+                rv2 = assemble(cfg, repo, pr, ci, decisions, kept, model['cleared'] + more, model, flagged, flags_cut, money,
+                               ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
+                               conflicts=conflicts)
+                if since_block:
+                    rv2['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv2['items'], prev, pr['headRefOid'])
+                body2 = pr_format.render(repo, pr, rv2, NAME, author)
+                comments2 = pr_format.inline_comments(rv2['items'], author, cfg.get('voice'), pr_format.first_item(rv2))
+                links2 = [(d.get('link') or {}).get('path') for d in rv2['decisions'] if (d.get('link') or {}).get('kind') == 'code']
+                if not pr_format.gate(rv2, idx, body2, tree_lines(tree, links2), pr.get('body') or '', flagged, comments2):
+                    rv, body, comments = rv2, body2, comments2
+                    extra['self_answered'] = len(more)
         in_skip = [r for r in reasons if r.startswith('R37: a change in product behaviour')]
         if reasons and all(r.startswith('R31') or r in in_skip for r in reasons):
             # R31: what the reader still finds risky after the second answer is not cleared; it becomes a
@@ -1044,7 +1061,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if since_block:
                 rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
-            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
+            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'), pr_format.first_item(rv))
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             extra['r31_questions'] = len(asked)

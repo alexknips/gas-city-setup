@@ -6,11 +6,14 @@ checked by any agent" becomes scope, a section for the reviewer becomes "Open qu
 links and options stay as they were. A review whose text would still hold a disclosure phrase (R38) is
 left alone and counted.
 
-  pr_restamp.py                       dry run over the state's PRs of the configured repositories
+  pr_restamp.py                       dry run over the PRs the reviewer reviewed on the configured repositories
+                                      (GitHub's search, and the state's PRs)
   pr_restamp.py --apply               rewrite the reviews on open PRs
   pr_restamp.py --apply --merged      ... and on merged and closed PRs (GitHub keeps each review's edit history)
 
 Prints counts only. A dismissed review keeps its dismissal message (GitHub has no edit for it).
+  pr_restamp.py --ours ID,ID ...      also treat these review ids as ours (bodies whose marker was removed by hand)
+  pr_restamp.py --selftest            the shapes and the PR list on synthetic data
 """
 import argparse
 import collections
@@ -105,16 +108,39 @@ def gh_write(method, path, body):
     return r.returncode == 0
 
 
-def restamp(cfg, apply, merged):
+def targets(entries, searched):
+    """[(repo, number, state entry or {})]: the state's PRs, and the PRs GitHub finds reviewed by the
+    reviewer (a review can predate the state, or its entry be gone: the mayor found 3 of 21, 2026-10-30)."""
+    out = {(e['repo'], e['number']): e for e in entries.values()}
+    for repo, num in searched:
+        out.setdefault((repo, num), {})
+    return [(repo, num, e) for (repo, num), e in sorted(out.items())]
+
+
+def searched_prs(cfg):
+    """(repo, number) of every PR on the configured repositories that the reviewer reviewed."""
+    out = []
+    for repo in cfg['repos']:
+        r = subprocess.run(['gh', 'search', 'prs', '--repo', repo, '--reviewed-by', cfg['reviewer'], '--limit', '1000',
+                            '--json', 'number', '--jq', '.[].number'], capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError(f'gh search failed (rc {r.returncode})')
+        out += [(repo, int(x)) for x in r.stdout.split() if x.strip().isdigit()]
+    return out
+
+
+def restamp(cfg, apply, merged, ours=()):
     reviewer = cfg['reviewer'].lower()
     name = os.environ.get('PR_REVIEW_REVIEWER_NAME') or cfg['reviewer'] or 'the reviewer'
     names = dict(x.split('=', 1) for x in os.environ.get('PR_REVIEW_NAMES', '').split() if '=' in x)
     with pr_state.locked(cfg['state']) as st:
         entries = {k: dict(e) for k, e in st['prs'].items() if e.get('repo') in cfg['repos'] and e.get('review_id')}
-    n = collections.Counter(prs=len(entries))
+    found = searched_prs(cfg)
+    todo = targets(entries, found)
+    n = collections.Counter(prs=len(todo), prs_in_state=len(entries), prs_not_in_state=len(todo) - len(entries))
     new_sha = {}
-    for key, e in sorted(entries.items()):
-        repo, num = e['repo'], e['number']
+    for repo, num, e in todo:
+        key = f'{repo}#{num}'
         try:
             pr = gh_lines(f'repos/{repo}/pulls/{num}', '{state, merged, author: .user.login}')[0]
             reviews = gh_lines(f'repos/{repo}/pulls/{num}/reviews?per_page=100',
@@ -127,7 +153,7 @@ def restamp(cfg, apply, merged):
             continue
         author = names.get(pr['author'], pr['author'])
         for rv in reviews:
-            if not pr_format.is_ours(rv['body']):
+            if not pr_format.is_ours(rv['body']) and int(rv['id']) not in ours:
                 continue
             n['reviews_ours'] += 1
             first = (rv['body'] or '').split('\n', 1)[0]
@@ -171,12 +197,36 @@ def restamp(cfg, apply, merged):
     print(json.dumps({'apply': apply, 'merged': merged, **dict(sorted(n.items()))}))
 
 
+def selftest():
+    """Each shape we delivered, restamped, has no disclosure phrase; a PR found only by GitHub's search is
+    restamped too. Synthetic text only."""
+    honest = "Automated review by A's review agents (Claude Code); A hasn't read this PR yet."
+    shapes = {'v5': "**Changes requested** · automated, A hasn't read this PR\nA: nothing. Author: 1 change.\n\nx",
+              'v4': honest + '\n\n**Approved as low risk. Nothing for A or Author.**\n\nx',
+              'v3': honest + '\n\n**Low risk: nothing to check**\n\nx',
+              'pointer': honest + '\n\nReplaced by [the new review of this commit](https://github.com/o/r/pull/1).',
+              'note': "**Not reviewed automatically**\n   Our review of this PR didn't reach the quality bar: it was held."}
+    got = {k: voice_body(b, 'A', 'Author', 'COMMENTED') for k, b in shapes.items()}
+    entries = {'o/r#1': {'repo': 'o/r', 'number': 1, 'review_id': 5}}
+    checks = {f'{k}: in the voice, no disclosure': bool(v) and v.startswith('**') and pr_format.MARK in v.split('\n')[0]
+              for k, v in got.items()}
+    checks['a PR found only by the search is restamped'] = [t[:2] for t in targets(entries, [('o/r', 1), ('o/r', 2)])] == \
+        [('o/r', 1), ('o/r', 2)]
+    for k, v in checks.items():
+        print('ok  ' if v else 'FAIL', k)
+    return all(checks.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--merged', action='store_true')
+    ap.add_argument('--ours', default='', help='review ids, comma-separated')
+    ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
-    restamp(pr_state.config(), a.apply, a.merged)
+    if a.selftest:
+        sys.exit(0 if selftest() else 1)
+    restamp(pr_state.config(), a.apply, a.merged, {int(x) for x in a.ours.split(',') if x.strip().isdigit()})
 
 
 if __name__ == '__main__':

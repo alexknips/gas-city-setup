@@ -71,6 +71,8 @@ TREE = {'src/notify/send.ts': 40, 'test/notify.test.ts': 4}
 REVIEW = 'https://github.com/example/repo/pull/1#pullrequestreview-1001'
 PAGE = 'http://dash.example/pr-review/repo-1-aaaaaaa.html'
 QUESTION = dict(GOOD_ITEM, kind='question', ask='Does the SMS text need the full name at all?')
+# A question its own explanation answers (the mayor, 2026-10-30 06:4xZ: then it is not a question).
+SELF_ANSWERED = dict(QUESTION, why='The template already uses only the first name, so the full name never reaches the SMS.')
 FLAG = {'id': 'F1', 'rule': 'irrev-messages', 'label': 'a message sent to people (SMS, email, push)',
         'path': 'src/notify/send.ts', 'line': 14}
 CLEARED = {'flag': 'F1', 'path': 'src/notify/send.ts', 'line_start': 14, 'line_end': 14, 'rule': '',
@@ -529,6 +531,19 @@ CASES = {
         'facts': 'No CI ran · no merge conflict · open',
         'body': pr_restamp.voice_body(body(outcome='not-reviewed', decisions=[FLOOR], blockers=NO_CI, model=False,
                                            facts='No CI ran · no merge conflict · open'), 'Reviewer', 'Author')},
+    # 2026-10-30 06:4xZ (the mayor, two general rules): a question whose own explanation answers it is
+    # cleared with that reason, and the PR may then be approved (R31, R27); a body item states its ask in
+    # at most 20 words next to its link, and its inline comment carries the evidence (R4).
+    'case104-self-answered-question-is-cleared': {
+        'expect': 'pass', 'outcome': 'low-risk', 'derived': True, 'diff': DIFF, 'items': [SELF_ANSWERED],
+        'flagged': [FLAG], 'cleared': [], 'judge_answered': [1], **SKIP},
+    'case105-self-answered-question-then-approved': {
+        'expect': 'pass', 'outcome': 'low-risk', 'approve': True, 'diff': DIFF, 'items': [SELF_ANSWERED],
+        'flagged': [FLAG], 'cleared': [], 'judge_answered': [1], 'approve_check': GREEN, **SKIP},
+    'case106-body-item-ask-over-20-words': {
+        'expect': 'fail', 'expect_reasons': ['R29'], 'only_reasons': ['R29'], 'outcome': 'changes', 'diff': DIFF, **SKIP,
+        'items': [dict(GOOD_ITEM, ask='Drop the message body from the info log line, log the visit id instead, and add '
+                                      'a test that the log line never holds the name.')]},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,

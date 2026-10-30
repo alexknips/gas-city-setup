@@ -8,6 +8,8 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 python3 "$here/pr_format.py" --regress "$here/../../tests/fixtures" "${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression"
 rc=$?
+# The restamp's shapes and its PR list (synthetic; decision-ed7320b7).
+python3 "$here/pr_restamp.py" --selftest > /dev/null || { echo 'pr_restamp selftest: FAIL'; rc=1; }
 # Host-local: no public file names a town person or repository (skipped without the town overrides).
 python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
 exit $rc
