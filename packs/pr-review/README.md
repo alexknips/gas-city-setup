@@ -72,6 +72,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_CLIENT_SLACK_TOOL` | (none) | The connector's post tool, by its full name (`--check` lists the connector's tools). |
 | `PR_REVIEW_CLIENT_SLACK_REPOS` | (all) | The repositories whose reviews get a line there. |
 | `PR_REVIEW_CLIENT_SLACK_MODEL`, `_MAX_TURNS` | `haiku`, `3` | The runner's model and turn limit. |
+| `PR_REVIEW_CLIENT_SLACK_QUEUE_AT`, `_TZ` | `08:00`, `Europe/Berlin` | When the queue post is due: once a weekday from this local time (order `pr-review-client-queue`). |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
 | `PR_REVIEW_SLACK_ENV` | `~/.config/gc/slack.env ~/.config/gc/slack2.env` | Files searched for the first `xoxb-` bot token. |
 | `PR_REVIEW_DAILY_CAP` | `off` | Model reviews per UTC day (a number), or `off` for no cap. CI escalations do not count. |
@@ -116,6 +117,14 @@ settings, from the city directory) and the runner load; it passes when only the 
 connector's tools and the configured post tool is among them. `--post-review OWNER/NAME#N` posts the
 line of a delivered review by hand (with `PR_REVIEW_CLIENT_SLACK=dry-run`, the ids and the word only).
 The first real post is a test with the town's owner.
+
+The queue post (order `pr-review-client-queue`, hourly; `pr_client_slack.py --queue [--now]`): once a
+weekday from `PR_REVIEW_CLIENT_SLACK_QUEUE_AT`, the open PRs (not drafts) that request the reviewer or
+carry our latest review, one line each, "<word>: <PR link>". The word is our review's on the PR's current
+head ("Approved", "Questions", "Changes requested", ...), else "Waiting for review"; nothing from the PR's
+text. No post when the list is empty. A failed post is tried again on later runs of the day, 3 times at
+most. The same runner and hook carry it; its text goes to the model between two marker lines, and the
+hook compares it up to line endings.
 
 ## What never leaves GitHub
 

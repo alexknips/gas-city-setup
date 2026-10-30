@@ -76,6 +76,8 @@ def config():
         'client_slack_repos': set(e('PR_REVIEW_CLIENT_SLACK_REPOS', '').replace(',', ' ').split()),
         'client_slack_model': e('PR_REVIEW_CLIENT_SLACK_MODEL', 'haiku'),
         'client_slack_max_turns': int(e('PR_REVIEW_CLIENT_SLACK_MAX_TURNS', '3')),
+        'client_slack_queue_at': e('PR_REVIEW_CLIENT_SLACK_QUEUE_AT', '08:00'),
+        'client_slack_tz': e('PR_REVIEW_CLIENT_SLACK_TZ', 'Europe/Berlin'),
         'model': e('PR_REVIEW_MODEL', 'opus'),
         'effort': e('PR_REVIEW_EFFORT', 'high'),
         'prompt': e('PR_REVIEW_PROMPT', 'security'),

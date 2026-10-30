@@ -1,0 +1,18 @@
+# The client's Slack queue post (README.md, "The client's Slack"): once a weekday from
+# PR_REVIEW_CLIENT_SLACK_QUEUE_AT (local time in PR_REVIEW_CLIENT_SLACK_TZ), the open PRs that request the
+# reviewer or carry our latest review, one line each (the state word and the PR's link), posted as the
+# reviewer through pr_client_slack.py's runner. Skipped when the list is empty. Off unless
+# PR_REVIEW_CLIENT_SLACK is on (or dry-run: ids and words printed, nothing posted). Tokens: the runner's
+# one small-model call, bounded by turns.
+# Manual run: gc order run pr-review-client-queue
+# Dry run:    PR_REVIEW_CLIENT_SLACK=dry-run $PACK_DIR/assets/scripts/pr-review-client-queue.sh --now
+[order]
+description = "PR review: the daily queue post in the client's Slack, as the reviewer"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/pr-review-client-queue.sh"
+trigger = "cooldown"
+interval = "1h"
+timeout = "5m"
+
+[order.env]
+PR_REVIEW_CLIENT_SLACK = "off"
