@@ -730,7 +730,13 @@ def describe_money(cfg, idx, located, ruleset):
     ranges = pr_format.money_ranges(idx, located)
     shown, meta = pr_money.describe(cfg, idx, ranges[:pr_money.MAX_PLACES],
                                     ruleset.get('not_checked') or 'billing, plans, credits or pricing')
-    return [dict(r, what=clean(r['what'])) for r in shown] + ranges[pr_money.MAX_PLACES:], meta
+    return [dict(r, what=clip(clean(r['what']), pr_format.MONEY_WORDS)) for r in shown] + ranges[pr_money.MAX_PLACES:], meta
+
+
+def clip(text, words):
+    """At most `words` words, so a long money line never holds the money review (R32)."""
+    w = text.split()
+    return text if len(w) <= words else ' '.join(w[:words - 1]) + ' …'
 
 
 def question_from(c):
@@ -903,6 +909,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      dropped=len(model['items']) + len(model['decisions']) - len(items) - len(decisions),
                      kinds=sorted(i['kind'] for i in items), severity=sorted(i['severity'] for i in items),
                      checks=model['checks'], flagged_hunks=len(flagged), flags_cut=flags_cut, ci=ci,
+                     money_places=len(money), money_unlined=sum(1 for x in money if not x.get('what')),
                      gate=sorted({r.split(':')[0] for r in reasons}))
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         fallback = held and pr_rules.held_fallback(
@@ -916,6 +923,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,
                          cleared=0, gate=sorted({r.split(':')[0] for r in reasons}))
+            if cfg['judge'] and not reasons:  # for the log only: the money review is never held by the reader
+                fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
+                extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
             fallback = held and pr_rules.held_fallback('requested' in hits, False, False)
         if fallback == 'not-reviewed':

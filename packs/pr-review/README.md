@@ -203,7 +203,7 @@ to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of 
 
 **The money lines** (`pr_money.py`, R32). For a PR that touches billing, plans, credits or pricing, one
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
-charges, credits, plans or limits) and its kind. It runs apart from the review, so the money decision
+charges, credits, plans or limits; clipped at 30 words) and its kind. It runs apart from the review, so the money decision
 keeps its lines even when the full review is held.
 
 `assets/checklist-health.md` is the default checklist for health-care code: HIPAA Security Rule

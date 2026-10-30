@@ -41,6 +41,7 @@ SUGGESTED = 'Changes suggested'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
 MAX_SKIP_LINKS = 12  # files the skip list links one by one; then one link to the files view (R30)
 MONEY_KINDS = ['charges', 'credits', 'plans', 'limits', 'other']  # R32: the money places, grouped
+MONEY_WORDS = 30  # R32: one line per place ("about 25 words"; pr_review clips longer ones)
 GREEN_FACTS = 'CI passed · no merge conflict · open'  # R30: the status line shows only when it is not this
 
 # R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
@@ -518,7 +519,7 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
                 why.append(f'R32: {p} location {j} is not linked to its changed range')
             if len((x.get('what') or '').split()) < 4:
                 why.append(f'R32: {p} location {j} does not say in one line what it changes')
-            why += [r.replace('R29', 'R32') for r in words_reasons(f'{p} location {j}', 'line', x.get('what'), 25)]
+            why += [r.replace('R29', 'R32') for r in words_reasons(f'{p} location {j}', 'line', x.get('what'), MONEY_WORDS)]
         ln = d.get('link') or {}
         if ln.get('kind') == 'code':
             n = (tree_lines or {}).get(ln.get('path'))
