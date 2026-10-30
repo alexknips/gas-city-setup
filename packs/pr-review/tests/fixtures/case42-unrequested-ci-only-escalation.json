@@ -1,0 +1,11 @@
+{
+ "expect": "pass",
+ "rule": "R11",
+ "route": "ci_only",
+ "want": true,
+ "args": {
+  "ci": "red",
+  "requested": false,
+  "content": false
+ }
+}

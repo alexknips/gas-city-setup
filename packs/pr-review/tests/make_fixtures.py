@@ -204,7 +204,7 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R26'], **LOW,
         'judge': {'scan': 5, 'markers': 3, 'decisions': 0, 'plain': 4, 'length': 4, 'useful': 2}},
     # 2026-10-29 21:57Z (the mayor, R20 vs R26): a billing PR whose review the reader test held twice gets
-    # the minimal review: line 2, the money decision, the facts line, nothing the model wrote. R28.
+    # the minimal review: line 2, the money decision, the facts line, nothing the model wrote. R33.
     'case37-billing-minimal-after-reader-holds': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
         'decisions': [dict(MONEY, what='')], 'not_checked': NOT_CHECKED},
@@ -221,6 +221,47 @@ CASES = {
         'expect': 'pass', **dict(LOW, approve=True), 'approve_check': GREEN,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'APPROVED', 'ours_on_head': 1},
         'judge': {'scan': 5, 'markers': 5, 'decisions': 0, 'plain': 5, 'length': 5, 'useful': 4}},
+    # 2026-10-29 22:11Z (the mayor's test batch): three PRs requested the reviewer after the first sweep had
+    # set them aside (no rule) and were never selected. The sweep queues a requested PR again, but never
+    # a head it already reviewed or held (that would loop).
+    'case38-request-added-after-the-first-sweep': {
+        'expect': 'pass', 'rule': 'sweep', 'route': 'asked_again', 'want': True,
+        'args': {'old': {'head': 'a' * 40, 'status': 'done', 'outcome': 'no-rule'}, 'head': 'a' * 40, 'asked': True}},
+    'case39-held-head-not-queued-again': {
+        'expect': 'pass', 'rule': 'sweep', 'route': 'asked_again', 'want': False,
+        'args': {'old': {'head': 'a' * 40, 'status': 'done', 'outcome': 'held-gate'}, 'head': 'a' * 40, 'asked': True}},
+    'case40-requested-again-on-a-new-head': {
+        'expect': 'pass', 'rule': 'sweep', 'route': 'asked_again', 'want': True,
+        'args': {'old': {'head': 'a' * 40, 'status': 'done', 'outcome': 'questions'}, 'head': 'b' * 40, 'asked': True}},
+    # 2026-10-29 22:30Z (the batch: a requested PR with no CI came out "questions" with no model and no
+    # question, useful 1): missing or red CI never skips the model on a requested PR. R34.
+    'case41-requested-pr-without-ci-gets-the-model': {
+        'expect': 'pass', 'rule': 'R34', 'route': 'ci_only', 'want': False,
+        'args': {'ci': 'none', 'requested': True, 'content': False}},
+    'case42-unrequested-ci-only-escalation': {
+        'expect': 'pass', 'rule': 'R11', 'route': 'ci_only', 'want': True,
+        'args': {'ci': 'red', 'requested': False, 'content': False}},
+    # 22:30Z (6 of 17 requested PRs were held and silent, "the worst failure"): never silent. R33.
+    'case43-held-requested-pr-gets-the-note': {
+        'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-reviewed',
+        'args': {'requested': True, 'not_checked': False, 'reader_only': True}},
+    'case44-held-billing-pr-gets-the-money-review': {
+        'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-checked-minimal',
+        'args': {'requested': False, 'not_checked': True, 'reader_only': True}},
+    'case45-not-reviewed-note': {
+        'expect': 'pass', 'note': pr_format.note('Reviewer', 'No CI ran · no merge conflict · open')},
+    'case46-not-reviewed-note-without-the-facts-line': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'note': pr_format.NOTE.format(name='Reviewer')},
+    # 22:30Z (a COMMENT review said "Changes requested": the author sees a review that claims to block and
+    # does not) and 23:09Z (the reviewer: "yes, we should use the formal github request changes"): the
+    # word matches the event. R35.
+    'case47-comment-review-says-changes-requested': {
+        'expect': 'fail', 'expect_reasons': ['R35'], 'outcome': 'changes', 'n_items': 1,
+        'body': body(outcome='changes', items=[GOOD_ITEM], safe_to_skip='1 test file.', request_changes=True)},
+    'case48-formal-request-changes': {
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM], 'safe_to_skip': '1 test file.',
+        'request_changes': True,
+        'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'CHANGES_REQUESTED', 'ours_on_head': 1}},
 }
 
 if __name__ == '__main__':

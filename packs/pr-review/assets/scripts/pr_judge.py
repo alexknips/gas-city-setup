@@ -122,7 +122,8 @@ def audit(cfg, limit):
     name = os.environ.get('PR_REVIEW_REVIEWER_NAME') or cfg['reviewer'] or 'the reviewer'
     with pr_state.locked(cfg['state']) as st:
         todo = sorted(((k, dict(e)) for k, e in st['prs'].items()
-                       if e.get('review_id') and e.get('delivered_at') and not e.get('judge')),
+                       if e.get('review_id') and e.get('delivered_at') and not e.get('judge')
+                       and e.get('outcome') != 'not-reviewed'),  # the R33 note is fixed text
                       key=lambda ke: ke[1]['delivered_at'], reverse=True)[:limit]
     done, cost = {}, 0.0
     for key, e in todo:

@@ -174,8 +174,10 @@ def sweep(cfg, dry):
         for pr in prs:
             key = f"{repo}#{pr['number']}"
             # An open PR nobody touched since the last sweep, and never seen, is not news: the first
-            # sweep starts PR_REVIEW_LOOKBACK_H back instead of at every PR ever opened.
-            if pr['state'] == 'OPEN' and key not in known and pr_state.parse(pr['updatedAt']) < since:
+            # sweep starts PR_REVIEW_LOOKBACK_H back instead of at every PR ever opened. A PR that requests
+            # the reviewer is always news.
+            if pr['state'] == 'OPEN' and key not in known and pr_state.parse(pr['updatedAt']) < since \
+                    and not pr_rules.requested_now(pr, cfg['reviewer']):
                 counts['untouched'] += 1
                 continue
             found[key] = (repo, pr, heads)
@@ -205,7 +207,8 @@ def sweep(cfg, dry):
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
             continue
-        if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci':
+        again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer']))
+        if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci' and not again:
             counts['seen'] += 1
             continue
         files = pr_rules.pr_files(repo, pr['number'])
@@ -217,10 +220,10 @@ def sweep(cfg, dry):
         ci_wait = pr_state.parse(entry['seen_at']) + dt.timedelta(hours=cfg['ci_wait_h'])
         if rec['ci'] == 'pending' and t0 < ci_wait:
             entry['status'] = 'waiting-ci'
-        elif old.get('status') in ('done', 'reviewing') and not (
+        elif old.get('status') in ('done', 'reviewing') and not again and not (
                 pr_rules.SERIOUS & (set(rec['hits']) - set(old.get('rules', [])))):
-            # Pushed again after a review: reviewed once unless the new head trips a serious rule the
-            # reviewed head did not.
+            # Pushed again after a review: reviewed once unless the reviewer is asked again or the new head
+            # trips a serious rule the reviewed head did not.
             entry.update(status=old['status'], outcome=old.get('outcome'), head=old['head'], new_head=rec['head'])
         elif rec['tier'] is None:
             entry.update(status='done', outcome='no-rule')

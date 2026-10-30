@@ -1,0 +1,15 @@
+{
+ "expect": "pass",
+ "rule": "sweep",
+ "route": "asked_again",
+ "want": false,
+ "args": {
+  "old": {
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "done",
+   "outcome": "held-gate"
+  },
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "asked": true
+ }
+}

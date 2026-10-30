@@ -419,8 +419,7 @@ def anchored_lines(repo, number, review_id):
 
 def ours_on_head(repo, number, head):
     """R24: how many automated reviews of this head are whole reviews (not pointers to a newer one)."""
-    jq = (f'.[] | select(.commit_id == "{head}") | [((.body | startswith("{pr_format.MARKERS[0]}")) or '
-          f'(.body | startswith("{pr_format.MARKERS[1]}"))), (.body | contains("{POINTER}"))]')
+    jq = f'.[] | select(.commit_id == "{head}") | [({OURS_JQ}), (.body | contains("{POINTER}"))]'
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
@@ -430,6 +429,27 @@ def ours_on_head(repo, number, head):
 
 
 POINTER = 'Replaced by [the new review of this commit]'
+OURS_JQ = ' or '.join(f'(.body | startswith("{m}"))' for m in pr_format.MARKERS)
+DISMISSAL = 'Replaced by the automated review of a newer commit.'
+
+
+def dismiss_changes(repo, number, keep_id, reviewer):
+    """R35: at most one live REQUEST_CHANGES of ours on a PR, the newest. A later COMMENT review would leave
+    an earlier one blocking, so every newer review dismisses the earlier ones. Only automated reviews
+    (their body starts with a marker); never one the reviewer wrote. Returns (dismissed, failed)."""
+    jq = (f'.[] | select(.state == "CHANGES_REQUESTED" and .id != {int(keep_id)} and '
+          f'(.user.login | ascii_downcase) == "{reviewer.lower()}" and ({OURS_JQ})) | .id')
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return 0, 1
+    ok = bad = 0
+    for rid in (l.strip() for l in r.stdout.splitlines() if l.strip()):
+        d = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{repo}/pulls/{number}/reviews/{rid}/dismissals',
+                            '-f', f'message={DISMISSAL}', '-f', 'event=DISMISS'],
+                           capture_output=True, text=True, timeout=60)
+        ok, bad = ok + (d.returncode == 0), bad + (d.returncode != 0)
+    return ok, bad
 
 
 def pointer_body(name, new_url):
@@ -445,9 +465,9 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     '<word>: <review URL>' to Slack. A re-review updates the earlier review in place when it can (same
     event, no inline comments), else replaces it with a pointer; its Slack message is updated in place."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
+    event = pr_format.event_of(rv)
     if cfg.get('no_deliver'):
-        finish(cfg, key, entry, rv['outcome'], {**extra, 'event': 'APPROVE' if rv.get('approve') else 'COMMENT',
-                                                'inline': len(comments), 'body_chars': len(body)})
+        finish(cfg, key, entry, rv['outcome'], {**extra, 'event': event, 'inline': len(comments), 'body_chars': len(body)})
         return
     fresh = pr_rules.get_pr(repo, n)
     if fresh['state'] != 'OPEN':
@@ -460,16 +480,14 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     if head in heads and not rereview:
         finish(cfg, key, dict(entry, head=head), entry.get('outcome') or rv['outcome'], {**extra, 'posted': 'skipped-same-head'})
         return
-    event = 'COMMENT'
-    if rv.get('approve'):
+    if event == 'APPROVE':
         why = pr_format.gate_approve(rv, fresh, head, flagged, idx)
         if why:  # CI or the PR changed between the review and now: review it again later
             finish(cfg, key, entry, 'requeued', {**extra, 'note': 'the approval bar failed at posting',
                                                  'gate': sorted({r.split(':')[0] for r in why})})
             return
-        event = 'APPROVE'
     old_id = entry.get('review_id') if rereview and head in heads else None
-    old_event = 'APPROVE' if entry.get('approved') else 'COMMENT'
+    old_event = entry.get('event') or ('APPROVE' if entry.get('approved') else 'COMMENT')
     if old_id and event == old_event and not comments and not entry.get('inline', entry.get('items', 0)):
         posted, url, state, rid = update_review(repo, n, old_id, body)
     else:
@@ -480,6 +498,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     if posted == 'ok' and state == 'PENDING':  # R0: never leave one in the reviewer's slot
         subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{repo}/pulls/{n}/reviews/{rid}'],
                        capture_output=True, text=True, timeout=60)
+    elif posted == 'ok':
+        extra['dismissed'], extra['dismiss_failed'] = dismiss_changes(repo, n, rid, cfg['reviewer'])
     if not url:
         finish(cfg, key, dict(entry, head=head), 'held-inline' if comments else 'error', {**extra, 'posted': posted})
         return
@@ -492,12 +512,14 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         heads.append(head)
     pr_state.keep_posted(cfg, entry, head, body, comments, result)
     extra.update(review_url=url, review_id=rid, review_heads=heads[-20:], body_sha=body_sha(body), posted=posted,
-                 delivered_at=pr_state.iso(pr_state.now()), approved=event == 'APPROVE', inline=len(comments))
+                 delivered_at=pr_state.iso(pr_state.now()), approved=event == 'APPROVE', event=event,
+                 inline=len(comments))
     if reasons:  # posted, but it broke a delivery rule: no Slack link, and the log says which
         finish(cfg, key, dict(entry, head=head), 'error', {**extra, 'gate': [r.split(':')[0] for r in reasons]})
         return
     ts = entry.get('slack_ts') if rereview and head in (entry.get('review_heads') or []) else None
-    slack, new_ts = pr_state.slack_post(cfg, rv['outcome'], entry['url'], url, approved=event == 'APPROVE', ts=ts)
+    slack, new_ts = pr_state.slack_post(cfg, rv['outcome'], entry['url'], url, approved=event == 'APPROVE', ts=ts,
+                                        event=event)
     extra['slack'] = slack
     if new_ts:
         extra['slack_ts'] = new_ts
@@ -515,13 +537,13 @@ def redeliver(cfg, key):
         print(json.dumps({'pr': entry['url'], 'redeliver': 'no stored result for this head'}))
         return
     res = json.load(open(p)).get('result') or {}
-    if 'blockers' not in res:  # stored before style guide v4: its body would not pass the gate
-        print(json.dumps({'pr': entry['url'], 'redeliver': 'stored result predates v4; use --rereview'}))
+    if 'blockers' not in res or res.get('outcome') == 'not-reviewed':  # pre-v4, or the R33 note: no stored review
+        print(json.dumps({'pr': entry['url'], 'redeliver': 'no stored review for this head; use --rereview'}))
         return
     author = author_of(pr)
     ci = pr_rules.ci_state(pr)
     rv = dict(res, blockers=pr_format.blockers(entry['repo'], pr, ci, ci_detail(pr)),
-              facts=pr_format.facts_line(pr, ci, ci_detail(pr)), approve=False)
+              facts=pr_format.facts_line(pr, ci, ci_detail(pr)), approve=False, request_changes=cfg['request_changes'])
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
     comments = pr_format.inline_comments(rv['items'], author)
@@ -605,7 +627,8 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
     rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'safe_to_skip': safe,
           'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
-          'not_checked': words if nc else '', 'model': model, 'flags_cut': flags_cut, 'approve': False}
+          'not_checked': words if nc else '', 'model': model, 'flags_cut': flags_cut, 'approve': False,
+          'request_changes': cfg['request_changes']}
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     if rv['outcome'] == 'low-risk' and cfg['approve']:
         if not pr_format.ci_strict(pr):
@@ -622,12 +645,20 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, safe, flagged, flags_
 
 
 def minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author):
-    """R28 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
+    """R33 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
     reader test held the full one twice: line 2, the money decision (each file linked at the head) and the
     facts line, nothing the model wrote."""
     rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, nc, ruleset, author, model=False)
     rv['decisions'] = [dict(d, what='') for d in rv['decisions']]
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
+
+
+def not_reviewed(pr, ci):
+    """R33 (the mayor, 2026-10-29 22:30Z): a PR that requests the reviewer is never silent. When its review
+    was held, it gets the short honest note and the facts line instead."""
+    rv = {'outcome': 'not-reviewed', 'decisions': [], 'items': [], 'cleared': [], 'blockers': [], 'safe_to_skip': '',
+          'not_checked': '', 'approve': False}
+    return rv, pr_format.note(NAME, pr_format.facts_line(pr, ci, ci_detail(pr))), []
 
 
 def keep_reader(cfg, entry, head, attempt, scores, problems):
@@ -642,7 +673,8 @@ def keep_reader(cfg, entry, head, attempt, scores, problems):
 
 def ci_escalation(cfg, key, entry, dry, rereview=False):
     """CI red, missing or skipped with no content rule: the blockers for the author, no model (R11). With
-    a content rule the PR goes to the model. Closed PRs are dropped (R15)."""
+    a content rule, or when the PR requests the reviewer (R34), the PR goes to the model. Closed PRs are
+    dropped (R15)."""
     ruleset = pr_rules.load_rules(cfg['rules'])
     area_of = pr_rules.areas(ruleset)
     pr = pr_rules.get_pr(entry['repo'], entry['number'])
@@ -656,7 +688,7 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     files = pr_rules.pr_files(entry['repo'], pr['number'])
     base = pr_rules.base_for(pr, {pr['baseRefName']: pr_rules.branch_oid(entry['repo'], pr['baseRefName'])})
     hits = pr_rules.evaluate(pr, files, ruleset, cfg['reviewer'], entry['repo'], base)
-    if ci not in ('red', 'none', 'skipped') or content_rules(hits, area_of, ruleset):
+    if not pr_rules.ci_only(ci, 'requested' in hits, bool(content_rules(hits, area_of, ruleset))):
         return model_review(cfg, key, entry, dry, rereview)
     _, _, nc = flags_for(files, ruleset, hits, area_of)
     author = author_of(pr)
@@ -746,22 +778,32 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      kinds=sorted(i['kind'] for i in items), severity=sorted(i['severity'] for i in items),
                      checks=model['checks'], flagged_hunks=len(flagged), flags_cut=flags_cut, ci=ci,
                      gate=sorted({r.split(':')[0] for r in reasons}))
-        if reasons and rv['not_checked'] and extra.get('judge') and all(r.startswith('R26') for r in reasons):
-            # The reader test held it twice, but a PR that touches a not-checked area is never silent (R20):
-            # deliver only line 2, the money decision and the facts line, with no model findings (R28).
+        held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
+        fallback = held and pr_rules.held_fallback(
+            'requested' in hits, bool(rv['not_checked']),
+            held == 'held-gate' and bool(extra.get('judge')) and all(r.startswith('R26') for r in reasons))
+        if fallback == 'not-checked-minimal':
+            # The reader test held it twice, but a PR that touches a not-checked area is never silent:
+            # deliver only line 2, the money decision and the facts line, with no model findings (R33).
             rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, nc, ruleset, author)
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
                                      pr.get('body') or '', [], comments)
-            extra.update(fallback='not-checked-minimal', reader_held=extra.get('judge'), decisions=1, items=0,
+            extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,
                          cleared=0, gate=sorted({r.split(':')[0] for r in reasons}))
-        if reasons:
-            finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-gate', extra)
-            return
-        if leaks([body] + [c['body'] for c in comments]):
-            finish(cfg, key, dict(entry, head=pr['headRefOid']), 'held-secret', extra)
+            held = 'held-gate' if reasons else None
+            fallback = held and pr_rules.held_fallback('requested' in hits, False, False)
+        if fallback == 'not-reviewed':
+            # A PR that requests the reviewer is never silent: the short note and the facts line (R33).
+            extra.update(fallback=fallback, held=held, held_gate=extra['gate'], decisions=0, items=0, cleared=0, blockers=0)
+            rv, body, comments = not_reviewed(pr, ci)
+            reasons = pr_format.gate_note(body)
+            extra['gate'] = sorted({r.split(':')[0] for r in reasons})
+            held = 'held-gate' if reasons else None
+        if held:
+            finish(cfg, key, dict(entry, head=pr['headRefOid']), held, extra)
             return
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'safe_to_skip', 'not_checked')}
-        result.update(rule_ids=rule_ids(hits), flagged=flagged)
+        result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [])
         deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged, idx, rereview)
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         # Only our own RuntimeError texts are kept; an OSError can name a file of the repository.
@@ -794,9 +836,10 @@ def pick(cfg, only):
             queued = [(k, e) for k, e in prs.items() if e.get('status') == 'queued']
             ruleset = pr_rules.load_rules(cfg['rules'])
             area_of = pr_rules.areas(ruleset)
-            # CI-only escalations need no model and no cap (R11); a PR with a content rule waits its turn.
-            ci_keys = [k for k, e in queued if e.get('ci') in ('red', 'none', 'skipped')
-                       and not content_rules(e.get('rules', []), area_of, ruleset)]
+            # CI-only escalations need no model and no cap (R11); a PR with a content rule, or one that
+            # requests the reviewer (R34), waits its turn for the model.
+            ci_keys = [k for k, e in queued if pr_rules.ci_only(e.get('ci'), 'requested' in e.get('rules', []),
+                                                                bool(content_rules(e.get('rules', []), area_of, ruleset)))]
             # Tier, then more areas, then the newest PR first (most merge within half an hour).
             rest = sorted(((k, e) for k, e in queued if k not in ci_keys), key=lambda ke: ke[1]['created'], reverse=True)
             rest.sort(key=lambda ke: (ke[1]['tier'], -len(ke[1].get('areas') or [])))

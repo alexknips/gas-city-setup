@@ -1,4 +1,4 @@
-# Review style guide, v4
+# Review style guide, v4.2
 
 What a delivered review must look like. The review model gets this file with its instructions. The
 gate in `pr_format.py` checks every rule marked **[gate]** before anything is delivered. A review that
@@ -15,7 +15,12 @@ and a regression case (README.md, "Quality loop").
   review it".
 - v3, 2026-10-29 20:45Z: "no, don't link to the dashboard but actually leave a review comment every
   single time on the PR and then link to that". Pages are gone; every review is a submitted comment.
-- v4.1, 2026-10-29 21:57Z: R28, after a real billing PR was held by the reader test three times.
+- v4.2, 2026-10-30: R33-R35, after the mayor's test batch of 17 open PRs (2026-10-29 22:30Z): 6 held
+  reviews left PRs that requested the reviewer silent, a PR without CI got no model review and no
+  question, and a COMMENT review said "Changes requested". The reviewer, 23:09Z: "yes, we should use
+  the formal github request changes for sure". The minimal billing review of v4.1 is part of R33.
+- v4.1, 2026-10-29 21:57Z: the minimal billing review, after a real billing PR was held by the reader
+  test three times.
 - v4, 2026-10-29 21:01-21:05Z: "actually approve low risk PRs not just say you do", and "review our
   reviews again. are they easy to read". A reader test of the 7 delivered reviews: they scan fast, but
   "nothing to check" hid fired rules and a PR that touches billing, findings were said three times, and
@@ -61,8 +66,8 @@ plans, credits or pricing: line 2 says so, a decision for Alex asks him to look,
 
 | Id | Rule | Gate | From |
 | --- | --- | --- | --- |
-| R0 | Never a PENDING review: it takes the reviewer's own review slot. Every review is SUBMITTED: event APPROVE only under R27 (the reviewer said so, 21:01Z), else COMMENT. REQUEST_CHANGES is not authorized (SOC 2 reads it as human review). | [gate] (delivery) | v2: our pending reviews blocked his own |
-| R1 | Line 1 is one short honesty line ("Automated review by <name>'s review agents (Claude Code); <name> hasn't read this PR yet.", "Automated approval by …" for an approval), because the author reads the review as the reviewer's. The next line starts with the outcome word: `Needs you`, `Changes requested`, `Questions`, `Low risk`, `Approved as low risk`. | [gate] | v1, v3, v4 |
+| R0 | Never a PENDING review: it takes the reviewer's own review slot. Every review is SUBMITTED: event APPROVE only under R27 (the reviewer said so, 21:01Z), REQUEST_CHANGES for changes (R35, the reviewer said so, 23:09Z), else COMMENT. | [gate] (delivery) | v2: our pending reviews blocked his own |
+| R1 | Line 1 is one short honesty line ("Automated review by <name>'s review agents (Claude Code); <name> hasn't read this PR yet.", "Automated approval by …" for an approval), because the author reads the review as the reviewer's. The next line starts with the outcome word: `Needs you`, `Changes requested` (`Changes suggested` on a COMMENT review, R35), `Questions`, `Low risk`, `Approved as low risk`. | [gate] | v1, v3, v4 |
 | R2 | At most 5 items for the author, worst first; low risk has none. | [gate] | v1 |
 | R3 | Each item links to the exact changed lines in the PR's Files view (path and line range as link text), and the range is inside one hunk of the diff on the side it names. | [gate] | v1: "no markers" |
 | R4 | Each item is also an inline comment on its exact lines, so the markers show in "Files changed". | [gate] | v1: "no markers" |
@@ -72,7 +77,7 @@ plans, credits or pricing: line 2 says so, a decision for Alex asks him to look,
 | R8 | One facts line: CI (passed / red: names / none ran), merge conflict yes or no, open. | [gate] | — |
 | R9 | No boilerplate. The facts line is last, unless the not-checked footer follows it (R20). | [gate] | v1: "fluff" |
 | R10 | No rule codes or flag ids anywhere in the review (A1, B3, ci-none, phi-…, F1). | [gate] | v1 |
-| R11 | A review without a model happens only when CI is the only problem and no content rule fired; it is then the CI ask for the author (R22), linked to the checks. | [gate] | pulse#1929 |
+| R11 | A review without a model happens only when CI is the only problem, no content rule fired and the PR does not request the reviewer (R34); it is then the CI ask for the author (R22), linked to the checks. | [gate] | pulse#1929 |
 | R13 | A question asks one exact thing and ends with a question mark. | [gate] | — |
 | R14 | Sizes: each sentence field at most 300 characters, the text at most 6,000. | [gate] | v1 |
 | R15 | Never deliver for a merged or closed PR. The sweep takes open PRs only, the queue drops a PR once it merges or closes, and the run re-checks the state right before delivery. | [gate] (delivery) | v2: "was merged. we don't need to review it" |
@@ -87,8 +92,10 @@ plans, credits or pricing: line 2 says so, a decision for Alex asks him to look,
 | R24 | ONE review of ours per PR head: an approval carries the whole review in its body, with no separate comment. | [gate] (delivery) | v4: a comment plus an approval on one head |
 | R25 | No "[link removed]" fragments: a sentence that needed a link to another site is rewritten without it. | [gate] | v4 |
 | R26 | Reader test: after the zero-token checks, a second, cheap model scores the review 1-5 on scan, markers, decisions, plain, length and useful. Below markers 4 or useful 3 it is regenerated once with the reader's problems, then held. The same test runs over every delivered review for the weekly numbers. | [gate] (model) | v4: "are they easy to read" |
-| R28 | A PR that touches a not-checked area is never silent: when the reader test holds its review twice, it gets the minimal review instead: line 2, the money decision (each file linked at the head, no model text) and the facts line, with the not-checked footer. | [gate] | the mayor, 21:57Z: a held billing review left the PR silent |
 | R27 | APPROVE only under the bar, checked right before posting: the PR is open and on the reviewed head; CI is green (at least one check SUCCESS, every check SUCCESS, NEUTRAL or SKIPPED); no decision, item or blocker and no not-checked area; every flagged hunk cleared with a line in its hunk. Anything short of the bar asks the author for what is missing instead. | [gate] (delivery) | v4: "actually approve low risk PRs not just say you do" |
+| R33 | Never silent on a PR that requests the reviewer. When the gate or the reader test holds its review twice, it gets the short note: "**Not reviewed automatically.** Our review didn't reach the quality bar on this PR, so <name> reviews it instead." and the facts line, nothing else; Slack "Not reviewed: <review URL>". A PR that touches a not-checked area whose review the reader test held twice gets the minimal review first: line 2, the money decision (each file linked at the head, no model text) and the facts line, with the not-checked footer. The reader's reasons for each held attempt are kept host-local. | [gate] | the mayor, 21:57Z and 22:30Z: 6 of 17 requested PRs held and silent |
+| R34 | Missing, skipped or red CI never skips the model on a PR that requests the reviewer: the model reviews it, and the CI blocker is one linked ask for the author (R22). | [gate] (routing) | the mayor, 22:30Z: a PR without CI got "Questions" with no question |
+| R35 | The outcome word matches the event. "Changes requested" only on a REQUEST_CHANGES review (with `PR_REVIEW_REQUEST_CHANGES=on`, the reviewer's word); a COMMENT review says "Changes suggested". Questions and escalations stay COMMENT. A newer review of ours dismisses our earlier REQUEST_CHANGES reviews on the PR, so a later COMMENT does not leave them blocking; a review the reviewer wrote is never dismissed. | [gate] | the mayor, 22:30Z; the reviewer, 23:09Z |
 
 R12 of v1 (every flagged hunk becomes an item for the reviewer) is withdrawn by R16: flags are hints for
 the model, not findings for the reviewer. R19 keeps them visible: each one is cleared or acted on.

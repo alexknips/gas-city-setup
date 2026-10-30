@@ -27,9 +27,14 @@ KINDS = {'question': 'Ask {author}', 'change': 'Change'}
 # Line 1 of every review (it is posted under the reviewer's login, so the author must see it is automated).
 HONEST = "Automated {what} by {name}'s review agents (Claude Code); {name} hasn't read this PR yet."
 HONEST_RE = re.compile(r"^Automated (review|approval) by .+'s review agents \(Claude Code\); .+ hasn't read this PR yet\.$")
-MARKERS = ('Automated review', 'Automated approval')
+# R33: what a requested PR gets when its review was held: never silence.
+NOT_REVIEWED = '**Not reviewed automatically.**'
+NOTE = NOT_REVIEWED + " Our review didn't reach the quality bar on this PR, so {name} reviews it instead."
+MARKERS = ('Automated review', 'Automated approval', NOT_REVIEWED)
 WORDS = {'escalate': 'Needs you', 'changes': 'Changes requested', 'questions': 'Questions', 'low-risk': 'Low risk'}
 APPROVED = 'Approved as low risk'
+# R35: the word matches the event. Changes are "requested" only on a REQUEST_CHANGES review.
+SUGGESTED = 'Changes suggested'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
 MAX_WHERE = 5  # files a not-checked decision links to (R20)
 
@@ -46,7 +51,7 @@ CODES_RE = re.compile(r'\b(A[1-7]|B[1-4]|R\d{1,2}|F\d{1,2}|ci-(red|none|skipped)
 # R25: what clean() leaves where it cut a link or an image out of the model's text.
 CUT_RE = re.compile(r'\[(link|image) removed\]')
 # R1, R22: the outcome word, then who acts: "**Changes requested. Alex: nothing. Nils: 1 change, get CI running.**"
-LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Questions|Low risk|Approved as low risk)\. '
+LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk)\. '
                       r'(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.\*\*$')
 
 
@@ -197,9 +202,40 @@ def who_acts(rv, name, author):
     return f"{name}: {you}. {author}: {', '.join(parts) or 'nothing'}."
 
 
+def word_of(rv):
+    """Line 1's outcome word (R1), matching the review's event (R35)."""
+    if rv.get('approve'):
+        return APPROVED
+    if rv['outcome'] == 'changes' and not rv.get('request_changes'):
+        return SUGGESTED
+    return WORDS[rv['outcome']]
+
+
+def event_of(rv):
+    """The review's GitHub event: APPROVE under the bar (R27), REQUEST_CHANGES for changes when the reviewer
+    allows it (R35), else COMMENT (questions, escalations, low risk without approval, the R33 note)."""
+    if rv.get('approve'):
+        return 'APPROVE'
+    if rv['outcome'] == 'changes' and rv.get('request_changes'):
+        return 'REQUEST_CHANGES'
+    return 'COMMENT'
+
+
 def headline(rv, name, author):
-    word = APPROVED if rv.get('approve') else WORDS[rv['outcome']]
-    return f'**{word}. {who_acts(rv, name, author)}**'
+    return f'**{word_of(rv)}. {who_acts(rv, name, author)}**'
+
+
+def note(name, facts):
+    """R33: the short honest comment for a PR that requests the reviewer when its review was held."""
+    return f'{NOTE.format(name=name)}\n\n{facts}'
+
+
+def gate_note(body):
+    """R33: the note says it was not reviewed, then the facts line, and nothing else."""
+    lines = [l for l in body.splitlines() if l.strip()]
+    if len(lines) != 2 or not lines[0].startswith(NOT_REVIEWED) or not FACTS_RE.match(lines[1]):
+        return ['R33: the note is not "Not reviewed automatically" and the facts line']
+    return []
 
 
 def render(repo, pr, rv, name, author):
@@ -432,12 +468,13 @@ def gate_body(body, rv, comments=None):
         why.append('R1: the honesty line says approval for a review that is not one, or the other way round')
     rest = [l for l in lines[1:] if l.strip()]
     m = LINE1_RE.match(rest[0] if rest else '')
-    word = APPROVED if rv.get('approve') else WORDS.get(rv['outcome'])
+    word = word_of(rv)
     if not m:
         why.append(f'R22: line 1 does not say the outcome and who acts ("**{word}. <reviewer>: ... <author>: ...**")')
     else:
         if m.group(1) != word:
-            why.append(f'R1: line 1 says "{m.group(1)}" for {rv["outcome"]}')
+            rule = 'R35' if rv['outcome'] == 'changes' else 'R1'
+            why.append(f'{rule}: line 1 says "{m.group(1)}" for {rv["outcome"]} ({event_of(rv)} review)')
         if int(m.group(4) or 0) != n_dec:
             why.append(f'R22: line 1 counts {m.group(4) or 0} decisions, the review has {n_dec}')
         if bool(m.group(5)) != bool(rv.get('not_checked')):
@@ -454,7 +491,7 @@ def gate_body(body, rv, comments=None):
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', body, re.M)
     if skip and len(skip.group(1)) > 240:
         why.append(f'R7: "Safe to skip" is {len(skip.group(1))} characters, at most 240')
-    facts = re.compile(r'^(CI passed|CI red|No CI ran|CI skipped|CI still running).* · (no )?merge conflict · \w+$')
+    facts = FACTS_RE
     fl = next((l for l in lines if facts.match(l)), None)
     if fl is None:
         why.append('R8: no facts line')
@@ -494,6 +531,7 @@ def gate_body(body, rv, comments=None):
 # R22: what the facts line says -> the ask line 1 must carry (the `short` of blockers()).
 FACT_ASKS = [(' · merge conflict · ', 'resolve the merge conflict'), ('CI red', 'fix the failing checks'),
              ('No CI ran', 'get CI running'), ('CI skipped', 'get the checks to run'), ('CI still running', 'get CI to finish')]
+FACTS_RE = re.compile(r'^(CI passed|CI red|No CI ran|CI skipped|CI still running).* · (no )?merge conflict · \w+$')
 REVIEW_URL = re.compile(r'^https://github\.com/[\w.-]+/[\w.-]+/pull/\d+#pullrequestreview-\d+$')
 
 
@@ -571,7 +609,16 @@ def review_of(fx):
     return {'outcome': fx['outcome'], 'approve': fx.get('approve', False), 'decisions': fx.get('decisions', []),
             'items': fx.get('items', []), 'blockers': fx.get('blockers', []), 'cleared': cleared,
             'safe_to_skip': fx.get('safe_to_skip', ''), 'facts': fx.get('facts', 'CI passed · no merge conflict · open'),
-            'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True)}
+            'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True),
+            'request_changes': fx.get('request_changes', False)}
+
+
+def route(fx):
+    """A routing case (R33, R34, the sweep's review requests): the decision function's answer for the
+    fixture's inputs must be `want`. Returns the reasons it is not."""
+    import pr_rules
+    got = getattr(pr_rules, fx['route'])(**fx['args'])
+    return [] if got == fx['want'] else [f"{fx.get('rule', 'route')}: {fx['route']} gave {got!r}, want {fx['want']!r}"]
 
 
 def regress(dirs):
@@ -590,10 +637,15 @@ def regress(dirs):
                 continue
             fx = json.load(open(os.path.join(d, fn)))
             total += 1
-            if 'body' in fx:
+            if 'route' in fx:
+                reasons = route(fx)
+            elif 'note' in fx:
+                reasons = gate_note(fx['note'])
+            elif 'body' in fx:
                 rv = {'outcome': fx['outcome'], 'decisions': [{}] * fx.get('n_decisions', 0),
                       'items': [{}] * fx.get('n_items', 0), 'not_checked': fx.get('not_checked', ''),
-                      'approve': fx.get('approve', False), 'model': fx.get('model', True)}
+                      'approve': fx.get('approve', False), 'model': fx.get('model', True),
+                      'request_changes': fx.get('request_changes', False)}
                 reasons = gate_body(fx['body'], rv)
             else:
                 idx = diff_index(fx['diff'])

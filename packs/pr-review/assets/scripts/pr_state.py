@@ -21,6 +21,7 @@ OUTCOMES = {
     'questions': ('Questions for the author', 'Questions for the author'),
     'changes': ('Changes requested', 'Changes requested'),
     'escalate': ('Needs you', 'Needs you'),
+    'not-reviewed': ('Not reviewed', 'Not reviewed'),
     'no-rule': (None, None),
     'over-cap': (None, None),
     'closed': (None, None),
@@ -72,6 +73,7 @@ def config():
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
         'approve': e('PR_REVIEW_APPROVE', 'off') == 'on',
+        'request_changes': e('PR_REVIEW_REQUEST_CHANGES', 'off') == 'on',
         'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
         'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
         'judge_max_usd': e('PR_REVIEW_JUDGE_MAX_USD', '0.25'),
@@ -206,14 +208,18 @@ def slack_call(token, method, payload):
 
 
 APPROVED = 'Approved as low risk'
+CHANGES_SUGGESTED = 'Changes suggested'
 
 
-def slack_post(cfg, outcome, url, review_url, approved=False, ts=None):
+def slack_post(cfg, outcome, url, review_url, approved=False, ts=None, event='COMMENT'):
     """Post '<word>: <review URL>' to the channel (R17): the submitted review's own GitHub URL. The text is
-    built here from a fixed word and the link; nothing the model wrote reaches Slack. With `ts`, the
+    built here from a fixed word and the link; nothing the model wrote reaches Slack. The word matches the
+    review's event (R35): changes are "requested" only on a REQUEST_CHANGES review. With `ts`, the
     message of an earlier review of the same head is updated in place instead (R18). Returns (status,
     message ts): 'ok', 'off' or an error code; the ts lets the feedback order find reactions and replies."""
     word = APPROVED if approved else OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
+    if outcome == 'changes' and event != 'REQUEST_CHANGES':
+        word = CHANGES_SUGGESTED
     if not word or not cfg['slack_channel']:
         return 'off', None
     if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+#pullrequestreview-\d+', review_url or '') or \

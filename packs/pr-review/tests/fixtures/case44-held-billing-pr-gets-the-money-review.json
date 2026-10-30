@@ -1,0 +1,11 @@
+{
+ "expect": "pass",
+ "rule": "R33",
+ "route": "held_fallback",
+ "want": "not-checked-minimal",
+ "args": {
+  "requested": false,
+  "not_checked": true,
+  "reader_only": true
+ }
+}

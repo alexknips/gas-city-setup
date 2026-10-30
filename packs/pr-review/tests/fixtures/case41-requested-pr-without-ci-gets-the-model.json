@@ -1,0 +1,11 @@
+{
+ "expect": "pass",
+ "rule": "R34",
+ "route": "ci_only",
+ "want": false,
+ "args": {
+  "ci": "none",
+  "requested": true,
+  "content": false
+ }
+}

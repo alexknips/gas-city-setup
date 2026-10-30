@@ -204,6 +204,37 @@ def requested(pr, reviewer):
     return who in now or who in ever
 
 
+def requested_now(pr, reviewer):
+    """The reviewer's review is requested and not yet given (a submitted review clears the request)."""
+    return reviewer.lower() in [((n.get('requestedReviewer') or {}).get('login') or '').lower()
+                                for n in pr['reviewRequests']['nodes']]
+
+
+def asked_again(old, head, asked):
+    """The sweep (the mayor, 2026-10-29 22:11Z: a request added after the first sweep never re-selected
+    the PR): a PR that requests the reviewer now is queued when its head was set aside without a rule, or
+    when it is a new head after a review. Never a head already reviewed or held: no loop."""
+    if not asked or old.get('status') in ('queued', 'reviewing', 'waiting-ci'):
+        return False
+    return old.get('head') != head or old.get('outcome') == 'no-rule'
+
+
+def ci_only(ci, requested, content):
+    """R11, R34: CI red, missing or skipped on a PR with no content rule gets the CI blockers without a
+    model run, unless the PR requests the reviewer: then the model reviews it and the CI blocker is one
+    linked ask for the author."""
+    return ci in ('red', 'none', 'skipped') and not content and not requested
+
+
+def held_fallback(requested, not_checked, reader_only):
+    """R33: a held review is never silent on a PR that requests the reviewer, and never on a PR in a
+    not-checked area that the reader test held: 'not-checked-minimal' (the money decision and the facts
+    line), 'not-reviewed' (the short note), or None (held, silent: nobody asked for this review)."""
+    if not_checked and reader_only:
+        return 'not-checked-minimal'
+    return 'not-reviewed' if requested else None
+
+
 def added_lines(patch):
     for line in (patch or '').splitlines():
         if line.startswith('+') and not line.startswith('+++'):

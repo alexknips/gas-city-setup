@@ -46,6 +46,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | --- | --- | --- |
 | `PR_REVIEW` | `off` | Master switch. `on` runs the orders; `off` makes every fire exit at once. |
 | `PR_REVIEW_MODE` | `shadow` | `shadow`: the Slack words say what the review would do. `live` (only on the reviewer's word, with a bot identity) is not built yet. |
+| `PR_REVIEW_REQUEST_CHANGES` | `off` | `on`: a `changes` outcome is a SUBMITTED REQUEST_CHANGES review that says "Changes requested" (R35), and a newer review of ours dismisses our earlier ones so a later COMMENT does not leave them blocking; `off`: a COMMENT review that says "Changes suggested". Only on the reviewer's word. |
 | `PR_REVIEW_APPROVE` | `off` | `on`: a low-risk PR that meets the bar (R27) gets a SUBMITTED APPROVE review; `off`: a COMMENT review that says "Low risk". Only on the reviewer's word: SOC 2 reads an approval as human review. |
 | `PR_REVIEW_JUDGE` | `on` | The reader test (R26): a second model scores each review before delivery and holds it below markers 4 or useful 3; the feedback order scores delivered reviews that have no scores yet. |
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
@@ -155,7 +156,11 @@ the day's cap are left. A PR the cap never reaches closes as `over-cap` after
 `PR_REVIEW_MAX_WAIT_H`. Its bead says so, and Slack gets nothing.
 
 A new push to a PR already reviewed is not reviewed again, unless the new head trips a serious rule
-the reviewed head did not.
+the reviewed head did not, or the reviewer's review is requested again. A PR that requests the reviewer
+is always selected: a request added after the sweep set the PR aside (`no-rule`) queues it, and so does
+a request on a new head after a review (a submitted review clears the request, so a pending one is
+new). A head already reviewed or held is never queued again. A PR that requests the reviewer always
+gets the model, whatever CI says (R34).
 
 ## The review prompt
 
@@ -203,8 +208,9 @@ every review starts with the outcome word, then says who acts (R22).
 | Outcome | When | Line 2 | Event | Slack |
 | --- | --- | --- | --- | --- |
 | `escalate` | one or more decisions only the reviewer can make (R16): a product, risk or compliance trade-off, each one question with options, a recommendation and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20) | **Needs you. Alex: N decisions. Nils: …** | COMMENT | "Needs you" |
-| `changes` | a change for the author, a merge conflict or failing checks | **Changes requested. Alex: nothing. Nils: 1 change, …** | COMMENT | "Changes requested" |
+| `changes` | a change for the author, a merge conflict or failing checks | **Changes requested. Alex: nothing. Nils: 1 change, …** (**Changes suggested. …** with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
 | `questions` | only questions for the author, or CI that did not run, was skipped or is still running | **Questions. Alex: nothing. Nils: 2 questions** | COMMENT | "Questions for the author" |
+| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | **Not reviewed automatically.** Our review didn't reach the quality bar on this PR, so Alex reviews it instead. (then the facts line, nothing else) | COMMENT | "Not reviewed" |
 | `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | **Approved as low risk. Alex: nothing. Nils: nothing.** (or **Low risk. …** with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
 
 Rule flags alone never route a PR to the reviewer: they tell the model where to look first, and the
@@ -216,10 +222,11 @@ updated in place when it can be (same event, no inline comments), else cut to a 
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
 review was delivered, R15), `held-gate` (the gate or the reader test failed twice; nothing delivered),
-`held-secret` (the text held a credential shape; a PR that touches a not-checked area whose review the
-reader test held twice is not held: it gets the minimal review of R28, logged `fallback:
-not-checked-minimal`, and the reader's reasons for each held attempt go to
-`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`), `held-inline` (GitHub refused an inline comment;
+`held-secret` (the text held a credential shape). Neither is silent on a PR that requests the
+reviewer: it gets the short note (`not-reviewed`, logged `fallback: not-reviewed`, R33). A PR that
+touches a not-checked area whose review the reader test held twice gets the minimal review first,
+logged `fallback: not-checked-minimal`. The reader's reasons for each held attempt go to
+`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`. Also `held-inline` (GitHub refused an inline comment;
 nothing delivered, since a review without its markers breaks R4), `error` (the run failed, or a
 delivered review broke a delivery rule; see the log). A PR whose head or CI changed between the review
 and the post goes back to the queue (`requeued`).
@@ -233,7 +240,7 @@ reviews in his name blocking his own; then "that review comment needs to link to
 measure is the reviewer's effort: time from the Slack post to his own decision on the PR, what he
 opened, his thumbs on the Slack link. Not review volume.
 
-1. **Style guide** (`assets/style-guide.md`, versioned, v4.1). Rules R0 to R28, each with the complaint it
+1. **Style guide** (`assets/style-guide.md`, versioned, v4.2). Rules R0 to R27 and R33 to R35, each with the complaint it
    came from: never a pending review (R0); the honesty line, then the outcome and who acts (R1, R22);
    "needs you" only for decisions only the reviewer can make, each linked to the code or text (R16); at
    most 5 items for the author, each linked to the exact diff lines, with what changed, why it matters
@@ -285,7 +292,12 @@ decision (R16). Case 4: a delivered review without its own URL (R17); case 5: de
 its hunk (R19), billing called low risk (R20), a finding said twice, a suggested reply, an unanchored
 inline comment (R21), line 2 without who acts or a blocker only in the facts line (R22), a rule-codes
 section or a stray not-checked footer (R23), a comment plus an approval (R24), a "[link removed]"
-fragment (R25), a reader score below the bar (R26). Case 37: the minimal billing review (R28). Cases 33-36: an approval with an uncleared flag,
+fragment (R25), a reader score below the bar (R26). Case 37: the minimal billing review (R33).
+Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
+held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
+without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a
+held billing PR the minimal review, the note itself and a note without the facts line (R33); a COMMENT
+review that says "Changes requested" (fails) and a formal REQUEST_CHANGES review (passes) (R35). Cases 33-36: an approval with an uncleared flag,
 with CI not green, on a changed head (all fail, R27), and a clean one (passes).
 
 The regression covers the gate and the renderer, not the model: it cannot show that a prompt change

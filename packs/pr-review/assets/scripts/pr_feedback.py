@@ -27,19 +27,20 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_format  # noqa: E402
 import pr_judge  # noqa: E402
 import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
 
-DELIVERED = {'low-risk', 'questions', 'changes', 'escalate'}
+DELIVERED = {'low-risk', 'questions', 'changes', 'escalate', 'not-reviewed'}
+OURS_JQ = ' or '.join(f'(.body | startswith("{m}"))' for m in pr_format.MARKERS)
 GOOD, BAD = {'+1', 'thumbsup', 'white_check_mark', 'heavy_check_mark'}, {'-1', 'thumbsdown', 'x'}
 VERDICTS = {'good', 'bad', 'rejected'}
 
 
 def reviews_by(repo, number, reviewer):
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq',
-                        '.[] | {id, state, login: .user.login, submitted_at, ours: ((.body | startswith("Automated review")) or '
-                        '(.body | startswith("Automated approval")))}'],
+                        f'.[] | {{id, state, login: .user.login, submitted_at, ours: ({OURS_JQ})}}'],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return None
@@ -159,7 +160,9 @@ def panel(cfg, summary, now):
                      [f'{med} min' if med is not None else 'no data', 'median time to your own review'],
                      [str(c.get('their-review', 0)), 'PRs you reviewed after ours'],
                      [str(c.get('merged-without-their-review', 0)), 'merged before you looked'],
-                     [str(c.get('held_gate', 0)), f"held by the gate ({c.get('regenerated', 0)} regenerated)"],
+                     [str(c.get('held_gate', 0) + c.get('outcome_not-reviewed', 0)),
+                      f"held by the gate ({c.get('regenerated', 0)} regenerated, "
+                      f"{c.get('outcome_not-reviewed', 0)} got the short not-reviewed note)"],
                      [f"{c['median_useful']:g} / {c['median_markers']:g}" if c.get('judged') else 'no data',
                       f"reader test, median useful / markers of 5 ({c.get('judged', 0)} read, "
                       f"{c.get('judge_below_bar', 0)} below the bar)"]],
