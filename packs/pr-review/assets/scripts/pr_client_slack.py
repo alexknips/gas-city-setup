@@ -144,11 +144,13 @@ def stream(stdout):
     return init, calls, results, meta
 
 
-def run_claude(cfg, expect, prompt, restricted=True, allowed=None):
+def run_claude(cfg, expect, prompt, restricted=True, allowed=None, deny=()):
     """One headless session: `--restricted` (the runner) or the user's settings (a normal session, for
-    --check), the hook on every tool call, stripped env, capture off, MCP connected before the first turn."""
+    --check), the hook on every tool call, stripped env, capture off, MCP connected before the first turn;
+    `deny`: tools removed from the session (tool-level denies hide them from the model)."""
     settings = {'hooks': {'PreToolUse': [{'matcher': '*', 'hooks': [
-        {'type': 'command', 'command': f'{sys.executable} {os.path.abspath(__file__)} --hook'}]}]}}
+        {'type': 'command', 'command': f'{sys.executable} {os.path.abspath(__file__)} --hook'}]}]},
+                **({'permissions': {'deny': list(deny)}} if deny else {})}
     env = {k: v for k, v in os.environ.items() if k in KEEP_ENV}
     # The connectors load (even where the town turns them off) and are connected before the first turn.
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1', MCP_CONNECTION_NONBLOCKING='false',
@@ -179,19 +181,26 @@ def post(cfg, channel, text, runner=run_claude):
         return 'dry-run', {}
     if not cfg['client_slack_tool']:
         return 'no-tool', {}
+    tool = cfg['client_slack_tool']
+    # The runner sees exactly the post tool (the mayor, 17:38Z): a probe lists what the session loads, and
+    # every other tool is denied by name in the post run, regenerated each run.
+    seen = runner(cfg, {}, PROBE_PROMPT, True, None, ())[0].get('tools') or []
+    if tool not in seen:
+        return 'no-tool', {'visible': len(seen)}
     once = os.path.join(pr_state.private_dir(cfg, 'client-slack'), f'once-{uuid.uuid4().hex}')
-    expect = {'tool': cfg['client_slack_tool'], 'channel': channel, 'text': text,
+    expect = {'tool': tool, 'channel': channel, 'text': text,
               'allow': sorted(cfg['client_slack_conversations']), 'state': cfg['state'], 'once': once}
     try:
-        init, calls, results, meta = runner(cfg, expect, PROMPT.format(tool=expect['tool'], channel=channel, text=text),
-                                            True, expect['tool'])
+        init, calls, results, meta = runner(cfg, expect, PROMPT.format(tool=tool, channel=channel, text=text),
+                                            True, tool, sorted(t for t in seen if t != tool))
     finally:
         if os.path.exists(once):
             os.remove(once)
     if meta.get('error'):
         return f"error:{meta['error']}", meta
     good = [c for c in calls if not refusal(c['name'], c['input'], expect)]
-    meta = dict(meta, calls=len(calls), refused=len(calls) - len(good))
+    meta = dict(meta, calls=len(calls), refused=len(calls) - len(good),
+                visible_other=sum(1 for t in init.get('tools') or [] if t != tool))
     if len(calls) > len(good):
         return 'refused-call', meta
     if len(good) == 1 and results.get(good[0]['id']) is False:
@@ -203,16 +212,21 @@ def check(cfg, runner=run_claude):
     """R1, names and counts only: a normal session (the user's settings, from the city dir) loads no tool
     of the connector; the runner loads the post tool. Prints one JSON line; returns whether both hold."""
     prefix = '__'.join(cfg['client_slack_tool'].split('__')[:2]) if cfg['client_slack_tool'] else DEFAULT_PREFIX
-    out = {}
+    out, seen = {}, []
     for name, restricted in (('normal', False), ('runner', True)):
-        init, calls, _, meta = runner(cfg, {}, PROBE_PROMPT, restricted, None)
-        mine = sorted(t for t in init.get('tools') or [] if t.startswith(prefix + '__'))
-        out[name] = {'servers': init.get('servers'), 'tools': len(init.get('tools') or []),
+        init, calls, _, meta = runner(cfg, {}, PROBE_PROMPT, restricted, None, ())
+        seen = init.get('tools') or []
+        mine = sorted(t for t in seen if t.startswith(prefix + '__'))
+        out[name] = {'servers': init.get('servers'), 'tools': len(seen),
                      'connector_tools': mine if restricted else len(mine), 'calls': len(calls),
                      **{k: meta.get(k) for k in ('turns', 'error') if meta.get(k) is not None}}
-    runner_tools = out['runner']['connector_tools']
-    out['isolated'] = out['normal']['connector_tools'] == 0 and bool(runner_tools)
-    out['post_tool_loaded'] = bool(cfg['client_slack_tool']) and cfg['client_slack_tool'] in runner_tools
+    tool = cfg['client_slack_tool']
+    out['isolated'] = out['normal']['connector_tools'] == 0 and bool(out['runner']['connector_tools'])
+    out['post_tool_loaded'] = bool(tool) and tool in out['runner']['connector_tools']
+    if out['post_tool_loaded']:  # the post run's view: every other tool denied by name, as post() does it
+        init = runner(cfg, {}, PROBE_PROMPT, True, None, sorted(t for t in seen if t != tool))[0]
+        out['runner_with_denies'] = sorted(init.get('tools') or [])
+        out['post_tool_loaded'] = out['runner_with_denies'] == [tool]
     print(json.dumps(out))
     return out['isolated'] and out['post_tool_loaded']
 
@@ -244,17 +258,37 @@ def deliver_line(cfg, repo, review_url, outcome, approved=False, event='COMMENT'
     return status, meta
 
 
-def queue_lines(prs, entries, reviewer):
-    """The queue post's lines: each open PR (not a draft) that requests the reviewer or carries our latest
-    review, by repository and number, as "<word>: <PR link>". The word is our review's on the PR's current
-    head, else "Waiting for review". Nothing from the PR's text."""
+FULL = ('low-risk', 'questions', 'changes', 'escalate')  # outcomes of a full review (not a note or a hold)
+
+
+def last_delivered(state_dir):
+    """{PR link: whether the last review we delivered on it was a fallback}, from the run log (a state
+    entry keeps an older run's fallback key after a later full review)."""
+    out, path = {}, os.path.join(state_dir, 'pr-review.jsonl')
+    for line in open(path) if os.path.exists(path) else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get('run') == 'review' and r.get('review_url') and r.get('pr'):
+            out[r['pr']] = bool(r.get('fallback'))
+    return out
+
+
+def queue_lines(prs, entries, reviewer, fallbacks=None):
+    """The queue post's lines: each open PR (not a draft) that requests the reviewer or carries a review of
+    ours, by repository and number, as "<word>: <PR link>". The word is our review's when its latest run
+    delivered a full review on the PR's current head; else "Waiting for review": no review yet, new
+    commits since, or the latest was held or a fallback (the full review is still owed; the mayor,
+    17:38Z). Nothing from the PR's text."""
     out = []
     for p in sorted(prs, key=lambda p: (p['repo'], p['number'])):
         e = entries.get(f"{p['repo']}#{p['number']}") or {}
         asked = reviewer.lower() in [r.lower() for r in p.get('requested') or []]
         if p.get('draft') or not (asked or e.get('review_url')):
             continue
-        current = e.get('review_url') and p['head'] in (e.get('review_heads') or [])
+        full = e.get('outcome') in FULL and not (fallbacks or {}).get(p['url'])
+        current = full and e.get('review_url') and p['head'] in (e.get('review_heads') or [])
         word = client_word(e.get('outcome'), e.get('approved'), e.get('event')) if current else WAITING
         out.append(f"{word}: {p['url']}")
     return out
@@ -295,7 +329,7 @@ def queue(cfg, now=False, runner=run_claude, prs=None):
     if not (ok or now) or (q.get('tries_day') == day and q.get('tries', 0) >= QUEUE_TRIES):
         print(json.dumps({'client_slack_queue': 'not-due', 'day': day}))
         return 0
-    lines = queue_lines(open_prs(cfg) if prs is None else prs, entries, cfg['reviewer'])
+    lines = queue_lines(open_prs(cfg) if prs is None else prs, entries, cfg['reviewer'], last_delivered(cfg['state']))
     if cfg['client_slack'] == 'dry-run':
         print(json.dumps({'client_slack_queue': 'dry-run', 'channel': cfg['client_slack_channel'],
                           'lines': [x.split(': ', 1) for x in lines]}))
@@ -349,15 +383,20 @@ def selftest():
     log = open(os.path.join(tmp, 'pr-review.jsonl')).read()
     checks['the hook logs the tool and the verdict, never the text'] = 'allowed' in log and url not in log
 
-    def stub(calls, results, meta=None):
-        def run(cfg, expect, prompt, restricted, allowed):
-            stub.seen = {'expect': expect, 'prompt': prompt, 'restricted': restricted, 'allowed': allowed}
-            return {}, calls, results, meta or {'turns': 2}
+    def stub(calls, results, meta=None, tools=('mcp__x_Slack__send', 'mcp__x_Slack__read', 'mcp__y__z')):
+        def run(cfg, expect, prompt, restricted, allowed, deny=()):
+            if not expect:  # the probe
+                return {'tools': list(tools)}, [], {}, {}
+            stub.seen = {'expect': expect, 'prompt': prompt, 'restricted': restricted, 'allowed': allowed,
+                         'deny': list(deny)}
+            return {'tools': [t for t in tools if t not in deny]}, calls, results, meta or {'turns': 2}
         return run
     good = [{'id': 't1', 'name': 'mcp__x_Slack__send', 'input': {'channel': 'C1', 'text': text}}]
     checks['a post that went out is ok'] = post(cfg, 'C1', text, stub(good, {'t1': False}))[0] == 'ok'
     checks['the runner is restricted and allows the one tool'] = stub.seen['restricted'] and \
         stub.seen['allowed'] == 'mcp__x_Slack__send' and f'\n{text}\n----- END TEXT -----' in stub.seen['prompt']
+    checks['the post run denies every other tool the probe saw'] = stub.seen['deny'] == ['mcp__x_Slack__read', 'mcp__y__z']
+    checks['no post when the connector does not offer the tool'] = post(cfg, 'C1', text, stub(good, {}, tools=()))[0] == 'no-tool'
     checks['a failed call is not posted'] = post(cfg, 'C1', text, stub(good, {'t1': True}))[0] == 'not-posted'
     bad = good + [{'id': 't2', 'name': 'mcp__x_Slack__read', 'input': {'channel': 'C1'}}]
     checks['another call is reported'] = post(cfg, 'C1', text, stub(bad, {'t1': False, 't2': True}))[0] == 'refused-call'
@@ -367,10 +406,12 @@ def selftest():
     checks['another repository is skipped'] = deliver_line(dict(cfg, client_slack_repos={'o/x'}), 'o/r', url,
                                                            'low-risk', runner=None)[0] == 'not-this-repo'
     init = {'tools': ['mcp__x_Slack__send', 'mcp__x_Slack__read'], 'servers': [('x Slack', 'connected')]}
-    probe = lambda cfg, e, p, restricted, a: (init if restricted else {'tools': []}, [], {}, {})  # noqa: E731
-    leak = lambda cfg, e, p, restricted, a: (init, [], {}, {})  # noqa: E731
+    probe = lambda cfg, e, p, restricted, a, d=(): (  # noqa: E731
+        {'tools': [t for t in init['tools'] if t not in d]} if restricted else {'tools': []}, [], {}, {})
+    leak = lambda cfg, e, p, restricted, a, d=(): (init, [], {}, {})  # noqa: E731
     with contextlib.redirect_stdout(io.StringIO()):
-        checks['--check: isolated when only the runner sees the connector'] = check(cfg, probe)
+        checks['--check: isolated when only the runner sees the connector, and the denies leave the post tool'] = \
+            check(cfg, probe)
         checks['--check: not isolated when a normal session sees it'] = not check(cfg, leak)
     import datetime as dt
     head = 'a' * 40
@@ -379,13 +420,20 @@ def selftest():
            {'repo': 'o/r', 'number': 2, 'url': 'https://github.com/o/r/pull/2', 'head': 'b' * 40, 'requested': []},
            {'repo': 'o/r', 'number': 4, 'url': 'https://github.com/o/r/pull/4', 'head': head, 'requested': ['rev'],
             'draft': True},
-           {'repo': 'o/r', 'number': 5, 'url': 'https://github.com/o/r/pull/5', 'head': head, 'requested': ['someone']}]
+           {'repo': 'o/r', 'number': 5, 'url': 'https://github.com/o/r/pull/5', 'head': head, 'requested': ['someone']},
+           {'repo': 'o/r', 'number': 6, 'url': 'https://github.com/o/r/pull/6', 'head': head, 'requested': []},
+           {'repo': 'o/r', 'number': 7, 'url': 'https://github.com/o/r/pull/7', 'head': head, 'requested': []},
+           {'repo': 'o/r', 'number': 8, 'url': 'https://github.com/o/r/pull/8', 'head': head, 'requested': []}]
     entries = {'o/r#1': {'review_url': url, 'review_heads': [head], 'outcome': 'low-risk', 'approved': True},
-               'o/r#2': {'review_url': url, 'review_heads': [head], 'outcome': 'questions'}}
-    lines = queue_lines(prs, entries, 'rev')
-    checks['the queue: our word on the current head, else waiting; by number; no drafts, no others'] = lines == [
+               'o/r#2': {'review_url': url, 'review_heads': [head], 'outcome': 'questions'},
+               'o/r#6': {'review_url': url, 'review_heads': [head], 'outcome': 'not-reviewed', 'fallback': 'not-reviewed'},
+               'o/r#7': {'review_url': url, 'review_heads': [head], 'outcome': 'held-gate'},
+               'o/r#8': {'review_url': url, 'review_heads': [head], 'outcome': 'questions'}}
+    lines = queue_lines(prs, entries, 'rev', {'https://github.com/o/r/pull/8': True})
+    checks['the queue: our word for a full review on the current head, else waiting; no drafts, no others'] = lines == [
         'Approved: https://github.com/o/r/pull/1', 'Waiting for review: https://github.com/o/r/pull/2',
-        'Waiting for review: https://github.com/o/r/pull/3']
+        'Waiting for review: https://github.com/o/r/pull/3', 'Waiting for review: https://github.com/o/r/pull/6',
+        'Waiting for review: https://github.com/o/r/pull/7', 'Waiting for review: https://github.com/o/r/pull/8']
     berlin = dt.timezone(dt.timedelta(hours=1))
     fri_0805, fri_0755 = dt.datetime(2026, 10, 30, 8, 5, tzinfo=berlin), dt.datetime(2026, 10, 30, 7, 55, tzinfo=berlin)
     checks['due once a weekday from 08:00 local'] = due(fri_0805, None)[0] and not due(fri_0755, None)[0] and \
@@ -394,11 +442,12 @@ def selftest():
     qcfg = dict(cfg, reviewer='rev', client_slack_queue_at='00:00', client_slack_tz='UTC')
     with pr_state.locked(tmp) as st:
         st['prs'].update(entries)
+    qlines = queue_lines(prs, entries, 'rev')  # the self-test's log holds no delivered review: no fallbacks
     with contextlib.redirect_stdout(io.StringIO()):
         sent = queue(qcfg, now=True, prs=prs, runner=stub([{'id': 't1', 'name': 'mcp__x_Slack__send', 'input': {
-            'channel': 'C1', 'text': '\n'.join(lines)}}], {'t1': False}))
+            'channel': 'C1', 'text': '\n'.join(qlines)}}], {'t1': False}))
         checks['the queue posts its lines through the runner'] = sent == 0 and '----- BEGIN TEXT -----\n' + \
-            '\n'.join(lines) + '\n----- END TEXT -----' in stub.seen['prompt']
+            '\n'.join(qlines) + '\n----- END TEXT -----' in stub.seen['prompt']
         queue(qcfg, now=True, prs=[], runner=None)
     checks['an empty queue posts nothing'] = '"status": "empty"' in open(os.path.join(tmp, 'pr-review.jsonl')).read()
     for k, v in checks.items():

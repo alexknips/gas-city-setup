@@ -111,18 +111,24 @@ through their claude.ai Slack connector, in exactly one place: `pr_client_slack.
   meant for the reviewer only ("Needs you", "Review gap") and nothing the model wrote. Logs keep ids, the
   word and counts.
 
-The runner also sees the account's other connectors' tools; none is allowed and the hook refuses every
-call to them. `pr_client_slack.py --check` lists, by name and count, what a normal session (the user's
-settings, from the city directory) and the runner load; it passes when only the runner has the
-connector's tools and the configured post tool is among them. `--post-review OWNER/NAME#N` posts the
+Before each post a probe lists what the runner's session loads, and the post run denies every other tool
+by name (tool-level denies hide them from the model), so it sees exactly the post tool; no post when the
+connector does not offer it. `pr_client_slack.py --check` lists, by name and count, what a normal session
+(the user's settings, from the city directory) and the runner load, and the runner's view with the
+denies; it passes when only the runner has the connector's tools and, with the denies, exactly the post
+tool. A stronger fence than the user settings' deny: `ENABLE_CLAUDEAI_MCP_SERVERS=false` in the town
+sessions' environment turns every claude.ai connector off whatever settings a session loads (the runner
+sets it to `true` for itself); it also takes the other connectors from every session, so the town
+decides. `--post-review OWNER/NAME#N` posts the
 line of a delivered review by hand (with `PR_REVIEW_CLIENT_SLACK=dry-run`, the ids and the word only).
 The first real post is a test with the town's owner.
 
 The queue post (order `pr-review-client-queue`, hourly; `pr_client_slack.py --queue [--now]`): once a
 weekday from `PR_REVIEW_CLIENT_SLACK_QUEUE_AT`, the open PRs (not drafts) that request the reviewer or
-carry our latest review, one line each, "<word>: <PR link>". The word is our review's on the PR's current
-head ("Approved", "Questions", "Changes requested", ...), else "Waiting for review"; nothing from the PR's
-text. No post when the list is empty. A failed post is tried again on later runs of the day, 3 times at
+carry a review of ours, one line each, "<word>: <PR link>". The word is our review's ("Approved",
+"Questions", "Changes requested", ...) when the PR's latest run delivered a full review on its current
+head; else "Waiting for review": no review yet, new commits since, or the latest run was held or a
+fallback, so the full review is still owed. Nothing from the PR's text. No post when the list is empty. A failed post is tried again on later runs of the day, 3 times at
 most. The same runner and hook carry it; its text goes to the model between two marker lines, and the
 hook compares it up to line endings.
 
