@@ -70,6 +70,7 @@ def config():
         'model': e('PR_REVIEW_MODEL', 'opus'),
         'effort': e('PR_REVIEW_EFFORT', 'high'),
         'prompt': e('PR_REVIEW_PROMPT', 'security'),
+        'context': e('PR_REVIEW_CONTEXT', 'off') == 'on',
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),

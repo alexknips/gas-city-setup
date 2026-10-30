@@ -41,6 +41,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_context  # noqa: E402
 import pr_digest  # noqa: E402
 import pr_format  # noqa: E402
 import pr_judge  # noqa: E402
@@ -168,7 +169,7 @@ in order:
 
 1. Open every FLAGGED HUNK listed above (F1, F2, ...) in its file, and open its callers and the code it
    calls (Grep for the changed functions and types). Do not write an entry about code you have not opened;
-   name what you opened in `verified`.
+   name what you opened in `verified`.{context_step}
 2. Read the rest of the diff the same way, with the repository's rules at hand. Find where the PR goes
    against a rule or a goal, and every defect and issue the instructions above and the custom scan
    instructions ask about. Apply their filtering rules, give each candidate a confidence from 1 to 10,
@@ -278,7 +279,8 @@ def cleanup(cfg, mirror, run_id):
         git(mirror, 'worktree', 'prune', check=False)
 
 
-def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked, digest_block='', author='the author'):
+def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked, digest_block='', author='the author',
+                 context_block=''):
     text = open(PROMPTS.get(cfg.get('prompt'), UPSTREAM)).read()
     text = re.sub(r'\A---\n.*?\n---\n', '', text, flags=re.S)  # the slash command's frontmatter
     status = (f"Pull request {pr['url']}, head {pr['headRefOid']}, forked from the base branch at {fork}. Open.\n"
@@ -304,13 +306,21 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
                       for f in flagged) or '- none'
     final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
     final = final.replace('{name}', NAME).replace('{author}', author)
+    final = final.replace('{context_step}', CONTEXT_STEP if context_block else '')
     return (f'{head}{checklist}\n\nSTYLE GUIDE (how your answer will be rendered and checked):\n\n{style}\n\n'
             f'{digest_block}\n\n'
+            + (f'{context_block}\n\n' if context_block else '') +
             f'FLAGGED HUNKS (pattern matches on the diff, not findings; open each one, step 1; each needs a '
             f'decision, an item or a cleared entry, step 3):\n'
             f'{hunks}\n\nVALID ITEM RANGES (an item\'s line_start and line_end must both fall inside ONE of these '
             f'ranges on its side, or the review is rejected):\n{hunk_ranges(diff)}\n\n'
             f"{final}")
+
+
+# Step 1's second half when the prompt carries REPOSITORY CONTEXT (PR_REVIEW_CONTEXT=on, gc-sy1hm.2 a).
+CONTEXT_STEP = """ Then open the places REPOSITORY CONTEXT lists for the
+   changed code: check that each use still gets what it expects from it (arguments, return values,
+   errors, empty or missing values) and that each listed test still describes the new behaviour."""
 
 
 def hunk_span(idx, flag):
@@ -864,17 +874,21 @@ def model_review(cfg, key, entry, dry, rereview=False):
         # R37: the repository's own rules, as they stand on the base branch the PR merges into
         digest, dmeta = pr_digest.get(cfg, repo, mirror, git(mirror, 'rev-parse', f"refs/heads/{pr['baseRefName']}").strip())
         conflicts = conflict_files(mirror, pr)
+        # gc-sy1hm.2 a: where the changed code is used and tested, found by a word search (zero tokens)
+        context_block, cstats = pr_context.build(tree, pr_format.diff_index(diff)) if cfg.get('context') else ('', {})
         prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'),
-                              pr_digest.prompt_block(digest), author)
+                              pr_digest.prompt_block(digest), author, context_block)
         if dry:
             print(json.dumps({'pr': entry['url'], 'dry_run': True, 'prompt_chars': len(prompt),
+                              'context_chars': len(context_block), **{f'context_{k}': v for k, v in cstats.items()},
                               'diff_chars': len(diff), 'files': len(files.splitlines()), 'rules': sorted(hits),
                               'flagged_hunks': len(flagged), 'flags_cut': flags_cut, 'not_checked_hunks': len(nc_rule)}))
             return
         idx = pr_format.diff_index(diff)
         extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
-                 'digest_cost_usd': dmeta.get('cost_usd', 0)}
+                 'digest_cost_usd': dmeta.get('cost_usd', 0),
+                 **{f'context_{k}': v for k, v in cstats.items()}}
         reasons, problems, model, risky, risky_q, money_memo = [], [], None, [], {}, {}
         for attempt in (1, 2):
             p = prompt if attempt == 1 else (
@@ -953,7 +967,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      money_places=len(money), money_unlined=sum(1 for x in money if not x.get('what')),
                      gate=sorted({r.split(':')[0] for r in reasons}))
         if cfg.get('collect') is not None:  # the benchmark (pr_bench.py): the review as it stands, nothing delivered
-            cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra)})
+            cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra),
+                                   'model': model})
             return
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         fallback = held and pr_rules.held_fallback(

@@ -52,6 +52,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
 | `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
 | `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
+| `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
 | `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
 | `PR_REVIEW_JUDGE_PER_RUN` | `5` | Delivered reviews the feedback order scores per run. |
@@ -201,6 +202,24 @@ and capture off, at most 40 rules, each with its doc lines. It is cached by the 
 tip of the base branch the PR merges into, so it is rebuilt only when the docs change, and kept host-local
 (`PR_REVIEW_WORK_DIR/digest`, mode 600): it is the repository's text. The review links each cited rule
 to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of time (counts only).
+
+**Repository context** (`pr_context.py`, gc-sy1hm.2 a; `PR_REVIEW_CONTEXT=on`). A word search (git
+grep) in the worktree at the PR head, no tokens, at most 6000 characters of names, paths and line numbers
+before the flagged hunks; step 1 then asks the model to open them. Three lists: (1) existing code the PR
+changes (a definition line that changed, a definition removed from a file, or a body with a changed
+line; at most 12, in that order and then by changed lines), with its uses outside the diff (at most 5
+each; a name with more than 60 uses is called too common); (2) existing code the new lines call or render
+(JSX components too), with its definition, most called first, at most 12; a name with more than 2
+definitions is left out as ambiguous; (3) the tests that use the changed code, the test files named after
+the changed files, and the changed files without one. Code the PR adds is not in list 1, since its uses
+are in the diff. Blind spots: the search is textual, so two unrelated things with one name are listed
+together, and a call through a variable, a string or dependency injection is not found. Symbols in
+test files are not listed. Definitions are found by line patterns for TypeScript/JavaScript, Python, Go and
+Rust; other languages get the tests only. Checked at zero tokens on the benchmark's labelled defects
+(10-30): in 28 of 37 cases (21 of 29 and 7 of 8) a line a later PR fixed sits inside a listed changed
+symbol or calls a listed definition. A listed place sits in a file that imports the defining module in
+74% and 85% of uses and 81% and 73% of definitions, a lower bound since a method called on an object needs
+no import. Built in 1-27 s per PR. `pr_context.py --selftest` checks it on a small synthetic repository.
 
 **The money lines** (`pr_money.py`, R32). For a PR that touches billing, plans, credits or pricing, one
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
@@ -367,7 +386,9 @@ capture-off reader judge whether each later PR fixes a defect of the earlier one
 sample of the defects and the controls at their heads with the shipped pipeline (nothing delivered,
 resumable, a spend cap) and `--score REPO` reports recall, recall on labelled defects, a precision proxy
 (entries on the fixed lines over all entries), controls with a change ask, and cost per PR, per
-version. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
+version. The run also keeps the model's own entries with their confidence, so `by_confidence` scores the
+same run at the bars 8 (what the script posts), 9 and 10. The version hashes the files that shape a review
+and the settings `PR_REVIEW_PROMPT` and `PR_REVIEW_CONTEXT`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
 
 ## Calibration
 

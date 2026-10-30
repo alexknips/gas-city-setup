@@ -263,13 +263,14 @@ def label(cfg, repo, limit=None):
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSIONED = ['pr_review.py', 'pr_format.py', 'pr_judge.py', 'pr_money.py', 'pr_digest.py', '../style-guide.md']
+VERSIONED = ['pr_review.py', 'pr_format.py', 'pr_judge.py', 'pr_money.py', 'pr_digest.py', 'pr_context.py',
+             '../style-guide.md']
 TOLERANCE = 3  # lines: an entry this close to a fixed line counts as pointing at it
 
 
 def version(cfg):
     """The reviewer's version for the report: a hash of the files that shape a review, and the prompt it uses."""
-    h = hashlib.sha256((cfg.get('prompt') or 'security').encode())
+    h = hashlib.sha256(((cfg.get('prompt') or 'security') + ('+context' if cfg.get('context') else '')).encode())
     for f in VERSIONED + ['../correctness-review.md', '../upstream/security-review.md']:
         h.update(open(os.path.join(HERE, f), 'rb').read())
     return h.hexdigest()[:10]
@@ -296,6 +297,20 @@ def anchors(rv):
         ln = d.get('link') or {}
         if ln.get('kind') == 'code' and not d.get('auto'):
             out.append((ln['path'], ln['line_start'], ln['line_end'], 'decision'))
+    return out
+
+
+def raw_anchors(model):
+    """The model's own entries before the script's confidence bar, with their confidence, so one run scores
+    precision at stricter bars too: (path, start, end, kind, confidence)."""
+    if not model:
+        return None
+    out = [(i['path'], i['line_start'], i['line_end'], i['kind'], i['confidence'])
+           for i in model.get('items') or [] if i.get('side', 'new') == 'new']
+    for d in model.get('decisions') or []:
+        ln = d.get('link') or {}
+        if ln.get('kind') == 'code' and ln.get('path') and ln.get('line_start'):
+            out.append((ln['path'], ln['line_start'], ln.get('line_end') or ln['line_start'], 'decision', d['confidence']))
     return out
 
 
@@ -331,7 +346,9 @@ def run(cfg, repo, n_cases, n_controls, max_usd):
         cost = sum(x.get(k) or 0 for k in ('cost_usd', 'judge_cost_usd', 'money_cost_usd', 'digest_cost_usd'))
         spent += cost
         res['prs'][key] = {'kind': kind, 'head': c['head'], 'cost_usd': round(cost, 4), 'held': (got or {}).get('held'),
-                           'anchors': anchors(got['rv']) if got else None, 'cleared': len((got or {}).get('rv', {}).get('cleared') or []),
+                           'anchors': anchors(got['rv']) if got else None,
+                           'raw': raw_anchors(got.get('model')) if got else None,
+                           'context': {k[8:]: v for k, v in x.items() if k.startswith('context_')}, 'cleared': len((got or {}).get('rv', {}).get('cleared') or []),
                            'outcome': ((got or {}).get('rv') or {}).get('outcome'), 'turns': x.get('turns'),
                            'judge': x.get('judge'),
                            'error': None if got else 'no review'}
@@ -376,6 +393,36 @@ def reader_spread(scores):
     return out
 
 
+BARS = (8, 9, 10)  # the script posts entries at confidence 8 and up; the benchmark also scores 9 and 10
+
+
+def on_fixed(a, fixed):
+    return any(a[0] == p and any(a[1] - TOLERANCE <= n <= a[2] + TOLERANCE for n in ls) for p, ls in fixed.items())
+
+
+def by_bar(rows):
+    """rows: (kind, raw anchors, fixed lines or None) per reviewed PR. Per confidence bar: cases caught,
+    entries, entries on fixed lines, controls with a change ask; only PRs whose run kept the raw entries."""
+    out = {}
+    for bar in BARS:
+        caught = cases = entries = good = alarms = controls = 0
+        for kind, raw, fixed in rows:
+            kept = [a for a in raw if a[4] >= bar]
+            if kind == 'control':
+                controls += 1
+                alarms += any(a[3] == 'change' for a in kept)
+                continue
+            cases += 1
+            g = [a for a in kept if on_fixed(a, fixed)]
+            entries += len(kept)
+            good += len(g)
+            caught += bool(g)
+        out[str(bar)] = {'cases': cases, 'caught': caught, 'entries': entries, 'on_fixed_lines': good,
+                         'precision_proxy': round(good / entries, 3) if entries else None,
+                         'controls': controls, 'controls_with_a_change_ask': alarms}
+    return out
+
+
 def score(cfg, repo, ver):
     """Recall on the cases, a precision proxy and false alarms on the controls, and cost per PR."""
     bench_p, mirror, res_p = paths(cfg, repo, ver)
@@ -385,20 +432,24 @@ def score(cfg, repo, ver):
     bench, res = json.load(open(bench_p)), json.load(open(res_p))
     cases = {str(c['pr']): c for c in bench['cases']}
     hit = reviewed = entries = on_target = alarms = controls = defects = defects_hit = 0
+    bars = []
     for key, r in res['prs'].items():
         if r.get('anchors') is None:
             continue
         if r['kind'] == 'control':
             controls += 1
             alarms += any(k == 'change' for *_, k in r['anchors'])
+            if r.get('raw') is not None:
+                bars.append(('control', r['raw'], None))
             continue
         reviewed += 1
         c = cases[key]
         is_defect = (c.get('label') or {}).get('defect') == 'yes'
         defects += is_defect
         fixed = {p: head_lines(mirror, c['merge'], c['head'], p, ls) for p, ls in c['fixed'].items()}
-        good = [a for a in r['anchors'] if any(a[0] == p and any(a[1] - TOLERANCE <= n <= a[2] + TOLERANCE for n in ls)
-                                               for p, ls in fixed.items())]
+        good = [a for a in r['anchors'] if on_fixed(a, fixed)]
+        if r.get('raw') is not None and is_defect:
+            bars.append(('case', r['raw'], fixed))
         entries += len(r['anchors'])
         on_target += len(good)
         hit += bool(good)
@@ -413,6 +464,7 @@ def score(cfg, repo, ver):
            'controls_reviewed': controls, 'controls_with_a_change_ask': alarms,
            'errors': sum(1 for r in res['prs'].values() if r.get('anchors') is None),
            **reader_spread([r.get('judge') for r in done]),
+           'by_confidence': by_bar(bars) if bars else None,
            'cost_per_pr_usd': round(sum(r['cost_usd'] for r in done) / len(done), 3) if done else None}
     print(json.dumps(out))
     return out
