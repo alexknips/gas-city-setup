@@ -64,6 +64,7 @@ def config():
         'ci_wait_h': float(e('PR_REVIEW_CI_WAIT_H', '3')),
         'state': e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'),
         'work': e('PR_REVIEW_WORK_DIR') or '/var/tmp/gc-pr-review',
+        'keep_days': int(e('PR_REVIEW_KEEP_DAYS', '30')),  # whole reviews kept host-local (held, bench)
         'max_load': float(e('PR_REVIEW_MAX_LOAD', '15')),
         'beads': e('PR_REVIEW_BEADS', 'on') == 'on',
         'slack_channel': e('PR_REVIEW_SLACK_CHANNEL', ''),
@@ -188,6 +189,45 @@ class Beads:
     def status(self, rig, bead):
         out = json.loads(self._run(rig, 'show', bead, '--json'))
         return (out[0] if isinstance(out, list) else out).get('status')
+
+
+def prune_jsonl(path, days, at_now=None):
+    """Drop the rows older than `days` from a host-local JSON-lines file (the mayor, 2026-10-30 16:50Z: the
+    held attempts and the benchmark's reviews hold a client's PR descriptions and diffs). A row without
+    `at` is stamped now, so it ages out too. Rewritten only when something changes, mode 600. Returns the
+    rows dropped."""
+    if not os.path.exists(path):
+        return 0
+    at_now = at_now or now()
+    cut, keep, dropped, stamped = at_now - dt.timedelta(days=days), [], 0, False
+    for line in open(path):
+        try:
+            r = json.loads(line)
+        except ValueError:
+            dropped += 1
+            continue
+        if not r.get('at'):
+            r['at'], stamped = iso(at_now), True
+        elif parse(r['at']) < cut:
+            dropped += 1
+            continue
+        keep.append(json.dumps(r))
+    if dropped or stamped:
+        tmp = path + '.tmp'
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+            f.write(''.join(x + '\n' for x in keep))
+        os.replace(tmp, path)
+    return dropped
+
+
+def prune_private(cfg):
+    """The retention bound on both stores of whole reviews: feedback/held.jsonl and the benchmark's
+    <repo>-reviews-<version>.jsonl (PR_REVIEW_KEEP_DAYS). Returns the rows dropped."""
+    paths = [os.path.join(cfg['work'], 'feedback', 'held.jsonl')]
+    bench = os.path.join(cfg['work'], 'bench')
+    paths += [os.path.join(bench, f) for f in sorted(os.listdir(bench)) if '-reviews-' in f and f.endswith('.jsonl')] \
+        if os.path.isdir(bench) else []
+    return sum(prune_jsonl(x, cfg['keep_days']) for x in paths)
 
 
 def private_dir(cfg, *parts):

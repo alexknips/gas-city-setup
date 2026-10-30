@@ -973,6 +973,7 @@ def keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author)
     if cfg.get('collect') is not None:
         return
     p = os.path.join(pr_state.private_dir(cfg, 'feedback'), 'held.jsonl')
+    pr_state.prune_jsonl(p, cfg.get('keep_days', 30))  # PR_REVIEW_KEEP_DAYS: older rows go on the next write
     with open(p, 'a') as f:
         f.write(json.dumps({'pr': entry['url'], 'head': pr['headRefOid'], 'attempt': attempt, 'author': author, 'reasons': reasons,
                             'rv': rv, 'body': body, 'flagged': flagged, 'pr_text': pr.get('body') or '',
@@ -1356,6 +1357,19 @@ def selftest():
                                            ruleset, hold_first)
     checks['a money place in the floor is named by the area, not by model text'] = \
         rv['decisions'][0]['where'][0]['what'] == 'a change to billing, plans, credits or pricing' and 'model text' not in body
+    import datetime as dt
+    held = os.path.join(tmp, 'held.jsonl')
+    t = pr_state.now()
+    with open(held, 'w') as f:
+        for r in [{'pr': 'old', 'at': pr_state.iso(t - dt.timedelta(days=31))}, {'pr': 'new', 'at': pr_state.iso(t)},
+                  {'pr': 'unstamped'}]:
+            f.write(json.dumps(r) + '\n')
+    dropped = pr_state.prune_jsonl(held, 30, t)
+    rows = [json.loads(x) for x in open(held)]
+    checks['retention: rows older than the bound go, an unstamped row is stamped, mode 600'] = dropped == 1 and \
+        [r['pr'] for r in rows] == ['new', 'unstamped'] and rows[1].get('at') == pr_state.iso(t) and \
+        os.stat(held).st_mode & 0o777 == 0o600
+    checks['retention: nothing to drop leaves the file as it is'] = pr_state.prune_jsonl(held, 30, t) == 0
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())

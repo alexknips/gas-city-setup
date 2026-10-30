@@ -360,8 +360,10 @@ def run(cfg, repo, n_cases, n_controls):
         if got:  # each review kept whole, as pr_review keeps a held attempt (`pr_format.py --regate` reads both)
             rev_p = res_p[:-len('.json')].replace('-results-', '-reviews-') + '.jsonl'
             diff = got.get('diff') or ''
+            pr_state.prune_jsonl(rev_p, cfg['keep_days'])  # PR_REVIEW_KEEP_DAYS, as the held attempts
             with open(rev_p, 'a') as f:
                 f.write(json.dumps({'pr': entry['url'], 'head': got.get('head'), 'attempt': f'bench {kind}',
+                                    'at': pr_state.iso(pr_state.now()),
                                     'author': got.get('author'), 'reasons': got.get('reasons') or [], 'rv': got['rv'],
                                     'body': got.get('body'), 'flagged': got.get('flagged') or [],
                                     'pr_text': got.get('pr_text') or '',

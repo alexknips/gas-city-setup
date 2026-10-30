@@ -256,8 +256,9 @@ def sweep(cfg, dry):
     if not partial:
         with pr_state.locked(cfg['state']) as st:
             st['last_sweep'] = pr_state.iso(t0)
+    pruned = pr_state.prune_private(cfg)  # PR_REVIEW_KEEP_DAYS on the stores of whole reviews (held, bench)
     pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts, 'partial': partial,
-                                'secs': round((pr_state.now() - t0).total_seconds())})
+                                'secs': round((pr_state.now() - t0).total_seconds()), 'pruned': pruned})
     print(json.dumps({'sweep': pr_state.iso(t0), 'partial': partial, 'counts': counts}))
 
 

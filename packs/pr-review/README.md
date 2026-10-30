@@ -66,6 +66,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
 | `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for the author"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
+| `PR_REVIEW_KEEP_DAYS` | `30` | How long the whole reviews kept host-local (the held attempts, the benchmark's reviews) stay: older rows are dropped on the next write and by every sweep. |
 | `PR_REVIEW_CLIENT_SLACK` | `off` | `on` posts each new review's line (the word and its link) in the client's own Slack workspace, as the reviewer, through the runner in [The client's Slack](#the-clients-slack); `dry-run` prints the ids and the word instead. |
 | `PR_REVIEW_CLIENT_SLACK_CHANNEL` | (none) | The conversation id the lines go to. It must also be in the allowlist. |
 | `PR_REVIEW_CLIENT_SLACK_CONVERSATIONS` | (none) | The allowlist: the only conversation ids the runner may post to, enforced in code around the call. |
@@ -392,7 +393,8 @@ rule label, or the area's name for a money place). It holds no model text, so it
 gate says (logged `floor`, `note_gate`, `floor_gate`), unless it matches a secret's shape; `pr_review.py
 --selftest` covers it. The held attempt itself (the review dict, its body, the
 gate's reasons, the flags and the diff) to `feedback/held.jsonl`, so `pr_format.py --regate FILE` gates it
-again with later code at zero tokens (PR numbers and rule ids only). Also `held-inline` (GitHub refused an inline comment;
+again with later code at zero tokens (PR numbers and rule ids only). Both hold a client's PR descriptions and diffs, so rows older than `PR_REVIEW_KEEP_DAYS` (30) are
+dropped on the next write and by every sweep (logged `pruned`). Also `held-inline` (GitHub refused an inline comment;
 nothing delivered, since a review without its markers breaks R4), `error` (the run failed, or a
 delivered review broke a delivery rule; see the log). A PR whose head or CI changed between the review
 and the post goes back to the queue (`requeued`).
