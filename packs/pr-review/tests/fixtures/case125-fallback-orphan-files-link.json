@@ -1,0 +1,101 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R33"
+ ],
+ "only_reasons": [
+  "R33"
+ ],
+ "voice": "reviewer",
+ "outcome": "changes",
+ "derived": true,
+ "diff": "diff --git a/src/billing/fee.ts b/src/billing/fee.ts\nindex 1111111..2222222 100644\n--- a/src/billing/fee.ts\n+++ b/src/billing/fee.ts\n@@ -1,2 +1,4 @@\n export function feeTotal(invoice: Invoice) {\n+  const step = invoice.fee ?? 0;\n+  return invoice.amount + step;\n }\ndiff --git a/src/billing/credits.ts b/src/billing/credits.ts\nindex 1111111..2222222 100644\n--- a/src/billing/credits.ts\n+++ b/src/billing/credits.ts\n@@ -1,2 +1,4 @@\n export function creditsTotal(invoice: Invoice) {\n+  const step = invoice.credits ?? 0;\n+  return invoice.amount + step;\n }\ndiff --git a/src/billing/plans.ts b/src/billing/plans.ts\nindex 1111111..2222222 100644\n--- a/src/billing/plans.ts\n+++ b/src/billing/plans.ts\n@@ -1,2 +1,4 @@\n export function plansTotal(invoice: Invoice) {\n+  const step = invoice.plans ?? 0;\n+  return invoice.amount + step;\n }\ndiff --git a/src/billing/limits.ts b/src/billing/limits.ts\nindex 1111111..2222222 100644\n--- a/src/billing/limits.ts\n+++ b/src/billing/limits.ts\n@@ -1,2 +1,4 @@\n export function limitsTotal(invoice: Invoice) {\n+  const step = invoice.limits ?? 0;\n+  return invoice.amount + step;\n }\n",
+ "items": [
+  {
+   "path": "src/billing/fee.ts",
+   "side": "new",
+   "line_start": 2,
+   "line_end": 3,
+   "kind": "question",
+   "severity": "low",
+   "area": "other",
+   "change": "Late fee after thirty days",
+   "ask": "Overdue invoices now get a fee after thirty days on every plan; should the free plan be exempt?",
+   "why": "Free plan customers would be charged for the first time, without notice.",
+   "rule": "",
+   "verified": "fallback question",
+   "confidence": 7,
+   "money": true
+  },
+  {
+   "path": "src/billing/credits.ts",
+   "side": "new",
+   "line_start": 2,
+   "line_end": 3,
+   "kind": "question",
+   "severity": "low",
+   "area": "other",
+   "change": "Credits expire six months sooner",
+   "ask": "Unused credits now expire after six months instead of twelve; do current balances keep the old date?",
+   "why": "Customers who bought credits last year could lose them without warning.",
+   "rule": "",
+   "verified": "fallback question",
+   "confidence": 7,
+   "money": true
+  },
+  {
+   "path": "src/billing/plans.ts",
+   "side": "new",
+   "line_start": 2,
+   "line_end": 3,
+   "kind": "question",
+   "severity": "low",
+   "area": "other",
+   "change": "Plan price read at renewal",
+   "ask": "A plan change now takes its new price at the next renewal; does a downgrade refund the difference?",
+   "why": "Customers who downgrade mid-cycle would pay the old price until renewal.",
+   "rule": "",
+   "verified": "fallback question",
+   "confidence": 7,
+   "money": true
+  }
+ ],
+ "blockers": [
+  {
+   "kind": "change",
+   "cause": "ci",
+   "short": "fix the failing checks",
+   "label": "Fix the failing checks",
+   "url": "https://github.com/example/repo/pull/1/checks",
+   "detail": "unit tests."
+  }
+ ],
+ "facts": "CI red: unit tests \u00b7 no merge conflict \u00b7 open",
+ "model": false,
+ "not_checked": "billing, plans, credits or pricing",
+ "fallback": true,
+ "others": [
+  {
+   "path": "src/billing/limits.ts",
+   "line_start": 2,
+   "line_end": 3,
+   "hunk": 0,
+   "what": "model line",
+   "money": true
+  }
+ ],
+ "gaps": [
+  {
+   "kind": "not-checked",
+   "accepted": true
+  },
+  {
+   "kind": "below-bar",
+   "accepted": true
+  }
+ ],
+ "body_edit": [
+  "</details>",
+  "</details>\n\n[2 other places](https://github.com/example/repo/pull/1/files) in the files view."
+ ]
+}

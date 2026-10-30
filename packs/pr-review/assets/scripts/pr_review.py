@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pr_client_slack  # noqa: E402
 import pr_context  # noqa: E402
 import pr_digest  # noqa: E402
+import pr_fallback  # noqa: E402
 import pr_format  # noqa: E402
 import pr_incremental  # noqa: E402
 import pr_judge  # noqa: E402
@@ -642,6 +643,9 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         posted, url, state, rid = update_review(repo, n, old_id, body)
     else:
         posted, url, state, rid = post_review(repo, pr, body, comments, event)
+        if not url and comments and rv.get('fallback'):  # R33: never silent; the questions stand in the body
+            posted, url, state, rid = post_review(repo, pr, body, [], event)
+            extra['inline_dropped'], comments = len(comments), []
         if old_id and posted == 'ok':
             p2 = update_review(repo, n, old_id, pr_format.pointer_body(NAME, url, cfg.get('voice')))[0]
             extra.update(replaced=old_id, replaced_status=p2)
@@ -722,7 +726,9 @@ def redeliver(cfg, key):
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
     comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'), pr_format.first_item(rv))
     idx = pr_format.diff_index(pr_diff(entry['repo'], pr['number']))
-    reasons = pr_format.gate(rv, idx, body, None, pr.get('body') or '', res.get('flagged') or [], comments)
+    # A fallback is gated as it was in the run: it covers no flagged hunk (R33).
+    reasons = pr_format.gate(rv, idx, body, None, pr.get('body') or '', [] if res.get('fallback') else res.get('flagged') or [],
+                             comments)
     if reasons:
         finish(cfg, key, entry, 'held-gate', {'model': False, 'redeliver': True, 'gate': [r.split(':')[0] for r in reasons]})
         return
@@ -894,6 +900,19 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, 
             places.append(x)
     if floor:  # one place in the script's words: a flag's rule label already, the area's name for a money place
         places = [dict(places[0], what=f'a change to {words}') if money else places[0]] if places else []
+    why = held_why(money, words, held, codes)
+    voice = (cfg or {}).get('voice') or 'disclose'
+    rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why, voice)], 'items': [],
+          'cleared': [], 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'summary': '', 'skip': [],
+          'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
+          'request_changes': False, 'rules': {}, 'rules_sha': '', 'voice': voice,
+          'gaps': [{'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)}] if cfg else [],
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True}
+    return rv, pr_format.render(repo, pr, rv, NAME, author), []
+
+
+def held_why(money, words, held, codes):
+    """R33: why the review was held, in plain words (the note says it in the disclosing voice only)."""
     parts = []
     if money:
         parts.append(f"it touches {words} in {pr_format.plural(len(money), 'place', 'places')}, which no agent checks")
@@ -903,15 +922,52 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, 
         parts.append('a second reader found our review too hard to act on')
     elif codes:
         parts.append('our review broke the review format twice')
-    why = "Our review of this PR didn't reach the quality bar: " + '; '.join(parts or ['it was held']) + '.'
-    voice = (cfg or {}).get('voice') or 'disclose'
-    rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why, voice)], 'items': [],
-          'cleared': [], 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'summary': '', 'skip': [],
-          'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
-          'request_changes': False, 'rules': {}, 'rules_sha': '', 'voice': voice,
-          'gaps': [{'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)}] if cfg else [],
-          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True}
-    return rv, pr_format.render(repo, pr, rv, NAME, author), []
+    return "Our review of this PR didn't reach the quality bar: " + '; '.join(parts or ['it was held']) + '.'
+
+
+def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note=False, held=None, codes=(), answer=None):
+    """R33 (the mayor, 2026-10-30 21:39Z: "One specific question per linked line with its own reason, no
+    boilerplate sentences, no orphan link, one status line"): the fallback as one question per place, the
+    riskiest first, each on its lines with its reason as the inline comment (pr_fallback); the places it does
+    not ask about collapsed, each linked to its lines. `note`: the note's form (a PR that requests the
+    reviewer, the flagged hunks among its places), else the money review's (its money places only).
+    Returns (rv, body, comments, meta: counts, rule ids and cost); rv None when no place got a question
+    that passes, or the questions match a secret's shape: the stock fallback then."""
+    words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
+    places = pr_fallback.places(idx, money, flagged if note else [], fill=note)
+    if not places or not (answer or cfg.get('judge_model')):
+        return None, None, None, {'asked': 0}
+    items, others, summary, meta = pr_fallback.ask(cfg, idx, places, answer, title=pr.get('title') or '',
+                                                   description=pr.get('body') or '')
+    if not items:
+        return None, None, None, meta
+    voice = cfg.get('voice') or 'disclose'
+    accepted = pr_state.accepted_gaps(cfg)
+    rv = {'decisions': [], 'items': items, 'cleared': [], 'summary': summary, 'skip': [], 'since': None,
+          'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
+          'not_checked': words if money and not note else '', 'model': False, 'flags_cut': 0, 'approve': False,
+          'request_changes': cfg.get('request_changes', False) and not note, 'rules': {}, 'rules_sha': '', 'voice': voice,
+          'gaps': [{'kind': k, 'rule': '', 'accepted': k in accepted} for k in (['not-checked'] if money else []) + ['below-bar']],
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True, 'others': others,
+          'held_why': held_why(money, words, held, codes) if note and voice != 'reviewer' else ''}
+    rv['outcome'] = 'not-reviewed' if note else pr_format.decide([], items, rv['blockers'])
+    body = pr_format.render(repo, pr, rv, NAME, author)
+    comments = pr_format.inline_comments(items, author, voice, pr_format.first_item(rv))
+    if leaks([body] + [c['body'] for c in comments]):
+        return None, None, None, dict(meta, secret=True)
+    return rv, body, comments, meta
+
+
+def asked_log(meta, form):
+    """The fallback's log fields: which form went out (asked, stock, floor) and the questions' counts."""
+    return {'fallback_form': form, 'fallback_asked': meta.get('asked', 0), 'fallback_kept': meta.get('kept', 0),
+            'fallback_calls': meta.get('calls', 0), 'fallback_failed': meta.get('failed', []),
+            'fallback_cost_usd': meta.get('cost_usd', 0), **({'fallback_gate': meta['gate']} if meta.get('gate') else {})}
+
+
+def linked_paths(rv):
+    """The files a review's decisions and items link, for their line counts at the head (R16)."""
+    return [w['path'] for d in rv['decisions'] for w in d.get('where') or []] + [i['path'] for i in rv['items']]
 
 
 def reader_reasons(scores, jm, risky):
@@ -1001,17 +1057,26 @@ def keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author)
     os.chmod(p, 0o600)
 
 
-def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset, gate):
+def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset, gate, answer=None):
     """R33: the note for a held review of a PR that requests the reviewer, gated by `gate(rv, body,
-    comments)`. When the note itself is held, the floor instead (never silent, the mayor 2026-10-30
-    16:54Z): one place in the script's own words. The floor holds no model text, so it goes out whatever
-    its gate says, unless it matches a secret's shape. Returns (rv, body, comments, reasons, log fields)."""
+    comments)`: first its own question per place (asked_fallback); without one that passes, the stock note
+    (one question, lettered options). When the stock note itself is held, the floor instead (never silent,
+    the mayor 2026-10-30 16:54Z): one place in the script's own words. The floor holds no model text, so it
+    goes out whatever its gate says, unless it matches a secret's shape. Returns (rv, body, comments,
+    reasons, log fields)."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
+    rv, body, comments, meta = asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, True, held, codes,
+                                              answer)
+    if rv:
+        reasons = gate(rv, body, comments)
+        if not reasons:
+            return rv, body, comments, [], asked_log(meta, 'asked')
+        meta['gate'] = sorted({r.split(':')[0] for r in reasons})
     rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg)
     reasons = gate(rv, body, comments)
     if not reasons:
-        return rv, body, comments, [], {}
-    note = {'floor': True, 'note_gate': sorted({r.split(':')[0] for r in reasons})}
+        return rv, body, comments, [], asked_log(meta, 'stock')
+    note = {'floor': True, 'note_gate': sorted({r.split(':')[0] for r in reasons}), **asked_log(meta, 'floor')}
     rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, floor=True)
     note['floor_gate'] = sorted({r.split(':')[0] for r in gate(rv, body, comments)})
     return rv, body, comments, (reasons if leaks([body]) else []), note
@@ -1258,12 +1323,21 @@ def model_review(cfg, key, entry, dry, rereview=False):
             held == 'held-gate')
         if fallback == 'not-checked-minimal':
             # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
-            # deliver only line 2, the money question and the facts line, with no model findings (R33).
-            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info)
-            reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
-                                     pr.get('body') or '', [], comments)
-            extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1,
-                         author_decisions=1, items=0, cleared=0, held_gate=extra['gate'], gate=sorted({r.split(':')[0] for r in reasons}))
+            # first one question per money place (R33, the mayor 21:39Z); without one that passes, line 2, the
+            # stock money question and the facts line, with no model findings.
+            def gated(x, b, c):
+                return pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c)
+            rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, [], money, author, ruleset)
+            reasons, form = (gated(rv, body, comments), 'asked') if rv else (['R33: no question'], 'asked')
+            if reasons:
+                if rv:
+                    ameta['gate'] = sorted({r.split(':')[0] for r in reasons})
+                rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info)
+                reasons, form = gated(rv, body, comments), 'stock'
+            extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=len(rv['decisions']),
+                         author_decisions=len(rv['decisions']), items=len(rv['items']), cleared=0,
+                         blockers=len(rv['blockers']), held_gate=extra['gate'],
+                         gate=sorted({r.split(':')[0] for r in reasons}), **asked_log(ameta, form))
             if cfg['judge'] and not reasons and not extra.get('repair_judged'):  # for the log only: never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
@@ -1274,9 +1348,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
             codes = extra.get('held_gate') or extra['gate']
             rv, body, comments, reasons, note = held_note(
                 cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset,
-                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, [w['path'] for w in x['decisions'][0].get('where') or []]),
-                                               pr.get('body') or '', [], c))
-            extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, author_decisions=1, items=0, cleared=0,
+                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c))
+            extra.update(fallback=fallback, held=held, held_gate=codes, decisions=len(rv['decisions']),
+                         author_decisions=len(rv['decisions']), items=len(rv['items']), cleared=0,
                          blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}), **note)
             if cfg['judge'] and not reasons and not extra.get('repair_judged'):  # for the log: never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
@@ -1288,6 +1362,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
         result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [],
                       rules=rv.get('rules') or {}, rules_sha=rv.get('rules_sha') or '')
+        if rv.get('fallback'):  # --redeliver renders a fallback as one (R33)
+            result.update(fallback=True, others=rv.get('others') or [])
         deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged, idx, rereview, model.get('summary') or '')
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         # Only our own RuntimeError texts are kept; an OSError can name a file of the repository.
@@ -1357,9 +1433,11 @@ def selftest():
     real = lambda x, b, c: pr_format.gate(x, idx, b, None, '', [], c)  # noqa: E731
     rv, body, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'],
                                            ruleset, real)
-    checks = {'a note over ten places passes its gate': reasons == [] and note == {},
-              'the note shows three places and one link for the rest': body.count('](https://github.com/o/r/blob/') == 3
-              and '[7 other places](https://github.com/o/r/pull/1/files)' in body}
+    checks = {'a stock note over ten places passes its gate': reasons == [] and note.get('fallback_form') == 'stock',
+              'the stock note shows three places, the other seven collapsed and linked to their lines (no orphan link)':
+              body.count('](https://github.com/o/r/blob/') == 10 and '<details><summary>Other places</summary>' in body
+              and '/pull/1/files)' not in body}
+    checks.update(selftest_asked(cfg, idx, flagged, pr, ruleset, real))
     calls = []
 
     def hold_first(x, b, c):
@@ -1395,6 +1473,52 @@ def selftest():
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
+
+
+def selftest_asked(cfg, idx, flagged, pr, ruleset, real):
+    """R33 (the mayor, 21:39Z): the fallback's own questions, with a stub for the model."""
+    asks = [('Shift reminders sent by text', 'Shift reminders now go by text to the phone on file; should staff who '
+             'opted out still get them?', 'Staff who opted out of texts would get messages they declined.'),
+            ('Cancellation text to the clinic', 'Cancelled visits now send a text to the clinic; who at the clinic '
+             'receives it after hours?', 'A cancellation sent to an unattended phone leaves the slot unfilled.'),
+            ('Text when lab results ready', 'Lab results now send a text when ready; does the message name the test '
+             'or only say results are in?', 'A text that names the test discloses health details on a lock screen.')]
+
+    def stub(prompt):
+        return {'summary': '', 'places': [{'n': n, 'changes': [c], 'questions': [q], 'reason': r}
+                                          for n, (c, q, r) in enumerate(asks, 1)]}, \
+            {'cost_usd': 0.01}
+    rv, body, comments, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate',
+                                                  ['R29'], ruleset, real, answer=stub)
+    checks = {'the note asks one question per place; the other seven are collapsed, each linked to its lines':
+              reasons == [] and note.get('fallback_form') == 'asked' and len(rv['items']) == 3 and len(comments) == 3
+              and not rv['decisions'] and body.count('](https://github.com/o/r/blob/') == 7 and '/pull/1/files)' not in body,
+              "in the reviewer's voice line 1 says who acts": body.splitlines()[0].startswith(
+                  '**Questions** · for Author, nothing needed from me <!--'),
+              'each question carries its own reason as its inline comment':
+              [c['body'] for c in comments] == [f'**{k}. {c}**: {r}' for k, (c, _, r) in enumerate(asks, 1)],
+              'the log has counts and the form only': note.get('fallback_kept') == 3 and note.get('fallback_calls') == 1
+              and not any(isinstance(v, str) and len(v) > 12 for v in note.values())}
+    _, _, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'], ruleset,
+                                       lambda x, b, c: ['R33: held'] if x['items'] else real(x, b, c), answer=stub)
+    checks['asked questions the gate holds fall to the stock note'] = reasons == [] and \
+        note.get('fallback_form') == 'stock' and note.get('fallback_gate') == ['R33']
+    rv, _, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'],
+                                        ruleset, real, answer=lambda p: (None, {}))
+    checks['no question passes in two turns: the stock note'] = reasons == [] and rv['decisions'] and \
+        note.get('fallback_form') == 'stock' and note.get('fallback_calls') == 2
+    money = [{'path': f'src/a{k}.ts', 'line_start': 2, 'line_end': 2, 'hunk': 0, 'what': 'model line', 'kind': 'charges',
+              'behaviour': True, 'risk': 4 - k} for k in range(4)]
+    red = dict(pr, commits={'nodes': [{'commit': {'statusCheckRollup': {'contexts': {'nodes': [
+        {'name': 'unit', 'conclusion': 'FAILURE'}]}}}}]})
+    rv, body, comments, meta = asked_fallback(dict(cfg, request_changes=True), 'o/r', red, 'red', idx, flagged, money,
+                                              'Author', ruleset, answer=stub)
+    checks['the money review asks about its money places only, the CI blocker said once, no scope sentence'] = \
+        rv['outcome'] == 'changes' and pr_format.event_of(rv) == 'REQUEST_CHANGES' and \
+        pr_format.gate(rv, idx, body, None, '', [], comments) == [] and [i['path'] for i in rv['items']] == \
+        ['src/a0.ts', 'src/a1.ts', 'src/a2.ts'] and 'CI red' not in body and 'outside this review' not in body and \
+        '- Billing, plans, credits or pricing: [`a3.ts` L2]' in body and meta['kept'] == 3
+    return checks
 
 
 def selftest_retention(work, t):
@@ -1477,6 +1601,17 @@ def selftest_client_once(cfg, tmp):
             deliver(dcfg, 'o/r#1', e3, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'})
             with pr_state.locked(tmp) as st:
                 e4 = dict(st['prs']['o/r#1'])
+            tries = []
+
+            def picky(repo, pr, body, comments, event='COMMENT'):  # GitHub refuses the inline comments
+                tries.append(len(comments))
+                return ('error', None, None, None) if comments else posted()
+            g['post_review'] = picky
+            fresh['headRefOid'] = 'f' * 40
+            deliver(dcfg, 'o/r#1', e4, fresh, dict(rv, fallback=True), 'body',
+                    [{'path': 'a', 'line': 1, 'side': 'RIGHT', 'body': 'x'}], {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(tmp) as st:
+                e5 = dict(st['prs']['o/r#1'])
     finally:
         g.update(saved)
         for (m, n), f in zip(mods, kept):
@@ -1491,6 +1626,9 @@ def selftest_client_once(cfg, tmp):
             list(e3.get('client_posts') or {}) == [head, 'd' * 40],
         'a failed client entry still records the delivered review':
             'e' * 40 in (e4.get('review_heads') or []) and e4.get('client_slack') == 'error:RuntimeError',
+        'a fallback whose inline comments GitHub refuses goes out without them, never silent (R33)':
+            tries == [1, 0] and 'f' * 40 in (e5.get('review_heads') or []) and e5.get('inline_dropped') == 1 and
+            e5.get('inline') == 0,
     }
 
 

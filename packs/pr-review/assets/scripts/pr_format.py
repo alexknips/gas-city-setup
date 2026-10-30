@@ -80,6 +80,18 @@ MONEY_WORDS = 30  # R32: one line per place ("about 25 words"; pr_review clips l
 # the reader test (7 links, 17 lines, 2,085 characters shown, 10-29..10-30); its money places beyond the
 # question's own, at most FALLBACK_SHOWN, then one link to the files view.
 FALLBACK_LINKS, FALLBACK_LINES, FALLBACK_CHARS, FALLBACK_SHOWN = 8, 17, 2100, 2
+# R33 (the mayor, 2026-10-30 21:39Z, after 4 of 5 requested reviews fell back: "One specific question per linked
+# line with its own reason, no boilerplate sentences, no orphan link, one status line"): the fallback asks about
+# at most FALLBACK_QUESTIONS places, one question each (pr_fallback); the places it does not ask about are
+# collapsed, each linked to its lines; in the reviewer's voice line 1 says who acts.
+FALLBACK_QUESTIONS = 3
+VOICE_FALLBACK = ' · for {author}, nothing needed from me'
+# A question that fits any PR is boilerplate, not a question about its lines (R33).
+STOCK_RE = re.compile(r'(?i)^(is|was|has) (this|that|it)( change| code)?( been)? (intended|tested|safe|correct|right|'
+                      r'expected|deliberate|reviewed)( here)?\?$|\b(have|has|did|was|were) (you|this|it|anyone|they|'
+                      r'this change|the change|this code)( been)? test(ed)?\b|\bwho (reviews|should review|signs? off|approves)\b|\bwhat sign-?off\b|'
+                      r'\bbefore (it|this) merges\b|\bcan you (explain|clarify|describe)\b|'
+                      r'\bwhat does this (change|code) do\b|\bany tests?\b')
 GREEN_FACTS = 'CI passed · no merge conflict · open'  # R30: the status line shows only when it is not this
 
 # R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
@@ -102,8 +114,8 @@ LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Ques
 WHO_RE = re.compile(r'^(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.$')
 NOTHING_RE = re.compile(r'^Nothing for (.+) or (.+)\.$')
 # The same in the reviewer's voice (decision-ed7320b7): the verdict word and the marker; what the author must do.
-VOICE_LINE1_RE = re.compile(r'^\*\*(Approved|Changes requested|Changes suggested|Questions|Low risk)\*\* '
-                            r'<!-- pr-review v[0-9.]+ -->$')
+VOICE_LINE1_RE = re.compile(r'^\*\*(Approved|Changes requested|Changes suggested|Questions|Low risk)\*\*'
+                            r'( · for (.+), nothing needed from me)? <!-- pr-review v[0-9.]+ -->$')
 VOICE_WHO_RE = re.compile(r'^(.+?): (.+)\.$')
 # R37: a decision never asks the reviewer to read or review code (the reviewer does not know the codebase).
 REVIEW_CODE_RE = re.compile(r'(?i)\byou(rself)? (review|read|check|look at)\b|\b(review|read|check)\b[^.?]{0,40}\byourself\b')
@@ -377,11 +389,11 @@ def event_of(rv):
     return 'COMMENT'
 
 
-def headline(rv, name):
+def headline(rv, name, author=''):
     """R28: line 1, the verdict, then the automated note; in the reviewer's voice the verdict and the
     invisible marker (decision-ed7320b7)."""
-    if voiced(rv):
-        return f'**{word_of(rv)}** {MARK}'
+    if voiced(rv):  # a fallback says who acts (R33): the author answers, the reviewer has nothing to do
+        return f"**{word_of(rv)}**{VOICE_FALLBACK.format(author=author) if rv.get('fallback') else ''} {MARK}"
     return f'**{word_of(rv)}**' + SUFFIX.format(name=name)
 
 
@@ -408,7 +420,7 @@ def render(repo, pr, rv, name, author):
     to their lines (each item is also an inline comment) and the blockers; what was checked and cleared (R19, R29); safe to skip with the files view (R30); and the
     status line only when something did not pass (R30)."""
     n = pr['number']
-    lines = [headline(rv, name), who_acts(rv, name, author)]
+    lines = [headline(rv, name, author), who_acts(rv, name, author)]
     since = pr_incremental.text(repo, rv['since']) if rv.get('since') else ''  # gc-sy1hm.2 c
     if rv.get('approve'):
         if approval_reason(rv):  # the one-line reason, visible, not only inside the collapsed section
@@ -419,6 +431,8 @@ def render(repo, pr, rv, name, author):
             lines += ['', '</details>']
         return '\n'.join(lines)
     lines.append('')
+    if rv.get('held_why'):  # the note's questions in the disclosing voice: why the review was held (R33)
+        lines += [rv['held_why'], '']
     if rv.get('summary'):
         lines += [f"**What it does:** {rv['summary']}", '']
     if since:
@@ -451,9 +465,36 @@ def render(repo, pr, rv, name, author):
         lines.append('')
     if rv.get('skip'):
         lines += [f'**Safe to skip:** {skip_text(repo, n, rv["skip"])}', '']
-    if rv['facts'] != GREEN_FACTS:
+    if rv.get('fallback') and rv.get('others'):
+        lines += other_places(repo, pr['headRefOid'], rv['others'], rv.get('not_checked')) + ['']
+    if rv['facts'] != GREEN_FACTS and not blockers_say(rv):
         lines.append(rv['facts'])
     return '\n'.join(lines).rstrip()
+
+
+def other_places(repo, head, places, words=''):
+    """R33: the places a fallback does not ask about, collapsed, each linked to its lines (never a link to the
+    files view that no line anchors), one line per group: the not-checked area, a rule's label, the rest."""
+    return ['<details><summary>Other places</summary>', ''] + grouped_links(repo, head, places, words) + ['', '</details>']
+
+
+def grouped_links(repo, head, places, words=''):
+    """One line per group of places, each place linked to its lines: "- <group>: [`a.ts` L3](…), …"."""
+    groups = {}
+    for x in places:
+        g = (words or NOT_CHECKED_AREA) if x.get('money') else (x.get('what') or 'other changes')
+        groups.setdefault(g, []).append(place_link(repo, head, x))
+    return [f"- {g[:1].upper()}{g[1:]}: {', '.join(links)}" for g, links in groups.items()]
+
+
+def blockers_say(rv):
+    """R33 (one status line): a fallback whose every part of the status line that did not pass is already a
+    blocker, on an open PR, shows no status line; the blocker says it once, linked."""
+    if not rv.get('fallback') or not rv.get('blockers'):
+        return False
+    parts, causes = (rv.get('facts') or '').split(' · '), {b.get('cause') for b in rv['blockers']}
+    return len(parts) == 3 and (parts[0] == 'CI passed' or 'ci' in causes) and \
+        (parts[1] == 'no merge conflict' or 'conflict' in causes) and parts[2] == 'open'
 
 
 def approval_reason(rv):
@@ -495,22 +536,15 @@ def decision_lines(repo, pr, rv, k, d):
     if d.get('where') and money:
         backed = {j for j in d.get('opening_places') or []} if d.get('opening') else set()
         rest = [x for j, x in enumerate(d['where']) if j not in backed | {key}]
-        if rv.get('fallback'):  # R33: the places the question needs, then one link for the rest
-            shown, _ = money_lines(repo, head, rest, FALLBACK_SHOWN)
-            left = len(rest) - sum(1 for x in shown if x.startswith('- '))
-            shown += ['', f"[{plural(left, 'other place', 'other places').capitalize()}](https://github.com/{repo}/pull/"
-                          f"{pr['number']}/files) in the files view."] if left else []
-        else:
-            shown, others = money_lines(repo, head, rest)
+        # R33: a fallback shows the places the question needs; the rest are collapsed, each linked to its lines
+        shown, others = money_lines(repo, head, rest, FALLBACK_SHOWN if rv.get('fallback') else MONEY_SHOWN)
         lines += [''] + shown if shown else []
     elif d.get('where'):
         lines.append('   **Where:**')
         shown = d['where'][:FALLBACK_SHOWN + 1] if rv.get('fallback') else d['where']  # R33: the note's places, cut
         for x in shown:
             lines.append(f"   - {place_link(repo, head, x)}: {x.get('what') or ''}")
-        if len(d['where']) > len(shown):
-            lines.append(f"   - [{plural(len(d['where']) - len(shown), 'other place', 'other places').capitalize()}]"
-                         f"(https://github.com/{repo}/pull/{pr['number']}/files) in the files view")
+        others = grouped_links(repo, head, d['where'][len(shown):])  # R33: collapsed, each linked to its lines
     if others:  # R32: every place stays linked, once, out of the visible length
         lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
     return lines
@@ -1042,7 +1076,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R16: {p} area is not one of {AREAS}')
     # R20: a not-checked area gets the sign-off question, the author's (decision-554d2e7b); never otherwise.
     nc = [d for d in decisions if d.get('area') == NOT_CHECKED_AREA]
-    if rv.get('not_checked') and not nc:
+    # R33 (the mayor, 21:39Z): a fallback asks its own question on each money place it links instead.
+    asks_money = rv.get('fallback') and not decisions and any(it.get('money') for it in items)
+    if rv.get('not_checked') and not nc and not asks_money:
         why.append(f"R20: the PR touches {rv['not_checked']}, which is not checked, so it gets the sign-off question")
     if any(for_reviewer(d) is not False for d in nc):
         why.append(f'R20: the sign-off on {NOT_CHECKED_AREA} code is a question for the author, not a decision for '
@@ -1068,12 +1104,15 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R5: {p} area is not one of {AREAS}')
         if it.get('kind') == 'question' and not (it.get('ask') or '').rstrip().endswith('?'):
             why.append(f'R13: {p} is a question but its ask does not end with a question mark')
+        if rv.get('fallback') and STOCK_RE.search(it.get('ask') or ''):
+            why.append(f'R33: {p} asks a question that fits any PR; ask about the behaviour on its lines')
         # R21: each finding once: no two items on overlapping lines of a file, no repeated sentence.
         for j, o in seen:
             if o['path'] == it['path'] and o.get('side', 'new') == it.get('side', 'new') and \
                     o['line_start'] <= it['line_end'] and it['line_start'] <= o['line_end']:
                 why.append(f'R21: {p} repeats the lines of item {j}; say each finding once')
-            elif (o.get('change') or '').strip().lower() == (it.get('change') or '').strip().lower():
+            elif (o.get('change') or '').strip().lower() == (it.get('change') or '').strip().lower() or \
+                    (it.get('ask') or '').strip() and (o.get('ask') or '').strip().lower() == it['ask'].strip().lower():
                 why.append(f'R21: {p} repeats item {j}; say each finding once')
         seen.append((k, it))
     # R37: a finding in an area where the repository has a written rule cites it (rule link).
@@ -1177,6 +1216,9 @@ def voice_reasons(lines, l2, word, rv, asks, n_dec, comments):
         why.append(f'R28: line 1 is not the verdict and the marker ("**{word}** {MARK}")')
     elif m1.group(1) != word:
         why.append(f"{'R35' if rv['outcome'] == 'changes' else 'R1'}: line 1 says \"{m1.group(1)}\" for {rv['outcome']}")
+    elif bool(m1.group(2)) != bool(rv.get('fallback')):  # the mayor, 21:39Z: say plainly who acts
+        said = VOICE_FALLBACK.format(author='<author>')
+        why.append(f'R28: a fallback\'s line 1 says who acts ("**{word}**{said}"), a full review\'s does not')
     nothing = bool(NOTHING_NEEDED_RE.match(l2))
     m = None if nothing else VOICE_WHO_RE.match(l2)
     if nothing and asks:
@@ -1244,8 +1286,9 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
     summary = re.search(r'^\*\*What it does:\*\* (.*)$', body, re.M)
     if rv.get('model') and not rv.get('approve') and not (summary and summary.group(1).strip()):
         why.append('R7: no "What it does" line')
-    if rv['outcome'] == 'not-reviewed' and n_dec + n_theirs != 1:
-        why.append('R33: the note does not carry its one question for the author (who reviews it, with options)')
+    asked = bool(rv.get('fallback') and n_items and not n_dec + n_theirs)  # R33: the fallback's own questions
+    if rv['outcome'] == 'not-reviewed' and n_dec + n_theirs != 1 and not asked:
+        why.append('R33: the note carries neither a question per linked place nor its one question for the author')
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', body, re.M)
     if skip:
         groups = [g for g in skip.group(1).split('; ') if g.strip()]
@@ -1255,8 +1298,10 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
     facts = rv.get('facts')
     if fl == GREEN_FACTS:
         why.append('R30: the status line on a PR where everything passed; show it only when something did not')
-    elif fl is None and facts is not None and facts != GREEN_FACTS:
+    elif fl is None and facts is not None and facts != GREEN_FACTS and not blockers_say(rv):
         why.append('R8: no status line, and something did not pass')
+    elif fl and blockers_say(rv):
+        why.append('R33: the status line says again what a blocker says; a fallback says it once')
     if fl and fl != GREEN_FACTS:
         if said_to_author is not None or nothing:  # R22: a blocker in the status line is a linked ask in line 2
             missing = [short for cue, short in FACT_ASKS if cue in fl and short not in (said_to_author or '')]
@@ -1276,7 +1321,9 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
         why.append(f'R21: {twice} code links repeat a place already linked; link each place once')
     phrase = 'outside this review' if voiced(rv) else 'not checked'  # in the reviewer's voice, a gap is scope
     said = len(re.findall(rf'(?i)\b{phrase}\b', body))
-    if rv.get('not_checked') and said != 1:
+    if asked and said:
+        why.append(f'R33: the fallback says "{phrase}"; its questions are about the lines, never a scope sentence')
+    elif rv.get('not_checked') and said != 1 and not asked:
         why.append(f'R32: "{phrase}" is said {said} times; say it once')
     elif not rv.get('not_checked') and said:
         why.append(f'R23: "{phrase}" on a PR that does not touch that area')
@@ -1296,10 +1343,15 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
     if shown > MAX_BODY:
         why.append(f'R14: the text is {shown} characters, at most {MAX_BODY}')
     if rv.get('fallback'):  # R33: the fallback passes the bar the full review failed (the mayor, 10:25Z)
-        n_links, n_lines = len(re.findall(r'\]\(https?://', body)), sum(1 for x in lines if x.strip())
-        if n_links > FALLBACK_LINKS or n_lines > FALLBACK_LINES or shown > FALLBACK_CHARS:
-            why.append(f'R33: the fallback is {n_links} links, {n_lines} lines and {shown} characters; at most '
+        # What a reader sees without opening "Other places", whose places are each linked to their lines.
+        seen = re.sub(r'(?s)<details><summary>Other places</summary>.*?</details>', '', body)
+        n_links, n_lines = len(re.findall(r'\]\(https?://', seen)), sum(1 for x in seen.splitlines() if x.strip())
+        n_chars = len(re.sub(r'\]\([^)]*\)', ']', seen))
+        if n_links > FALLBACK_LINKS or n_lines > FALLBACK_LINES or n_chars > FALLBACK_CHARS:
+            why.append(f'R33: the fallback is {n_links} links, {n_lines} lines and {n_chars} characters; at most '
                        f'{FALLBACK_LINKS}, {FALLBACK_LINES} and {FALLBACK_CHARS}')
+        if re.search(r'\]\(https://github\.com/[^)]+/pull/\d+/files\)', body):  # the mayor, 21:39Z
+            why.append('R33: a link to the files view that no line anchors; link each place to its lines')
     return why
 
 
@@ -1422,7 +1474,7 @@ def review_of(fx):
             'request_changes': fx.get('request_changes', False), 'rules': fx.get('rules', {}),
             'rules_sha': 'c' * 40, 'since': fx.get('since'), 'voice': fx.get('voice', 'disclose'),
             'gaps': fx.get('gaps', []), 'names': ['Reviewer', YOU if fx.get('voice') == 'reviewer' else 'Author'],
-            'fallback': fx.get('fallback', False)}
+            'fallback': fx.get('fallback', False), 'others': fx.get('others', []), 'held_why': fx.get('held_why', '')}
 
 
 def route(fx):

@@ -129,6 +129,10 @@
   }
  ],
  "body_re": [
-  "^   - \\[7 other places\\]\\(https://github\\.com/example/repo/pull/1/files\\) in the files view$"
+  "^- A message sent to people \\(SMS, email, push\\): (\\[`part\\d\\.ts` L3-L5\\]\\(https://github\\.com/example/repo/blob/a{40}/src/notify/part\\d\\.ts#L3-L5\\)(, )?){7}$",
+  "^<details><summary>Other places</summary>$"
+ ],
+ "body_not_re": [
+  "/pull/1/files\\)"
  ]
 }

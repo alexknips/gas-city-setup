@@ -1,10 +1,12 @@
 {
  "expect": "fail",
  "expect_reasons": [
-  "R33"
+  "R33",
+  "R28"
  ],
  "only_reasons": [
-  "R33"
+  "R33",
+  "R28"
  ],
  "voice": "reviewer",
  "outcome": "questions",

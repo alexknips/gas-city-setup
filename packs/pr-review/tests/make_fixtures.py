@@ -173,6 +173,34 @@ CLEARED_MD = dict(CLEARED, flag='F1', path='docs/reminders.mdx', line_start=2, l
                   change='Guide section on text reminders', why='Only the guide changes; no code reads this page.')
 GREEN = {'head': 'a' * 40, 'fresh': {'state': 'OPEN', 'checks': ['SUCCESS', 'SKIPPED']}}
 PR = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': 'a' * 40}
+# R33 (the mayor, 2026-10-30 21:39Z: "One specific question per linked line with its own reason, no boilerplate
+# sentences, no orphan link, one status line"): the fallback's own questions (pr_fallback), structure only.
+ASKED_DIFF = ''.join(f"""diff --git a/src/billing/{f}.ts b/src/billing/{f}.ts
+index 1111111..2222222 100644
+--- a/src/billing/{f}.ts
++++ b/src/billing/{f}.ts
+@@ -1,2 +1,4 @@
+ export function {f}Total(invoice: Invoice) {{
++  const step = invoice.{f} ?? 0;
++  return invoice.amount + step;
+ }}
+""" for f in ('fee', 'credits', 'plans', 'limits'))
+ASKS = [('fee', 'Late fee after thirty days', 'Overdue invoices now get a fee after thirty days on every plan; should the '
+         'free plan be exempt?', 'Free plan customers would be charged for the first time, without notice.'),
+        ('credits', 'Credits expire six months sooner', 'Unused credits now expire after six months instead of twelve; do '
+         'current balances keep the old date?', 'Customers who bought credits last year could lose them without warning.'),
+        ('plans', 'Plan price read at renewal', 'A plan change now takes its new price at the next renewal; does a '
+         'downgrade refund the difference?', 'Customers who downgrade mid-cycle would pay the old price until renewal.')]
+ASKED = [{'path': f'src/billing/{f}.ts', 'side': 'new', 'line_start': 2, 'line_end': 3, 'kind': 'question',
+          'severity': 'low', 'area': 'other', 'change': c, 'ask': q, 'why': w, 'rule': '', 'verified': 'fallback question',
+          'confidence': 7, 'money': True} for f, c, q, w in ASKS]
+ASKED_OTHERS = [{'path': 'src/billing/limits.ts', 'line_start': 2, 'line_end': 3, 'hunk': 0, 'what': 'model line', 'money': True}]
+RED = pr_format.blockers('example/repo', {'number': 1}, 'red', ['unit tests'])
+GREEN_FACTS_TEXT = pr_format.GREEN_FACTS
+ASKED_FX = dict(voice='reviewer', outcome='changes', derived=True, diff=ASKED_DIFF, items=ASKED, blockers=RED,
+                facts='CI red: unit tests · no merge conflict · open', model=False, not_checked=NOT_CHECKED, fallback=True,
+                others=ASKED_OTHERS, gaps=[{'kind': 'not-checked', 'accepted': True}, {'kind': 'below-bar', 'accepted': True}])
+ASKED_ITEM_RE = r'\. \*\*[^*]+\*\* · Question: [^\n]+\? · \[`src/billing/\w+\.ts` L2-L3\]\(https://github\.com/example/repo/pull/1/files#diff-[0-9a-f]{64}R2-R3\)'
 
 
 def body(**fx):
@@ -691,19 +719,64 @@ CASES = {
         'decisions': [pr_format.floor_decision(
             [{'path': f'src/notify/part{k}.ts', 'line_start': 3, 'line_end': 5, 'what': FLAG['label']} for k in range(10)],
             'Author', 'Held.', voice='reviewer')],
-        'body_re': [r'^   - \[7 other places\]\(https://github\.com/example/repo/pull/1/files\) in the files view$']},
+        # R33 (the mayor, 21:39Z: no orphan link): the other places collapsed, each linked to its lines.
+        'body_re': [r'^- A message sent to people \(SMS, email, push\): (\[`part\d\.ts` L3-L5\]\(https://github\.com/example/'
+                    r'repo/blob/a{40}/src/notify/part\d\.ts#L3-L5\)(, )?){7}$', r'^<details><summary>Other places</summary>$'],
+        'body_not_re': [r'/pull/1/files\)']},
     # R33 (the mayor, 2026-10-30 10:25Z): the fallback passes the bar the full review failed; the #1981 shape.
     'case115-fallback-money-places-cut-to-the-question': {
         'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'items': [],
         'model': False, 'decisions': [MONEY_MANY_VOICE], 'not_checked': NOT_CHECKED,
         'fallback': True, 'gaps': [{'kind': 'not-checked', 'accepted': True}, {'kind': 'below-bar', 'accepted': True}],
-        'body_re': [r'^\n\[10 other places\]\(https://github\.com/example/repo/pull/1/files\) in the files view\.$'],
-        'body_not_re': [r'<details>']},
+        # R33 (the mayor, 21:39Z: no orphan link): the other places collapsed, each linked to its lines.
+        'body_re': [r'^<details><summary>Other places</summary>$', r'^- No behaviour change: (\[`part1\d\.ts` L10-L12\]\('
+                    r'https://github\.com/example/repo/blob/a{40}/src/billing/part1\d\.ts#L10-L12\)(, )?){4}$'],
+        'body_not_re': [r'/pull/1/files\)']},
+    # A full review's money decision is over the fallback's bar, and its line 1 does not say who acts (R28).
     'case116-fallback-over-the-bar': {
-        'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'], 'voice': 'reviewer',
+        'expect': 'fail', 'expect_reasons': ['R33', 'R28'], 'only_reasons': ['R33', 'R28'], 'voice': 'reviewer',
         'outcome': 'questions', 'n_author_decisions': 1, 'model': False, 'not_checked': NOT_CHECKED, 'fallback': True,
         'body': body(outcome='questions', decisions=[MONEY_MANY_VOICE], not_checked=NOT_CHECKED, model=False,
                      voice='reviewer')},
+    # R33 (the mayor, 2026-10-30 21:39Z; 4 of 5 requested reviews fell back, and the reader found a template): one
+    # question per linked place with its own reason (inline), no scope sentence and no options, the other places
+    # collapsed and linked to their lines, the CI blocker said once, line 1 says who acts.
+    'case124-fallback-asks-one-question-per-line': {
+        'expect': 'pass', **ASKED_FX,
+        'body_re': [r'^\*\*Changes suggested\*\* · for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$',
+                    r'^Author: 3 questions, fix the failing checks\.$',
+                    r'^1' + ASKED_ITEM_RE + r'\n2' + ASKED_ITEM_RE + r'\n3' + ASKED_ITEM_RE + r'\n4\. \[Fix the failing checks\]',
+                    r'^- Billing, plans, credits or pricing: \[`limits\.ts` L2-L3\]\(https://github\.com/example/repo/blob/'
+                    r'a{40}/src/billing/limits\.ts#L2-L3\)$'],
+        'body_not_re': [r'/pull/1/files\)', r'(?i)outside this review', r'^CI red', r'Recommended:', r'^   [A-D]\. ']},
+    'case125-fallback-orphan-files-link': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'], **ASKED_FX,
+        'body_edit': ['</details>', '</details>\n\n[2 other places](https://github.com/example/repo/pull/1/files) in the files view.']},
+    'case126-fallback-status-said-twice': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'], **ASKED_FX,
+        'body_edit': ['</details>', '</details>\n\nCI red: unit tests · no merge conflict · open']},
+    'case127-fallback-stock-question': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'],
+        **dict(ASKED_FX, items=[dict(ASKED[0], ask='Was this change tested before release?')] + ASKED[1:])},
+    'case128-voice-fallback-line-1-without-who-acts': {
+        'expect': 'fail', 'expect_reasons': ['R28'], 'only_reasons': ['R28'], **ASKED_FX,
+        'body_edit': [' · for Author, nothing needed from me', '']},
+    # The note (no money decision) asks the same way: in the reviewer's voice "Questions", in the disclosing voice
+    # "Not reviewed automatically" with why it was held; green CI, so no status line.
+    'case129-note-asks-one-question-per-line': {
+        'expect': 'pass', **dict(ASKED_FX, outcome='not-reviewed', derived=False, blockers=[], facts=GREEN_FACTS_TEXT,
+                                 not_checked='', others=[]),
+        'body_re': [r'^\*\*Questions\*\* · for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$',
+                    r'^Author: 3 questions\.$', r'^3' + ASKED_ITEM_RE + r'$'],
+        'body_not_re': [r'<details>', r'^CI ', r'/pull/1/files\)']},
+    'case130-note-asks-in-the-disclosing-voice': {
+        'expect': 'pass', **dict(ASKED_FX, voice='disclose', outcome='not-reviewed', derived=False, blockers=[],
+                                 facts=GREEN_FACTS_TEXT, not_checked='', others=[],
+                                 held_why="Our review of this PR didn't reach the quality bar: a second reader found it too "
+                                          'hard to act on.'),
+        'body_re': [r"^\*\*Not reviewed automatically\*\* · automated, Reviewer hasn't read this PR$",
+                    r'^Reviewer: nothing\. Author: 3 questions\.$', r"^Our review of this PR didn't reach the quality bar"],
+        'body_not_re': [r'nothing needed from me']},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,

@@ -189,9 +189,10 @@
   }
  ],
  "body_re": [
-  "^\\n\\[10 other places\\]\\(https://github\\.com/example/repo/pull/1/files\\) in the files view\\.$"
+  "^<details><summary>Other places</summary>$",
+  "^- No behaviour change: (\\[`part1\\d\\.ts` L10-L12\\]\\(https://github\\.com/example/repo/blob/a{40}/src/billing/part1\\d\\.ts#L10-L12\\)(, )?){4}$"
  ],
  "body_not_re": [
-  "<details>"
+  "/pull/1/files\\)"
  ]
 }

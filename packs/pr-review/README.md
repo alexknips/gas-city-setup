@@ -423,14 +423,36 @@ earlier one (R36), the citation of a rule the digest does not hold (R37). The lo
 `repaired` and `repair_held` (what still held it). A content reason (R19 coverage, the reader test) still
 falls back, and a held run logs `held_by: format` or `content` (the Today card's fallback split, with the
 R29 miss rate). A fallback passes the bar the full review
-failed (R33): its money places are cut to the question's own, at most 2 more, and one link to the files
-view for the rest (the note's places likewise: 3, then one link), and the gate holds a fallback over 8 links, 17 lines or 2,100 characters shown (the
-largest full reviews that passed the reader test). The reader's reasons for each held attempt go to
+failed (R33). Since v5.9 (the mayor, 2026-10-30 21:39Z: 4 of 5 requested reviews fell back, and the reader
+found a template) it first asks its own questions (`pr_fallback.py`): one question per linked place, at most
+3, the riskiest first (the money places by their risk; for the note, the flagged hunks, filled up to 3 with
+the largest changed hunks outside tests). A cheap reader of only those hunks and the PR's title and
+description (the judge model, no tools) writes each question in up to 3 wordings with its 3-6 word lead and
+its reason, and one "What it does" sentence; the script takes the first wording that passes the gate's own
+field rules, fails a question that fits any PR (tested? who reviews? sign-off?), a repeated one or a code
+name, drops a "What it does" that names code, and gives the places that failed one more turn with why and
+their word counts. Each question is a body item on its lines, its
+reason the inline comment. No scope sentence and no options; the places not asked about are collapsed under
+"Other places", each linked to its lines (never a link to the files view no line anchors); a blocker says CI
+or a conflict once, with no status line repeating it; in the reviewer's voice line 1 says who acts
+("**Questions** · for <author>, nothing needed from me"). Only when no question passes, or the gate holds them,
+does the stock form go out: the money question with its places cut to the question's own and at most 2
+more, or the note with 3 places, the rest collapsed and linked likewise. The log says which form went out
+(`fallback_form`: asked, stock or floor) with `fallback_asked`, `fallback_kept`, `fallback_calls`,
+`fallback_failed` (rule ids), `fallback_gate` and `fallback_cost_usd`. Measured on the four fallbacks of
+2026-10-30 21:29Z, rebuilt from their held attempts with nothing delivered: the reader test passed all four on
+each of three readings (useful 3, markers 4-5, plain 4; the stock forms had scored useful 2, 3, 3, 4 and
+plain 3), at about $0.01-0.04 per fallback for the questions. When GitHub refuses a fallback's inline comments,
+the same body goes out without them (logged `inline_dropped`): a fallback is never silent. The gate holds a fallback over 8 links,
+17 lines or 2,100 characters shown outside "Other places" (the largest full reviews that passed the reader
+test). The reader's reasons for each held attempt go to
 `PR_REVIEW_WORK_DIR/feedback/reader.jsonl`. Never silent (the mayor, 2026-10-30 16:54Z): when the note
 itself is held, the floor goes out instead, the note with one place in the script's own words (a flag's
 rule label, or the area's name for a money place). It holds no model text, so it is posted whatever its
 gate says (logged `floor`, `note_gate`, `floor_gate`), unless it matches a secret's shape; `pr_review.py
---selftest` covers it. The held attempt itself (the review dict, its body, the
+--selftest` covers it, and the fallback's own questions with a stub for the model (asked, held by the gate,
+none passing, the money form with red CI); `pr_fallback.py --selftest` the places' order, the answers'
+checks and the second turn. The held attempt itself (the review dict, its body, the
 gate's reasons, the flags and the diff) to `feedback/held.jsonl`, so `pr_format.py --regate FILE` gates it
 again with later code at zero tokens (PR numbers and rule ids only). Both hold a client's PR descriptions and diffs, so rows older than `PR_REVIEW_KEEP_DAYS` (30) are
 dropped on the next write and by every sweep. The sweep also drops a delivered review's result
@@ -544,13 +566,19 @@ heading and bullet are text, not comments (passes). Cases 112-120 (v5.8.2, the m
 16:10Z and 16:36Z; `repair` runs the run's repair flow first, `rewrite` stands for the narrow turn's
 answer): a low-risk approval held only by a repeated cleared entry is repaired and approved; a question
 without its question mark is repaired; with no answer from the turn, R29 still holds it; the #1981 fallback
-shape, 14 money places, renders the question's place, 2 more and one link to the files view (passes), and
-the same places in the full layout as a fallback fail (R33); entries that fail R29 are rewritten and the
+shape, 14 money places, renders the question's place and 2 more, the rest collapsed and linked to their
+lines (passes), and the same places in the full layout as a fallback fail (R33, and R28: its line 1 does not
+say who acts); entries that fail R29 are rewritten and the
 review posted (the #1982 approval and #112 question shapes); R19 next to R29 is not rewritten (content);
 an answer beyond the ask (another field, another entry) is ignored. Cases 121-123 (v5.8.3, the first live
 turns): the turn's versions for a 7-word change and for asks of 27 and 21 words, the first version that
 passes taken (with only the first version, both still fail R29); a note over ten places as a fallback
-passes (on v5.8.2 it failed R33, and #112 got nothing). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+passes (on v5.8.2 it failed R33, and #112 got nothing). Cases 124-130 (v5.9, the mayor, 2026-10-30 21:39Z;
+structure only): the fallback's own questions pass, one per linked place, the CI blocker said once, the other
+place collapsed and linked, line 1 saying who acts; the same with a link to the files view no line anchors,
+with the status line said again, with a question that fits any PR, or with line 1 without who acts fails
+(R33, R28); the note asks the same way in the reviewer's voice and, with why it was held, in the disclosing
+voice. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail
