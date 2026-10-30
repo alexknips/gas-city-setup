@@ -8,13 +8,20 @@
   pr_sweep.py --backtest DAYS   every PR opened in the last DAYS days, any state, through the rules:
                                 how many each rule flags and what the daily cap would reach
                                 (calibration; writes one record file under the state dir)
+  pr_sweep.py --close-terminal [--apply]
+                                one-off: close the beads the sweep left open for PRs whose outcome is
+                                terminal (before 2026-10-30 an existing bead was never closed); dry run
+                                without --apply; counts only
+  pr_sweep.py --selftest        the bead closing, on a fake store
 
 Config: environment, see pr_state.config() and README.md, "Configuration".
 """
 import argparse
 import collections
 import concurrent.futures as cf
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import subprocess
@@ -268,18 +275,25 @@ def lift_block(repo, pr, review_id):
     return r.returncode == 0
 
 
+TERMINAL = ('no-rule', 'closed')  # sweep outcomes that end a PR's bead; a review's outcome closes it at delivery
+
+
+def terminal(entry):
+    return entry.get('status') == 'done' and entry.get('outcome') in TERMINAL
+
+
 def record_one(cfg, beads, key, entry, old, counts):
     """The PR's bead and its state entry, written at once, so a sweep cut short keeps what it did."""
-    terminal = entry['status'] == 'done' and entry.get('outcome') in ('no-rule', 'closed')
     outcome = entry.get('outcome') or entry['status']
     try:
         if not entry.get('bead'):
             entry['bead'] = beads.create(entry['rig'], entry['repo'], entry['number'], entry['url'],
                                          entry['head'], outcome)
-            if terminal:
+            if terminal(entry):
                 beads.set(entry['rig'], entry['bead'], close=True, outcome=outcome)
         elif entry['head'] != old.get('head') or outcome != old.get('outcome'):
-            beads.set(entry['rig'], entry['bead'], head=entry['head'], outcome=outcome)
+            # An existing bead closes too when its outcome turns terminal (most PRs merge before a review).
+            beads.set(entry['rig'], entry['bead'], head=entry['head'], outcome=outcome, close=terminal(entry))
     except (RuntimeError, OSError) as e:
         counts['bead_error'] += 1
         entry['bead_error'] = str(e)[:200]
@@ -290,14 +304,135 @@ def record_one(cfg, beads, key, entry, old, counts):
         st['prs'][key] = entry
 
 
+def close_terminal(cfg, apply, beads=None):
+    """One-off (2026-10-30): close the open pr-review beads of terminal PRs (before the fix the sweep never
+    closed an existing bead), with the outcome as the reason, and a second bead of one PR (the state names
+    the other one). From each rig's store, so a bead the state lost is seen too. Zero tokens; counts only."""
+    beads = beads or pr_state.Beads(cfg['city'], enabled=cfg['beads'])
+    with pr_state.locked(cfg['state']) as st:
+        entries = {k: dict(v) for k, v in st['prs'].items()}
+    counts = collections.Counter()
+    for rig in sorted(set(cfg['repos'].values())):
+        try:
+            found = json.loads(beads._run(rig, 'list', '--label', 'pr-review', '--status', 'open', '--json',
+                                          '--limit', '0') or '[]')
+        except (RuntimeError, OSError, ValueError):
+            counts['list_error'] += 1
+            continue
+        for b in found:
+            m = b.get('metadata') or {}
+            e = entries.get(f"{m.get('pr_repo')}#{m.get('pr_number')}") or {}
+            if e.get('bead') and e['bead'] != b['id']:
+                kind, reason = 'duplicate', f"duplicate of {e['bead']}"
+            elif terminal(e):
+                kind, reason = 'terminal', e['outcome']
+            else:
+                counts[f"left_open_{e.get('status') or 'not_in_state'}"] += 1
+                continue
+            counts[kind] += 1
+            if apply:
+                try:
+                    beads.close(rig, b['id'], reason)
+                    counts['closed_now'] += 1
+                except (RuntimeError, OSError, ValueError):
+                    counts['bead_error'] += 1
+    print(json.dumps({'close_terminal': 'applied' if apply else 'dry run', 'counts': counts}))
+    return 1 if counts['bead_error'] or counts['list_error'] else 0
+
+
+class FakeBeads(pr_state.Beads):
+    """A store in memory: the real Beads logic over a fake `gc bd`."""
+
+    def __init__(self):
+        super().__init__('.')
+        self.store, self.calls = {}, []
+
+    def _run(self, rig, *args):
+        self.calls.append(args[:2])
+        if args[0] == 'create':
+            bead = f'fk-{len(self.store) + 1}'
+            self.store[bead] = {'status': 'open', 'metadata': json.loads(args[args.index('--metadata') + 1])}
+            return bead
+        if args[0] == 'show':
+            return json.dumps([{'id': args[1], 'status': self.store[args[1]]['status']}])
+        if args[0] == 'list':
+            return json.dumps([{'id': k, **v} for k, v in self.store.items() if v['status'] == 'open'])
+        if args[0] == 'close':
+            self.store[args[1]]['status'] = 'closed'
+        return ''
+
+
+def selftest():
+    """The bead closes when the outcome is terminal, for a new bead and an existing one, and only once; the
+    one-off closes terminal and second beads and leaves the rest open."""
+    import tempfile
+    fails = []
+
+    def status(b, bead):
+        return b.store.get(bead, {}).get('status')
+    with tempfile.TemporaryDirectory() as d:
+        cfg = {'state': d}
+        base = {'repo': 'o/r', 'number': 1, 'url': 'u', 'rig': 'rig', 'head': 'h1'}
+        b = FakeBeads()
+        new = dict(base, status='done', outcome='no-rule')
+        record_one(cfg, b, 'o/r#1', new, {}, collections.Counter())
+        if status(b, new['bead']) != 'closed':
+            fails.append('a new bead with a terminal outcome is closed')
+        b = FakeBeads()
+        queued = dict(base, status='queued')
+        record_one(cfg, b, 'o/r#2', queued, {}, collections.Counter())
+        if status(b, queued['bead']) != 'open':
+            fails.append('a queued PR keeps its bead open')
+        record_one(cfg, b, 'o/r#2', dict(queued, head='h2'), queued, collections.Counter())
+        if status(b, queued['bead']) != 'open':
+            fails.append('a new head on a queued PR keeps its bead open')
+        gone = dict(queued, status='done', outcome='closed')
+        record_one(cfg, b, 'o/r#2', gone, queued, collections.Counter())
+        if status(b, queued['bead']) != 'closed':
+            fails.append('an existing bead closes when its outcome turns terminal')
+        record_one(cfg, b, 'o/r#2', dict(gone, head='h3'), gone, collections.Counter())
+        if sum(1 for c in b.calls if c[0] == 'close') != 1:
+            fails.append('a closed bead is not closed again')
+    with tempfile.TemporaryDirectory() as d:
+        cfg = {'state': d, 'repos': {'o/r': 'rig'}}
+        b = FakeBeads()
+
+        def meta(n):
+            return {'pr_repo': 'o/r', 'pr_number': str(n)}
+        b.store = {'fk-1': {'status': 'open', 'metadata': meta(1)}, 'fk-2': {'status': 'open', 'metadata': meta(2)},
+                   'fk-3': {'status': 'closed', 'metadata': meta(2)}, 'fk-4': {'status': 'open', 'metadata': meta(3)}}
+        with pr_state.locked(d) as st:
+            st['prs'] = {'o/r#1': {'status': 'done', 'outcome': 'closed', 'bead': 'fk-1'},
+                         'o/r#2': {'status': 'done', 'outcome': 'no-rule', 'bead': 'fk-3'},
+                         'o/r#3': {'status': 'queued', 'bead': 'fk-4'}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            close_terminal(cfg, False, b)
+            if [k for k, v in b.store.items() if v['status'] == 'open'] != ['fk-1', 'fk-2', 'fk-4']:
+                fails.append('the one-off writes nothing without --apply')
+            close_terminal(cfg, True, b)
+        if [k for k, v in b.store.items() if v['status'] == 'open'] != ['fk-4']:
+            fails.append('the one-off closes the terminal bead and the second bead, and leaves a queued one open')
+    for f in fails:
+        print(f'pr_sweep selftest: FAIL: {f}')
+    print(f'pr_sweep selftest: {7 - len(fails)} of 7')
+    return 1 if fails else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--backtest', type=float, metavar='DAYS')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--workers', type=int, default=6)
     ap.add_argument('--cache', metavar='DIR', help="backtest: keep GitHub's answers here and reuse them")
+    ap.add_argument('--close-terminal', action='store_true')
+    ap.add_argument('--apply', action='store_true')
+    ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
+    if a.selftest:
+        sys.exit(selftest())
     cfg = pr_state.config()
+    if a.close_terminal:
+        sys.exit(close_terminal(cfg, a.apply))
     if not cfg['repos'] or not cfg['reviewer']:
         sys.exit('PR_REVIEW_REPOS and PR_REVIEW_REVIEWER must be set')
     if a.backtest:

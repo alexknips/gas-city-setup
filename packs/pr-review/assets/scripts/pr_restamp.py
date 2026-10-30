@@ -75,13 +75,31 @@ def voice_body_unchecked(body, reviewer, author, state=None):
         rest = [who] + rest
     if rest and (m := pr_format.WHO_RE.match(rest[0])):  # line 2: what the author must do
         part = re.sub(rf'\bif {re.escape(m.group(1))} picks [A-D], ', '', m.group(7))
-        rest[0] = pr_format.NOTHING_NEEDED if part == 'nothing' else f'{m.group(6)}: {part}.'
+        rest[0] = pr_format.NOTHING_NEEDED.format(author=author) if part == 'nothing' else f'{m.group(6)}: {part}.'
     elif rest and pr_format.NOTHING_RE.match(rest[0]):
-        rest[0] = pr_format.NOTHING_NEEDED
+        rest[0] = pr_format.NOTHING_NEEDED.format(author=author)
     text = '\n'.join(out + rest)
     text = text.replace('These changes are not checked by any agent.', 'These changes are outside this review.')
     text = text.replace(f'**For {reviewer}:**', '**Open questions:**')
     return re.sub(rf' · Ask {re.escape(author)} · ', ' · Question · ', text)
+
+
+CLEARED_RE = re.compile(r'^- \*\*.+?\*\* · \[[^\]]*\]\([^)]*\): (.+?)(?: · rule: .*)?$')
+
+
+def current(body, author):
+    """A body in the voice brought to v5.8 (the mayor, 2026-10-30 07:21Z): line 2 names the author when nothing
+    is needed; an approval with one cleared entry shows its reason above "What was checked"."""
+    lines = body.replace('\r\n', '\n').split('\n')
+    if len(lines) > 1 and lines[1] == 'Nothing needed.':
+        lines[1] = pr_format.NOTHING_NEEDED.format(author=author)
+    rest = [line for line in lines[2:] if line.strip()]
+    if lines[0].startswith(f'**{pr_format.VOICE_APPROVED}**') and len(rest) == 3 and \
+            rest[0] == '<details><summary>What was checked</summary>' and rest[2] == '</details>':
+        m = CLEARED_RE.match(rest[1])
+        if m:
+            lines = lines[:2] + ['', pr_format.approval_reason({'cleared': [{'why': m.group(1)}]})] + lines[2:]
+    return '\n'.join(lines)
 
 
 def voice_comment(body, author):
@@ -144,7 +162,8 @@ def restamp(cfg, apply, merged, ours=()):
         try:
             pr = gh_lines(f'repos/{repo}/pulls/{num}', '{state, merged, author: .user.login}')[0]
             reviews = gh_lines(f'repos/{repo}/pulls/{num}/reviews?per_page=100',
-                               f'.[] | select((.user.login | ascii_downcase) == "{reviewer}") | {{id, state, body}}')
+                               f'.[] | select((.user.login | ascii_downcase) == "{reviewer}") | '
+                               '{id, state, body, html_url}')
         except (RuntimeError, IndexError, ValueError):
             n['gh_failed'] += 1
             continue
@@ -152,15 +171,20 @@ def restamp(cfg, apply, merged, ours=()):
             n['prs_skipped_not_open'] += 1
             continue
         author = names.get(pr['author'], pr['author'])
-        for rv in reviews:
-            if not pr_format.is_ours(rv['body']) and int(rv['id']) not in ours:
-                continue
+        mine = [rv for rv in reviews if pr_format.is_ours(rv['body']) or int(rv['id']) in ours]
+        retarget = dict(pr_format.repoints(mine, name, 'reviewer'))  # pointers follow the newest review
+        for rv in mine:
             n['reviews_ours'] += 1
             first = (rv['body'] or '').split('\n', 1)[0]
-            if pr_format.MARK_PREFIX in first:
-                n['already_in_voice'] += 1
-                continue
-            body = voice_body(rv['body'], name, author, rv['state'])
+            voiced = pr_format.MARK_PREFIX in first
+            n['already_in_voice'] += voiced
+            body = rv['body'] if voiced else voice_body(rv['body'], name, author, rv['state'])
+            if body is not None:
+                body = retarget.get(rv['id']) or current(body, author)
+                n['repointed'] += rv['id'] in retarget
+                if body == rv['body']:
+                    n['unchanged'] += 1
+                    continue
             if body is None:
                 n['left_disclosure_remains'] += 1
                 if not apply:  # which of our own template phrases stays (counts, never the review's text)
@@ -170,8 +194,8 @@ def restamp(cfg, apply, merged, ours=()):
                     n['left_no_verdict'] += probe is None
                 continue
             n['dismissal_message_kept'] += rv['state'] == 'DISMISSED'
-            comments = gh_lines(f'repos/{repo}/pulls/{num}/comments?per_page=100',
-                                f'.[] | select(.pull_request_review_id == {int(rv["id"])}) | {{id, body}}')
+            comments = [] if voiced else gh_lines(f'repos/{repo}/pulls/{num}/comments?per_page=100',
+                                                  f'.[] | select(.pull_request_review_id == {int(rv["id"])}) | {{id, body}}')
             new_c = [(c['id'], voice_comment(c['body'], author)) for c in comments]
             n['comments_left_disclosure_remains'] += sum(1 for _, b in new_c if b is None)
             if not apply:
@@ -212,6 +236,18 @@ def selftest():
               for k, v in got.items()}
     checks['a PR found only by the search is restamped'] = [t[:2] for t in targets(entries, [('o/r', 1), ('o/r', 2)])] == \
         [('o/r', 1), ('o/r', 2)]
+    link = f'[`a.py` L1](https://github.com/o/r/blob/{"0" * 40}/a.py#L1)'
+    approval = f'**Approved** {pr_format.MARK}\nNothing needed.\n\n<details><summary>What was checked</summary>\n\n' \
+               f'- **Adds a field** · {link}: nothing reads it yet\n\n</details>'
+    up = current(approval, 'Author').split('\n')
+    checks['v5.8: line 2 names the author, the approval shows its reason'] = \
+        up[1] == 'Author: nothing needed.' and up[3] == 'Nothing reads it yet.' and up[5].startswith('<details>')
+    u = 'https://github.com/o/r/pull/1#pullrequestreview-'
+    chain = [{'id': 1, 'body': pr_format.pointer_body('A', u + '2', 'reviewer'), 'html_url': u + '1'},
+             {'id': 2, 'body': pr_format.pointer_body('A', u + '3', 'reviewer'), 'html_url': u + '2'},
+             {'id': 3, 'body': approval, 'html_url': u + '3'}]
+    moved = dict(pr_format.repoints(chain, 'A', 'reviewer'))
+    checks['v5.8: every pointer follows the newest review'] = list(moved) == [1] and moved[1].endswith(f'({u}3).')
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())

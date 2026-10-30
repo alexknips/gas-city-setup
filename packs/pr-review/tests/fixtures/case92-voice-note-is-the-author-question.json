@@ -29,7 +29,7 @@
     "author"
    ],
    "recommended": 0,
-   "reason": "A teammate who knows the code can check it in one pass.",
+   "reason": "It costs you one message, and it is the only option where someone else checks the code.",
    "why": "This one needs a second reviewer who knows this code.",
    "area": "other",
    "rule": "",

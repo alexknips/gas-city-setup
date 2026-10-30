@@ -28,7 +28,7 @@
     "author"
    ],
    "recommended": 0,
-   "reason": "A person who knows the code checks in one pass what our review could not.",
+   "reason": "It costs one message, and it is the only option where someone else checks the code.",
    "why": "Our review of this PR didn't reach the quality bar: a second reader found our review too hard to act on.",
    "area": "other",
    "rule": "",

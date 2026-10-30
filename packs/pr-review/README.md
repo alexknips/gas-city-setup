@@ -297,7 +297,8 @@ review shows each one cleared (with a link) or acted on (R19). `pr_review.py --r
 the stored result for the current head again without a model run (once per head, R18).
 `pr_review.py --rereview REPO#N` reviews a head again after a rule change: the earlier review is
 updated in place when it can be (same event, no inline comments), else cut to a pointer to the new one
-(R24), and its Slack message is updated in place.
+(R24), and its Slack message is updated in place. After every post, each pointer of ours on the PR follows
+the newest review (v5.8: a chain of pointers left the oldest one on a replaced review).
 `pr_restamp.py` (decision-ed7320b7; zero tokens) rewrites the reviews we delivered, and our inline comments,
 into the reviewer's voice from the text GitHub holds: line 1 the verdict word and the marker, line 2 what
 the author must do, the disclosure lines dropped, "not checked by any agent" said as scope, a section for
@@ -305,12 +306,16 @@ the reviewer renamed "Open questions"; findings, links and options stay. It know
 (v3, v4, v5-v5.5, the notes and pointers) and leaves alone, counted, a review whose text would still hold a
 disclosure phrase (R38). It finds the PRs by GitHub's search (reviewed by the reviewer on the configured
 repositories) as well as the state, so a review older than the state is found too; `--ours ID,...` also
-treats the named review ids as ours (a body whose marker was removed by hand). A dry run by default
+treats the named review ids as ours (a body whose marker was removed by hand). A review already in the
+voice gets the v5.8 changes: line 2 names the author when nothing is needed, an approval with one cleared
+entry shows its reason above "What was checked", and every pointer follows the newest review. A dry run by default
 (counts only); `--apply` rewrites the reviews on open PRs, `--apply --merged` those on merged and closed PRs too. GitHub keeps each edited review's history, and a
 dismissal message cannot be edited.
 
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
-review was delivered, R15), `held-gate` (the gate or the reader test failed twice; nothing delivered),
+review was delivered, R15; the sweep closes the bead on `no-rule` and `closed`, and before v5.8 it never
+closed an existing one: `pr_sweep.py --close-terminal [--apply]` closes those, and a second bead of one PR,
+counts only), `held-gate` (the gate or the reader test failed twice; nothing delivered),
 `held-secret` (the text held a credential shape). Neither is silent on a PR that requests the
 reviewer: it gets the short note (`not-reviewed`, logged `fallback: not-reviewed`, R33). A PR that
 touches a not-checked area whose review the reader test held twice gets the minimal review first,
@@ -413,12 +418,16 @@ with "You" (pass), choices that name the author, a disclosure phrase in the body
 old note on line 1 (fail, R22, R38, R28), and a delivered body in the voice (passes). Case 6 ("Needs you"
 with a decision for the reviewer) fails since v5.6. Cases 104-106 (v5.7): a question its own explanation
 answers is cleared (`judge_answered`: the reader's answer), and the PR then passes as low risk and as an
-approval; a body item whose ask runs over 20 words fails (R29). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+approval; a body item whose ask runs over 20 words fails (R29). Cases 107-109 (v5.8, the mayor, 2026-10-30
+07:21Z): line 2 "Nothing needed." without the author's name fails (R22, R36); the money question first with
+the line it depends on, then the scope line, the evidence after the decision and not nested under it
+(passes; `body_re` and `body_not_re` pin the layout of a rendered case); a recommendation that repeats its
+option's own reason fails (R16). Case 91 also pins the approval's reason line. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail
 (R22); a decision without actors fails (R16). A rendered case can pin its line 2 (`line2`) and require that
-its parts give its outcome (`derived`). `pr-review-regress.sh` also runs `pr_hygiene.py`: no public file of the pack names a
+its parts give its outcome (`derived`). `pr-review-regress.sh` also runs the selftests of `pr_restamp.py` and `pr_sweep.py` (the bead closing), and `pr_hygiene.py`: no public file of the pack names a
 person or repository from the town's overrides (host-local; skipped without them). The same check covers
 commit messages and a PR's title and body (decision-67f9a695, forward only), as a gate the refinery runs
 at the PR head: `pr_hygiene.py --messages <base>..<head> --pr N --repo OWNER/NAME [--city city.toml]`.

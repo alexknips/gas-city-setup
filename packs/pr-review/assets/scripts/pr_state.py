@@ -168,7 +168,16 @@ class Beads:
         if len(args) > 2:
             self._run(rig, *args)
         if close:
-            self._run(rig, 'close', bead, '--reason', outcome or 'done')
+            self.close(rig, bead, outcome or 'done')
+
+    def close(self, rig, bead, reason):
+        """Close once: a bead already closed is left as it is."""
+        if self.enabled and bead and self.status(rig, bead) != 'closed':
+            self._run(rig, 'close', bead, '--reason', reason)
+
+    def status(self, rig, bead):
+        out = json.loads(self._run(rig, 'show', bead, '--json'))
+        return (out[0] if isinstance(out, list) else out).get('status')
 
 
 def private_dir(cfg, *parts):

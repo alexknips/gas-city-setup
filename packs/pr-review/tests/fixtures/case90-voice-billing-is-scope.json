@@ -15,21 +15,21 @@
    ],
    "options": [
     "You state in the PR description what changes for customers",
-    "Whoever owns billing reviews the changes",
-    "Whoever owns pricing has already agreed to it, so merge"
+    "Whoever owns billing signs off, here or by linking where they already did",
+    "You merge it as is"
    ],
    "option_reasons": [
     "a short written account puts on record what customers will see",
     "they know the pricing rules this touches",
-    "when the sign-off happened outside this PR"
+    "when customers see no change from it yet, for example while it is off"
    ],
    "actors": [
     "author",
     "picked",
-    "picked"
+    "author"
    ],
    "recommended": 0,
-   "reason": "One paragraph from you puts on record what customers will see.",
+   "reason": "It takes you one paragraph, and it gives whoever owns billing something concrete to agree with.",
    "why": "No agent checks money logic, so a person has to confirm what it changes.",
    "where": [
     {

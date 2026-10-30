@@ -544,7 +544,7 @@ def anchored_lines(repo, number, review_id):
 
 def ours_on_head(repo, number, head):
     """R24: how many automated reviews of this head are whole reviews (not pointers to a newer one)."""
-    jq = f'.[] | select(.commit_id == "{head}") | [({OURS_JQ}), (.body | contains("{POINTER}"))]'
+    jq = f'.[] | select(.commit_id == "{head}") | [({OURS_JQ}), (.body | contains("{pr_format.POINTER_PREFIX}"))]'
     r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
@@ -553,7 +553,6 @@ def ours_on_head(repo, number, head):
     return sum(1 for ours, pointer in rows if ours and not pointer)
 
 
-POINTER = 'Replaced by [the new review of this commit]'
 OURS_JQ = pr_format.ours_jq()
 DISMISSAL = 'Replaced by a newer automated review.'
 DISMISSAL_VOICE = 'Replaced by a newer review.'  # decision-ed7320b7
@@ -579,11 +578,19 @@ def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose'):
     return ok, bad
 
 
-def pointer_body(name, new_url, voice='disclose'):
-    """What an earlier review of the same head becomes when a new one replaces it (R24)."""
-    if voice == 'reviewer':
-        return f"**Replaced** {pr_format.MARK}\n\n{POINTER}({new_url})."
-    return f"**Replaced**{pr_format.SUFFIX.format(name=name)}\n\n{POINTER}({new_url})."
+def repoint(repo, number, reviewer, voice='disclose'):
+    """R24: every pointer of ours on the PR follows the newest review (the mayor, 2026-10-30 07:21Z: a chain
+    of pointers left the oldest review pointing at a replaced one). Returns (updated, failed)."""
+    jq = f'.[] | select((.user.login | ascii_downcase) == "{reviewer.lower()}" and ({OURS_JQ})) | {{id, body, html_url}}'
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return 0, 1
+    ok = bad = 0
+    for rid, body in pr_format.repoints([json.loads(x) for x in r.stdout.splitlines() if x.strip()], NAME, voice):
+        good = update_review(repo, number, rid, body)[0] == 'updated'
+        ok, bad = ok + good, bad + (not good)
+    return ok, bad
 
 
 def block_kind(rv):
@@ -633,13 +640,14 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     else:
         posted, url, state, rid = post_review(repo, pr, body, comments, event)
         if old_id and posted == 'ok':
-            p2 = update_review(repo, n, old_id, pointer_body(NAME, url, cfg.get('voice')))[0]
+            p2 = update_review(repo, n, old_id, pr_format.pointer_body(NAME, url, cfg.get('voice')))[0]
             extra.update(replaced=old_id, replaced_status=p2)
     if posted == 'ok' and state == 'PENDING':  # R0: never leave one in the reviewer's slot
         subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{repo}/pulls/{n}/reviews/{rid}'],
                        capture_output=True, text=True, timeout=60)
     elif posted == 'ok':
         extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'], cfg.get('voice'))
+        extra['repointed'], extra['repoint_failed'] = repoint(repo, n, cfg['reviewer'], cfg.get('voice'))
         if cfg.get('incremental') and rv.get('since'):  # gc-sy1hm.2 c: only once the new review is up
             extra['threads_resolved'], extra['threads_resolve_failed'] = pr_incremental.resolve_threads(repo, n, rv['since'])
     if not url:

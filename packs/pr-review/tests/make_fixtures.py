@@ -89,6 +89,15 @@ MONEY_VOICE = pr_format.not_checked_decision(
     [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16,
       'what': 'Overdue invoices now get a late fee after thirty days.'}], NOT_CHECKED, 'Author',
     'Overdue invoices get a late fee after thirty days, on by default.', [0], voice='reviewer')
+# The mayor, 2026-10-30 07:21Z: three money places, so the evidence groups show (after the decision, not under it).
+MONEY3_VOICE = pr_format.not_checked_decision(
+    [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16, 'kind': 'charges', 'risk': 3, 'behaviour': True,
+      'what': 'Overdue invoices now get a late fee after thirty days.'},
+     {'path': 'src/notify/send.ts', 'line_start': 20, 'line_end': 22, 'kind': 'plans', 'risk': 2, 'behaviour': True,
+      'what': 'The fee amount is read from the plan settings.'},
+     {'path': 'src/notify/send.ts', 'line_start': 30, 'line_end': 30, 'kind': 'other', 'risk': 1, 'behaviour': True,
+      'what': 'The invoice shows the fee on its own line.'}], NOT_CHECKED, 'Author',
+    'Overdue invoices get a late fee after thirty days, on by default.', [0], voice='reviewer')
 AUTHORS_CALL_VOICE = dict(AUTHORS_CALL, options=['You send only the clinic name and time',
                                                  'You ask the SMS vendor for a BAA first'])
 # The money decision as v5.4 delivered it: no actors, the recommended task in line 2, under "For Reviewer".
@@ -484,7 +493,10 @@ CASES = {
         'cleared': [CLEARED], 'not_checked': NOT_CHECKED, 'gaps': [{'kind': 'not-checked', 'accepted': True}], **SKIP},
     'case91-voice-approval': {
         'expect': 'pass', 'voice': 'reviewer', **dict(LOW, approve=True), 'approve_check': GREEN,
-        'line2': 'Nothing needed.'},
+        'line2': 'Author: nothing needed.',
+        # The mayor, 2026-10-30 07:21Z: the one-line reason above the collapsed section, not only inside it.
+        'body_re': [r'^Author: nothing needed\.\n\nThe send call is the existing reminder path[^\n]*\n\n'
+                    r'<details><summary>What was checked</summary>']},
     'case92-voice-note-is-the-author-question': {
         'expect': 'pass', 'voice': 'reviewer', 'outcome': 'not-reviewed', 'line2': 'Author: 1 question, get CI running.',
         'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE, 'decisions': [FLOOR_VOICE], 'blockers': NO_CI,
@@ -544,6 +556,23 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R29'], 'only_reasons': ['R29'], 'outcome': 'changes', 'diff': DIFF, **SKIP,
         'items': [dict(GOOD_ITEM, ask='Drop the message body from the info log line, log the visit id instead, and add '
                                       'a test that the log line never holds the name.')]},
+    # v5.8 (the mayor, 2026-10-30 07:21Z).
+    'case107-voice-nothing-needed-names-the-author': {
+        'expect': 'fail', 'expect_reasons': ['R22', 'R36'], 'only_reasons': ['R22', 'R36'], 'voice': 'reviewer',
+        **dict(LOW, approve=True), 'body_edit': ['Author: nothing needed.', 'Nothing needed.']},
+    'case108-money-question-first-evidence-not-nested': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'line2': 'Author: 1 question.',
+        'diff': DIFF, 'items': [], 'decisions': [MONEY3_VOICE], 'tree_lines': TREE, 'flagged': [FLAG],
+        'cleared': [CLEARED], 'not_checked': NOT_CHECKED, 'gaps': [{'kind': 'not-checked', 'accepted': True}], **SKIP,
+        'body_re': [r'^1\. \*\*What sign-off [^\n]*\?\*\* · \[`send\.ts` L13-L16\]\(https://github\.com/[^)]+\)\n'
+                    r'   Billing, plans, credits or pricing are outside this review\. Overdue invoices [^\n]*\n   A\. You ',
+                    r'^\*\*Plans:\*\*\n- \[`send\.ts` L20-L22\]'],
+        'body_not_re': [r'^ +\*\*(Charges|Credits|Plans|Limits|Other):\*\*', r'^ +- \[`send\.ts` L13-L16\]']},
+    'case109-recommendation-repeats-its-option': {
+        'expect': 'fail', 'expect_reasons': ['R16'], 'only_reasons': ['R16'], 'voice': 'reviewer',
+        'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE, 'blockers': NO_CI,
+        'decisions': [dict(FLOOR_VOICE, reason='A teammate who knows the code can check it in one pass.')],
+        'facts': 'No CI ran · no merge conflict · open', 'gaps': [{'kind': 'below-bar'}]},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,

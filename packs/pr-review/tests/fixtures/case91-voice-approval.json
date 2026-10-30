@@ -44,5 +44,8 @@
    ]
   }
  },
- "line2": "Nothing needed."
+ "line2": "Author: nothing needed.",
+ "body_re": [
+  "^Author: nothing needed\\.\\n\\nThe send call is the existing reminder path[^\\n]*\\n\\n<details><summary>What was checked</summary>"
+ ]
 }

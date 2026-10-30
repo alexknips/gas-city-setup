@@ -1,0 +1,125 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "questions",
+ "derived": true,
+ "line2": "Author: 1 question.",
+ "diff": "diff --git a/src/notify/send.ts b/src/notify/send.ts\nindex 1111111..2222222 100644\n--- a/src/notify/send.ts\n+++ b/src/notify/send.ts\n@@ -10,6 +10,9 @@ export async function remind(visit: Visit) {\n   const contact = await loadContact(visit.contactId);\n   if (!contact.optIn) return;\n-  await queue.add(visit.id);\n+  const body = `Reminder for ${contact.fullName}, born ${contact.dob}`;\n+  await smsClient.send(contact.phone, body);\n+  logger.info(`sent reminder ${body}`);\n+  await queue.add(visit.id);\n   return true;\n }\ndiff --git a/test/notify.test.ts b/test/notify.test.ts\nindex 3333333..4444444 100644\n--- a/test/notify.test.ts\n+++ b/test/notify.test.ts\n@@ -1,3 +1,4 @@\n import { remind } from '../src/notify/send';\n+it('sends', async () => expect(await remind(fake)).toBe(true));\n\n",
+ "items": [],
+ "decisions": [
+  {
+   "question": "What sign-off does this change to billing, plans, credits or pricing need before it merges?",
+   "opening": "Overdue invoices get a late fee after thirty days, on by default.",
+   "opening_places": [
+    0
+   ],
+   "options": [
+    "You state in the PR description what changes for customers",
+    "Whoever owns billing signs off, here or by linking where they already did",
+    "You merge it as is"
+   ],
+   "option_reasons": [
+    "a short written account puts on record what customers will see",
+    "they know the pricing rules this touches",
+    "when customers see no change from it yet, for example while it is off"
+   ],
+   "actors": [
+    "author",
+    "picked",
+    "author"
+   ],
+   "recommended": 0,
+   "reason": "It takes you one paragraph, and it gives whoever owns billing something concrete to agree with.",
+   "why": "No agent checks money logic, so a person has to confirm what it changes.",
+   "where": [
+    {
+     "path": "src/notify/send.ts",
+     "line_start": 13,
+     "line_end": 16,
+     "what": "Overdue invoices now get a late fee after thirty days.",
+     "kind": "charges",
+     "behaviour": true,
+     "risk": 3
+    },
+    {
+     "path": "src/notify/send.ts",
+     "line_start": 20,
+     "line_end": 22,
+     "what": "The fee amount is read from the plan settings.",
+     "kind": "plans",
+     "behaviour": true,
+     "risk": 2
+    },
+    {
+     "path": "src/notify/send.ts",
+     "line_start": 30,
+     "line_end": 30,
+     "what": "The invoice shows the fee on its own line.",
+     "kind": "other",
+     "behaviour": true,
+     "risk": 1
+    }
+   ],
+   "area": "not checked",
+   "rule": "",
+   "link": {
+    "kind": "code",
+    "path": "src/notify/send.ts",
+    "line_start": 13,
+    "line_end": 16
+   },
+   "verified": "zero-token rule",
+   "confidence": 10,
+   "auto": true,
+   "scope": "Billing, plans, credits or pricing are outside this review."
+  }
+ ],
+ "tree_lines": {
+  "src/notify/send.ts": 40,
+  "test/notify.test.ts": 4
+ },
+ "flagged": [
+  {
+   "id": "F1",
+   "rule": "irrev-messages",
+   "label": "a message sent to people (SMS, email, push)",
+   "path": "src/notify/send.ts",
+   "line": 14
+  }
+ ],
+ "cleared": [
+  {
+   "flag": "F1",
+   "path": "src/notify/send.ts",
+   "line_start": 14,
+   "line_end": 14,
+   "rule": "",
+   "change": "Reminder now sent by SMS",
+   "why": "The send call is the existing reminder path; only the text changes and it carries no new recipient."
+  }
+ ],
+ "not_checked": "billing, plans, credits or pricing",
+ "gaps": [
+  {
+   "kind": "not-checked",
+   "accepted": true
+  }
+ ],
+ "summary": "Reminders now name the patient and log the message text.",
+ "skip": [
+  {
+   "group": "tests",
+   "paths": [
+    "test/notify.test.ts"
+   ]
+  }
+ ],
+ "body_re": [
+  "^1\\. \\*\\*What sign-off [^\\n]*\\?\\*\\* \u00b7 \\[`send\\.ts` L13-L16\\]\\(https://github\\.com/[^)]+\\)\\n   Billing, plans, credits or pricing are outside this review\\. Overdue invoices [^\\n]*\\n   A\\. You ",
+  "^\\*\\*Plans:\\*\\*\\n- \\[`send\\.ts` L20-L22\\]"
+ ],
+ "body_not_re": [
+  "^ +\\*\\*(Charges|Credits|Plans|Limits|Other):\\*\\*",
+  "^ +- \\[`send\\.ts` L13-L16\\]"
+ ]
+}
