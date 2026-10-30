@@ -187,7 +187,7 @@ in order:
    - `items` for {author}: a "change" they must make or a "question" they must answer, each anchored to
      lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). `change`
      is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter and `ask`
-     the one thing to do, at most 25 words each. Say each finding once: never two items on the same lines.
+     the one thing to do, at most 25 words each. Say each finding once: never two items on the same lines.{suggest_step}
    - `cleared`: EVERY flagged hunk that is not covered by a decision or an item gets one entry: its flag
      id, its file, a new-side line range inside that hunk on the CODE that makes it safe (not a comment),
      `change` (3-6 plain words on what the PR changed, never a category label) and `why` (the one fact
@@ -307,6 +307,7 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
     final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
     final = final.replace('{name}', NAME).replace('{author}', author)
     final = final.replace('{context_step}', CONTEXT_STEP if context_block else '')
+    final = final.replace('{suggest_step}', SUGGEST_STEP.replace('{author}', author) if cfg.get('suggestions') else '')
     return (f'{head}{checklist}\n\nSTYLE GUIDE (how your answer will be rendered and checked):\n\n{style}\n\n'
             f'{digest_block}\n\n'
             + (f'{context_block}\n\n' if context_block else '') +
@@ -321,6 +322,27 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
 CONTEXT_STEP = """ Then open the places REPOSITORY CONTEXT lists for the
    changed code: check that each use still gets what it expects from it (arguments, return values,
    errors, empty or missing values) and that each listed test still describes the new behaviour."""
+
+
+# The items' one-click fix (PR_REVIEW_SUGGESTIONS=on, gc-sy1hm.2 b): a field of the schema and this sentence.
+SUGGEST_STEP = """
+     When a "change" is fixed by rewriting exactly its own lines, put the rewritten lines in `suggestion`:
+     the whole replacement for line_start-line_end at the PR head, with their indentation, at most 12
+     lines, only code you have checked is correct; {author} applies it with one click. Otherwise ""."""
+SUGGESTION = {'type': 'string', 'maxLength': 2000, 'description': (
+    'Only for a "change" on the new side whose fix rewrites exactly lines line_start-line_end: the whole '
+    'replacement for those lines at the PR head, with their indentation, at most 12 lines. "" otherwise.')}
+
+
+def schema(cfg):
+    """The answer's JSON schema; with suggestions on, each item has a one-click fix field."""
+    if not cfg.get('suggestions'):
+        return SCHEMA
+    s = json.loads(json.dumps(SCHEMA))
+    it = s['properties']['items']['items']
+    it['properties']['suggestion'] = SUGGESTION
+    it['required'] = it['required'] + ['suggestion']
+    return s
 
 
 def hunk_span(idx, flag):
@@ -365,7 +387,7 @@ def run_model(cfg, tree, ctx, prompt):
     keep = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1')
-    cmd = [claude_bin(), '-p', '--output-format', 'json', '--json-schema', json.dumps(SCHEMA), '--model', cfg['model'],
+    cmd = [claude_bin(), '-p', '--output-format', 'json', '--json-schema', json.dumps(schema(cfg)), '--model', cfg['model'],
            '--no-session-persistence', '--setting-sources', '', '--settings', json.dumps(settings),
            '--strict-mcp-config', '--tools', 'Read,Grep,Glob', '--add-dir', ctx,
            '--max-budget-usd', str(cfg['max_usd'])]
@@ -905,6 +927,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 return
             decisions = [d for d in model['decisions'] if d['confidence'] >= 8]
             items = [i for i in model['items'] if i['confidence'] >= 8][:pr_format.MAX_ITEMS]
+            if cfg.get('suggestions'):  # gc-sy1hm.2 b: a fix the gate would refuse is dropped, its item stays
+                items, extra['suggestions'], extra['suggestions_dropped'] = pr_format.keep_suggestions(items, idx)
             # R20: the rule's hunks, plus the money lines the model saw that are in the diff.
             nc = nc_rule + [dict(x, rule='model') for x in model['not_checked_lines']
                             if x['line'] in (idx.get(x['path']) or {}).get('new', set())]

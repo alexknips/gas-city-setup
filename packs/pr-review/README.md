@@ -52,6 +52,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
 | `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
 | `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
+| `PR_REVIEW_SUGGESTIONS` | `off` | `on` lets each "change" item carry a one-click fix: the schema gets a `suggestion` field (the whole replacement for the item's lines) and the inline comment ends with it as a GitHub suggestion block (R4). The script drops a fix the gate would refuse (on a question or the old side, more than 12 lines, a code fence inside, or no change) and keeps the item. With `off` the schema and prompt are unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
 | `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
@@ -202,6 +203,12 @@ and capture off, at most 40 rules, each with its doc lines. It is cached by the 
 tip of the base branch the PR merges into, so it is rebuilt only when the docs change, and kept host-local
 (`PR_REVIEW_WORK_DIR/digest`, mode 600): it is the repository's text. The review links each cited rule
 to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of time (counts only).
+
+**One-click fixes** (gc-sy1hm.2 b; `PR_REVIEW_SUGGESTIONS=on`). A fix is code, so it is not cleaned like the
+model's prose (that would break generics and JSX). It is shown only inside a suggestion block it cannot
+close, and nothing inside a code block is rendered (no link, image or mention). It still goes through the
+credential check with the rest of the review. What it cannot check: whether the fix compiles or is right.
+The prompt asks for code the model has checked, and the author applies it or not.
 
 **Repository context** (`pr_context.py`, gc-sy1hm.2 a; `PR_REVIEW_CONTEXT=on`). A word search (git
 grep) in the worktree at the PR head, no tokens, at most 6000 characters of names, paths and line numbers
@@ -388,7 +395,7 @@ resumable, a spend cap) and `--score REPO` reports recall, recall on labelled de
 (entries on the fixed lines over all entries), controls with a change ask, and cost per PR, per
 version. The run also keeps the model's own entries with their confidence, so `by_confidence` scores the
 same run at the bars 8 (what the script posts), 9 and 10. The version hashes the files that shape a review
-and the settings `PR_REVIEW_PROMPT` and `PR_REVIEW_CONTEXT`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
+and the settings `PR_REVIEW_PROMPT`, `PR_REVIEW_CONTEXT` and `PR_REVIEW_SUGGESTIONS`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
 
 ## Calibration
 

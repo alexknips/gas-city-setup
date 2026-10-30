@@ -270,7 +270,8 @@ TOLERANCE = 3  # lines: an entry this close to a fixed line counts as pointing a
 
 def version(cfg):
     """The reviewer's version for the report: a hash of the files that shape a review, and the prompt it uses."""
-    h = hashlib.sha256(((cfg.get('prompt') or 'security') + ('+context' if cfg.get('context') else '')).encode())
+    flags = ('+context' if cfg.get('context') else '') + ('+suggestions' if cfg.get('suggestions') else '')
+    h = hashlib.sha256(((cfg.get('prompt') or 'security') + flags).encode())
     for f in VERSIONED + ['../correctness-review.md', '../upstream/security-review.md']:
         h.update(open(os.path.join(HERE, f), 'rb').read())
     return h.hexdigest()[:10]

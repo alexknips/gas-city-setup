@@ -46,6 +46,12 @@ GOOD_ITEM = {
     'ask': 'Drop the message body from the info log line and log the visit id instead.', 'rule': '',
     'verified': 'read remind() and the logger config', 'confidence': 9}
 
+# gc-sy1hm.2 b: a change whose fix rewrites its own line carries it as a one-click suggestion.
+SUGGEST_ITEM = dict(GOOD_ITEM, line_start=14, line_end=14, change='Log line prints the message',
+                    why="The message holds the patient's name and date of birth, and application logs are not meant to hold PHI.",
+                    ask='Log the visit id instead of the message text.',
+                    suggestion='  logger.info(`sent reminder for visit ${visit.id}`);')
+
 DECISION = {
     'question': 'May the reminder SMS name the patient and show the date of birth?',
     'options': ['Allow it, with the SMS vendor under a BAA', 'Send only the clinic name and time'],
@@ -378,6 +384,23 @@ CASES = {
         'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [GOOD_ITEM], **SKIP,
         'request_changes': True,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'CHANGES_REQUESTED', 'ours_on_head': 1}},
+    # gc-sy1hm.2 b (parity with the paid review tools: one-click fixes the author commits): a change that
+    # rewrites its own line carries the fix; a fix that could close its code fence, sits on a question,
+    # changes nothing or runs longer than 12 lines is refused (the script drops it and keeps the item).
+    'case73-change-with-a-one-click-fix': {
+        'expect': 'pass', 'outcome': 'changes', 'diff': DIFF, 'items': [SUGGEST_ITEM], **SKIP},
+    'case74-one-click-fix-closes-its-fence': {
+        'expect': 'fail', 'expect_reasons': ['R4'], 'only_reasons': ['R4'], 'outcome': 'changes', 'diff': DIFF,
+        'items': [dict(SUGGEST_ITEM, suggestion='  logger.info(visit.id);\n```\n![x](https://example.com/a.png)')], **SKIP},
+    'case75-one-click-fix-on-a-question': {
+        'expect': 'fail', 'expect_reasons': ['R4'], 'only_reasons': ['R4'], 'outcome': 'questions', 'diff': DIFF,
+        'items': [dict(SUGGEST_ITEM, kind='question', ask='Does the log line need the message text?')], **SKIP},
+    'case76-one-click-fix-changes-nothing': {
+        'expect': 'fail', 'expect_reasons': ['R4'], 'only_reasons': ['R4'], 'outcome': 'changes', 'diff': DIFF,
+        'items': [dict(SUGGEST_ITEM, suggestion='  logger.info(`sent reminder ${body}`);')], **SKIP},
+    'case77-one-click-fix-too-long': {
+        'expect': 'fail', 'expect_reasons': ['R4'], 'only_reasons': ['R4'], 'outcome': 'changes', 'diff': DIFF,
+        'items': [dict(SUGGEST_ITEM, suggestion='\n'.join(['  logger.info(visit.id);'] * 13))], **SKIP},
 }
 
 if __name__ == '__main__':

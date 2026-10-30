@@ -412,17 +412,63 @@ def skip_text(repo, number, groups):
 
 
 def inline_comments(items, author):
-    """One inline comment per item, on its exact lines (R4); a range becomes a multi-line comment."""
+    """One inline comment per item, on its exact lines (R4); a range becomes a multi-line comment. A change
+    that carries a one-click fix ends with it as a GitHub suggestion block (gc-sy1hm.2 b)."""
     out = []
     for k, it in enumerate(items, 1):
         side = 'RIGHT' if it.get('side', 'new') == 'new' else 'LEFT'
         label = KINDS[it['kind']].format(author=author)
-        c = {'path': it['path'], 'line': it['line_end'], 'side': side,
-             'body': f"**{k}. {it['change']}**: {it['why']}\n\n**{label}:** {it['ask']}"}
+        text = f"**{k}. {it['change']}**: {it['why']}\n\n**{label}:** {it['ask']}"
+        if it.get('suggestion'):
+            text += f"\n\n```suggestion\n{it['suggestion'].rstrip(chr(10))}\n```"
+        c = {'path': it['path'], 'line': it['line_end'], 'side': side, 'body': text}
         if it['line_start'] != it['line_end']:
             c.update(start_line=it['line_start'], start_side=side)
         out.append(c)
     return out
+
+
+MAX_SUGGESTION_LINES = 12
+FENCE_RE = re.compile(r'`{3,}|~{3,}')
+
+
+def suggestion_reasons(p, it, idx):
+    """Why an item's one-click fix (a GitHub suggestion block, gc-sy1hm.2 b) cannot be shown. It is code, so
+    it is not cleaned like the model's prose: it must be a change on the new side, the whole replacement
+    of its lines (all in one hunk), at most 12 lines, unable to close its code fence (then nothing in it is
+    rendered, so no link, image or mention), and different from the lines it replaces."""
+    s = (it.get('suggestion') or '').rstrip('\n')
+    if not s:
+        return []
+    if it.get('kind') != 'change' or it.get('side', 'new') != 'new':
+        return [f'R4: {p} carries a one-click fix but is not a change on the new side']
+    if FENCE_RE.search(s):
+        return [f'R4: {p} one-click fix holds a code fence']
+    if s.count('\n') >= MAX_SUGGESTION_LINES or len(s) > 2000:
+        return [f'R4: {p} one-click fix is longer than {MAX_SUGGESTION_LINES} lines']
+    text = (idx.get(it.get('path')) or {}).get('text') or {}
+    old = [text.get(n) for n in range(it['line_start'], it['line_end'] + 1)]
+    if not old or any(t is None for t in old):
+        return [f'R4: {p} one-click fix replaces lines that are not all in the diff']
+    if [x.rstrip() for x in old] == [x.rstrip() for x in s.split('\n')]:
+        return [f'R4: {p} one-click fix changes nothing']
+    return []
+
+
+def keep_suggestions(items, idx):
+    """Each item with a one-click fix the gate would refuse loses the fix (the item stays). Returns the
+    items, how many fixes were kept and how many dropped."""
+    out, kept, dropped = [], 0, 0
+    for k, it in enumerate(items, 1):
+        if not it.get('suggestion'):
+            out.append(it)
+        elif in_diff(idx, it) and not suggestion_reasons(f'item {k}', it, idx):
+            out.append(it)
+            kept += 1
+        else:
+            out.append(dict(it, suggestion=''))
+            dropped += 1
+    return out, kept, dropped
 
 
 def changed_range(idx, path, line):
@@ -631,6 +677,8 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         elif not in_diff(idx, it):
             why.append(f"R3: {p} {it['path']} L{it['line_start']}-L{it['line_end']} ({it.get('side', 'new')} side) "
                        f'is not inside one hunk of the diff')
+        else:
+            why += suggestion_reasons(p, it, idx)
         why += change_reasons(p, it.get('change'))
         for f in ('why', 'ask'):
             why += field_reasons(p, f, it.get(f)) + words_reasons(p, f, it.get(f))
