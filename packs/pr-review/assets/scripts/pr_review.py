@@ -861,17 +861,20 @@ def question_from(c, question=''):
             'confidence': 8}
 
 
-def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg=None):
+def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg=None, floor=False):
     """R33: a PR that requests the reviewer is never silent, and the note keeps a floor the reviewer can act
     on (the mayor, 2026-10-30 02:11Z): why the review was held, in plain words; the places the zero-token
     rules know, each linked (the money places with their lines, the flagged hunks with what the rule saw);
-    and one rule-level decision with lettered options and a recommendation."""
+    and one rule-level decision with lettered options and a recommendation. `floor`: the minimal note
+    when the note itself was held (never silent): one place, described by the script's own words."""
     places, seen = [], set()
     for x in list(money) + [dict(pr_format.changed_range(idx, f['path'], f['line']), what=f['label']) for f in flagged]:
         k = (x['path'], x.get('hunk') if x.get('hunk') is not None else x['line_start'])
         if k not in seen:
             seen.add(k)
             places.append(x)
+    if floor:  # one place in the script's words: a flag's rule label already, the area's name for a money place
+        places = [dict(places[0], what=f'a change to {words}') if money else places[0]] if places else []
     parts = []
     if money:
         parts.append(f"it touches {words} in {pr_format.plural(len(money), 'place', 'places')}, which no agent checks")
@@ -909,8 +912,9 @@ def reader_reasons(scores, jm, risky):
 REWRITE_TURNS = 2
 REWRITE_PROMPT = """Some entries of a code review failed the wording rules of its style guide. Rewrite ONLY the
 fields named in each entry's "rewrite" list so that they pass, in plain words. Keep the meaning and every
-fact; add nothing, and do not add, drop or merge entries. "lines" are the entry's own lines of code, for
-context only.
+fact; add nothing, and do not add, drop or merge entries. "limits" gives each field's budget and its count
+now: count the words of what you write. For each field give up to three versions, best first, each within
+its budget, the last one clearly shorter. "lines" are the entry's own lines of code, for context only.
 
 The reasons they failed:
 {rules}
@@ -925,7 +929,8 @@ Answer with each entry's id and its rewritten fields."""
 REWRITE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['entries'], 'properties': {
     'entries': {'type': 'array', 'items': {
         'type': 'object', 'additionalProperties': False, 'required': ['id'],
-        'properties': {'id': {'type': 'string'}, **{f: {'type': 'string'} for f in pr_format.WORDING_FIELDS}}}}}}
+        'properties': {'id': {'type': 'string'}, **{f: {'type': 'array', 'maxItems': 3, 'items': {'type': 'string'}}
+                                                    for f in pr_format.WORDING_FIELDS}}}}}}
 
 
 def style_rows(ids):
@@ -947,6 +952,7 @@ def rewrite(cfg, rv, reasons, idx):
         text = (idx.get(x.get('path')) or {}).get('text') or {}
         lines = [text.get(ln, '') for ln in range(x.get('line_start') or 1, (x.get('line_end') or 0) + 1)][:30]
         entries.append({'id': eid, 'rewrite': a['fields'], **{f: x[f] for f in pr_format.WORDING_FIELDS if x.get(f)},
+                        'limits': {f: pr_format.field_limit(kind, f, x.get(f)) for f in a['fields']},
                         'lines': '\n'.join(lines)})
     rules = [r for a in asks.values() for r in a['rules']]
     prompt = REWRITE_PROMPT.format(rules='\n'.join(f'- {r}' for r in rules),
@@ -973,6 +979,22 @@ def keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author)
                             'diff': diff if len(diff) <= HELD_DIFF_MAX else None,
                             'at': pr_state.iso(pr_state.now())}) + '\n')
     os.chmod(p, 0o600)
+
+
+def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset, gate):
+    """R33: the note for a held review of a PR that requests the reviewer, gated by `gate(rv, body,
+    comments)`. When the note itself is held, the floor instead (never silent, the mayor 2026-10-30
+    16:54Z): one place in the script's own words. The floor holds no model text, so it goes out whatever
+    its gate says, unless it matches a secret's shape. Returns (rv, body, comments, reasons, log fields)."""
+    words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
+    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg)
+    reasons = gate(rv, body, comments)
+    if not reasons:
+        return rv, body, comments, [], {}
+    note = {'floor': True, 'note_gate': sorted({r.split(':')[0] for r in reasons})}
+    rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, floor=True)
+    note['floor_gate'] = sorted({r.split(':')[0] for r in gate(rv, body, comments)})
+    return rv, body, comments, (reasons if leaks([body]) else []), note
 
 
 def keep_reader(cfg, entry, head, attempt, scores, problems):
@@ -1229,12 +1251,12 @@ def model_review(cfg, key, entry, dry, rereview=False):
         if fallback == 'not-reviewed':
             # A PR that requests the reviewer is never silent: the note, with its floor (R33).
             codes = extra.get('held_gate') or extra['gate']
-            rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes,
-                                              ruleset.get('not_checked') or 'billing, plans, credits or pricing', cfg)
-            reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0].get('where') or []]),
-                                     pr.get('body') or '', [], comments)
+            rv, body, comments, reasons, note = held_note(
+                cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset,
+                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, [w['path'] for w in x['decisions'][0].get('where') or []]),
+                                               pr.get('body') or '', [], c))
             extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, author_decisions=1, items=0, cleared=0,
-                         blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}))
+                         blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}), **note)
             if cfg['judge'] and not reasons and not extra.get('repair_judged'):  # for the log: never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
@@ -1297,6 +1319,48 @@ def pick(cfg, only):
     return chosen, ci_keys, expiring, snapshot, used
 
 
+def selftest():
+    """The note and its floor (R33), synthetic data only, no model and no network: a note over many places
+    passes its gate (the places cut to the question's, then one link); when the note is held, the floor goes
+    out: one place in the script's own words."""
+    import tempfile
+    tmp = tempfile.mkdtemp()
+    cfg = {'voice': 'reviewer', 'work': tmp}
+    diff = ''.join(f'diff --git a/src/a{k}.ts b/src/a{k}.ts\n--- a/src/a{k}.ts\n+++ b/src/a{k}.ts\n'
+                   f'@@ -1,2 +1,3 @@\n x\n+send(contact.phone)\n y\n' for k in range(10))
+    idx = pr_format.diff_index(diff)
+    label = 'a message sent to people (SMS, email, push)'
+    flagged = [{'id': f'F{k}', 'rule': 'r', 'label': label, 'path': f'src/a{k}.ts', 'line': 2} for k in range(10)]
+    pr = {'number': 1, 'headRefOid': 'a' * 40, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'commits': {'nodes': []}}
+    ruleset = {'not_checked': 'billing, plans, credits or pricing'}
+    real = lambda x, b, c: pr_format.gate(x, idx, b, None, '', [], c)  # noqa: E731
+    rv, body, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'],
+                                           ruleset, real)
+    checks = {'a note over ten places passes its gate': reasons == [] and note == {},
+              'the note shows three places and one link for the rest': body.count('](https://github.com/o/r/blob/') == 3
+              and '[7 other places](https://github.com/o/r/pull/1/files)' in body}
+    calls = []
+
+    def hold_first(x, b, c):
+        calls.append(b)
+        return ['R33: held'] if len(calls) == 1 else real(x, b, c)
+    rv, body, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'],
+                                           ruleset, hold_first)
+    checks['a held note falls to the floor, which goes out'] = reasons == [] and note.get('floor') and \
+        note.get('note_gate') == ['R33'] and note.get('floor_gate') == []
+    checks['the floor has one place, in the rule label'] = len(rv['decisions'][0]['where']) == 1 and \
+        rv['decisions'][0]['where'][0]['what'] == label
+    money = [{'path': 'src/a0.ts', 'line_start': 2, 'line_end': 2, 'what': 'model text', 'hunk': 0}]
+    calls.clear()
+    rv, body, _, reasons, note = held_note(cfg, 'o/r', pr, 'green', idx, flagged, money, 'Author', 'held-gate', ['R29'],
+                                           ruleset, hold_first)
+    checks['a money place in the floor is named by the area, not by model text'] = \
+        rv['decisions'][0]['where'][0]['what'] == 'a change to billing, plans, credits or pricing' and 'model text' not in body
+    for k, v in checks.items():
+        print('ok  ' if v else 'FAIL', k)
+    return all(checks.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--pr', metavar='REPO#N')
@@ -1304,7 +1368,10 @@ def main():
     ap.add_argument('--redeliver', metavar='REPO#N')
     ap.add_argument('--rereview', metavar='REPO#N')
     ap.add_argument('--no-deliver', action='store_true')
+    ap.add_argument('--selftest', action='store_true', help='the note and its floor on synthetic data')
     a = ap.parse_args()
+    if a.selftest:
+        return 0 if selftest() else 1
     cfg = pr_state.config()
     if a.no_deliver and (a.pr or a.rereview):
         cfg['no_deliver'] = True
@@ -1355,4 +1422,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

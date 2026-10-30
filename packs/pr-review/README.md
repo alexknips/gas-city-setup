@@ -367,17 +367,24 @@ logged `fallback: not-checked-minimal`. The posted review is never worse than th
 mayor, 2026-10-30 16:10Z and 16:36Z): a review held only by wording or format reasons is repaired, gated
 again and read by the reader test instead of falling back. First one narrow turn (the judge model, at most
 2 turns) rewrites the entries a wording rule failed (R29's lead words, length and identifiers; R5, R6, R10,
-R14 and R25 on a field): it gets only those entries, the rule messages, their style-guide rows and the
-entries' own lines, and only the named fields are taken from its answer. Then the script makes right what
+R14 and R25 on a field): it gets only those entries, the rule messages, their style-guide rows, each
+field's budget with its count now ("3 to 6 words, it has 7") and the entries' own lines, and only the named
+fields are taken from its answer. It gives up to three versions of each field, best first, and the script
+takes the first that passes the field's own checks: the model does not count words reliably (v5.8.3: the
+first live turns came back at 7 words for a 3-6 word field and 21 and 27 words for a 20-word ask). Then the script makes right what
 it can from the parts: a question's ask without its question mark (R13), a cleared entry that repeats an
 earlier one (R36), the citation of a rule the digest does not hold (R37). The log has `rewritten`,
 `repaired` and `repair_held` (what still held it). A content reason (R19 coverage, the reader test) still
 falls back, and a held run logs `held_by: format` or `content` (the Today card's fallback split, with the
 R29 miss rate). A fallback passes the bar the full review
 failed (R33): its money places are cut to the question's own, at most 2 more, and one link to the files
-view for the rest, and the gate holds a fallback over 8 links, 17 lines or 2,100 characters shown (the
+view for the rest (the note's places likewise: 3, then one link), and the gate holds a fallback over 8 links, 17 lines or 2,100 characters shown (the
 largest full reviews that passed the reader test). The reader's reasons for each held attempt go to
-`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`, and the held attempt itself (the review dict, its body, the
+`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`. Never silent (the mayor, 2026-10-30 16:54Z): when the note
+itself is held, the floor goes out instead, the note with one place in the script's own words (a flag's
+rule label, or the area's name for a money place). It holds no model text, so it is posted whatever its
+gate says (logged `floor`, `note_gate`, `floor_gate`), unless it matches a secret's shape; `pr_review.py
+--selftest` covers it. The held attempt itself (the review dict, its body, the
 gate's reasons, the flags and the diff) to `feedback/held.jsonl`, so `pr_format.py --regate FILE` gates it
 again with later code at zero tokens (PR numbers and rule ids only). Also `held-inline` (GitHub refused an inline comment;
 nothing delivered, since a review without its markers breaks R4), `error` (the run failed, or a
@@ -491,7 +498,10 @@ without its question mark is repaired; with no answer from the turn, R29 still h
 shape, 14 money places, renders the question's place, 2 more and one link to the files view (passes), and
 the same places in the full layout as a fallback fail (R33); entries that fail R29 are rewritten and the
 review posted (the #1982 approval and #112 question shapes); R19 next to R29 is not rewritten (content);
-an answer beyond the ask (another field, another entry) is ignored. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+an answer beyond the ask (another field, another entry) is ignored. Cases 121-123 (v5.8.3, the first live
+turns): the turn's versions for a 7-word change and for asks of 27 and 21 words, the first version that
+passes taken (with only the first version, both still fail R29); a note over ten places as a fallback
+passes (on v5.8.2 it failed R33, and #112 got nothing). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail

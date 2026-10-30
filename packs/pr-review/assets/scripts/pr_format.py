@@ -505,8 +505,12 @@ def decision_lines(repo, pr, rv, k, d):
         lines += [''] + shown if shown else []
     elif d.get('where'):
         lines.append('   **Where:**')
-        for x in d['where']:
+        shown = d['where'][:FALLBACK_SHOWN + 1] if rv.get('fallback') else d['where']  # R33: the note's places, cut
+        for x in shown:
             lines.append(f"   - {place_link(repo, head, x)}: {x.get('what') or ''}")
+        if len(d['where']) > len(shown):
+            lines.append(f"   - [{plural(len(d['where']) - len(shown), 'other place', 'other places').capitalize()}]"
+                         f"(https://github.com/{repo}/pull/{pr['number']}/files) in the files view")
     if others:  # R32: every place stays linked, once, out of the visible length
         lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
     return lines
@@ -656,9 +660,32 @@ def rewrite_asks(rv, reasons):
     return out
 
 
+def field_check(kind, f, v, label=None):
+    """The gate's wording reasons for one field of an entry ("item", "cleared entry", "decision"), from the
+    same functions the gate runs on it."""
+    p = f'{kind} 1'
+    if f == 'change':
+        return change_reasons(p, v, label)
+    why = field_reasons(p, f, v)
+    if kind == 'item' or (kind == 'cleared entry' and f == 'why'):
+        why += words_reasons(p, f, v, 20 if f == 'ask' else 30)
+    return why
+
+
+def field_limit(kind, f, v):
+    """The field's budget in words, said plainly for the narrow turn, with its count now."""
+    n = len((v or '').split())
+    most = 6 if f == 'change' else 20 if (kind, f) == ('item', 'ask') else 30 if f == 'why' else None
+    least = 3 if f == 'change' else 4
+    return (f'{least} to {most} words' if most else f'at least {least} words, at most {MAX_FIELD} characters') + \
+        f', it has {n}' + ('; plain words, no code names' if f == 'change' else '')
+
+
 def apply_rewrite(rv, asks, answer, clean=lambda t: t):
     """The review with the rewritten fields the answer gives for the asked entries and fields only; anything
-    else in the answer is ignored. Returns (rv, fields rewritten)."""
+    else in the answer is ignored. A field may come as up to three versions, best first: the first that
+    passes the field's own checks is taken (the model does not count words reliably), else the first.
+    Returns (rv, fields rewritten)."""
     rv = dict(rv, **{g: [dict(x) for x in rv.get(g) or []] for g in REPAIR_GROUP.values()})
     n = 0
     for e in answer or []:
@@ -668,9 +695,12 @@ def apply_rewrite(rv, asks, answer, clean=lambda t: t):
         kind, k = e['id'].rsplit(' ', 1)
         x = rv[REPAIR_GROUP[kind]][int(k) - 1]
         for f in a['fields']:
-            v = ' '.join((e.get(f) or '').split())
-            if v:
-                x[f], n = clean(v), n + 1
+            got = e.get(f)
+            versions = [' '.join(clean(v).split()) for v in (got if isinstance(got, list) else [got]) if isinstance(v, str)]
+            versions = [v for v in versions if v]
+            if versions:
+                x[f] = next((v for v in versions if not field_check(kind, f, v, x.get('label'))), versions[0])
+                n += 1
     return rv, n
 
 
@@ -897,7 +927,8 @@ def change_reasons(p, v, label=None):
     v = (v or '').strip()
     why = []
     if not 3 <= len(v.split()) <= 6:
-        why.append(f'R29: {p} does not lead with 3-6 plain words on what the PR changed')
+        why.append(f'R29: {p} does not lead with 3-6 plain words on what the PR changed (the change is '
+                   f'{len(v.split())} words)')
     elif v.lower() in AREAS or (label and v.lower() == label.lower()):
         why.append(f'R29: {p} leads with a category label, not with what the PR changed')
     elif IDENT_RE.search(v):

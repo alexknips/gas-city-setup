@@ -672,6 +672,26 @@ CASES = {
         'items': [dict(QUESTION, change='patient data')],
         'rewrite': {'item 1': {'change': 'Reminder text names the patient', 'ask': 'x'},
                     'cleared entry 9': {'change': 'x'}}, **SKIP},
+    # The live shapes the first turns missed (the mayor, 2026-10-30 16:54Z): the turn's answer as versions,
+    # best first; the script takes the first that passes the field's own checks (the model does not count).
+    'case121-rewrite-versions-change-of-seven-words': {  # the #112 shape: a cleared change of 7 words
+        'expect': 'pass', **LOW, 'repair': [],
+        'cleared': [dict(CLEARED, change='Reminder now goes out by SMS text')],
+        'rewrite': {'cleared entry 1': {'change': ['Reminder now goes out by SMS text', 'Reminder now sent by SMS']}}},
+    'case122-rewrite-versions-asks-over-twenty-words': {  # the #1982 shape: R31's questions, asks of 27 and 21 words
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG], 'repair': [],
+        'items': [dict(QUESTION, ask='Does the SMS text need the full name and the date of birth at all, given the provider stores every message body for ninety days by default?'),
+                  dict(QUESTION, line_start=16, line_end=16, change='Reminder returns before the queue check',
+                       ask='Can you confirm that returning here is intended even when the queue add fails, since the caller then never retries it?')],
+        'rewrite': {'item 1': {'ask': ['Does the SMS text need the full name and the date of birth at all, given the provider stores every message body for ninety days by default?', 'Does the SMS text need the full name and date of birth?']},
+                    'item 2': {'ask': ['Is returning here intended when adding to the queue fails?']}}, **SKIP},
+    'case123-note-over-ten-places-as-a-fallback': {  # the #112 shape: the note itself was held (R33) and nothing posted
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False,
+        'blockers': NO_CI, 'fallback': True, 'facts': 'No CI ran · no merge conflict · open', 'gaps': [{'kind': 'below-bar'}],
+        'decisions': [pr_format.floor_decision(
+            [{'path': f'src/notify/part{k}.ts', 'line_start': 3, 'line_end': 5, 'what': FLAG['label']} for k in range(10)],
+            'Author', 'Held.', voice='reviewer')],
+        'body_re': [r'^   - \[7 other places\]\(https://github\.com/example/repo/pull/1/files\) in the files view$']},
     # R33 (the mayor, 2026-10-30 10:25Z): the fallback passes the bar the full review failed; the #1981 shape.
     'case115-fallback-money-places-cut-to-the-question': {
         'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'items': [],
