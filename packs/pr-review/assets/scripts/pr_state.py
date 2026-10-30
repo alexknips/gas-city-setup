@@ -164,8 +164,10 @@ class Beads:
 def private_dir(cfg, *parts):
     """A dir under PR_REVIEW_WORK_DIR (mode 700) for what holds the repositories' text: posted review
     bodies, the reviewer's edits and replies, host-local regression cases. Never the town runtime."""
-    d = os.path.join(cfg['work'], *parts)
-    os.makedirs(d, mode=0o700, exist_ok=True)
+    d = cfg['work']
+    for part in parts:  # each level 700: os.makedirs gives the mode to the last one only
+        d = os.path.join(d, part)
+        os.makedirs(d, mode=0o700, exist_ok=True)
     return d
 
 

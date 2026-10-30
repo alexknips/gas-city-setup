@@ -16,8 +16,14 @@
     "Author states in the PR description what it changes and why that is safe, and you then decide",
     "Accept it as is"
    ],
+   "option_reasons": [
+    "a person who knows the code checks in one pass what our review could not",
+    "the author knows the change; a written account lets you decide without reading code",
+    "only if a wrong change here would be cheap to undo"
+   ],
    "recommended": 0,
    "reason": "A person who knows the code checks in one pass what our review could not.",
+   "author_task": "ask a teammate who knows this code to review it",
    "why": "Our review of this PR didn't reach the quality bar: a second reader found our review too hard to act on.",
    "area": "other",
    "rule": "",

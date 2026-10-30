@@ -11,20 +11,30 @@
  "decisions": [
   {
    "question": "Who confirms what this PR changes in billing, plans, credits or pricing before it merges?",
+   "opening": "",
    "options": [
     "Author states in the PR description what changes for customers",
     "A person who owns billing reviews the changes",
     "Accept as is"
    ],
+   "option_reasons": [
+    "one paragraph puts on record what customers will see",
+    "they know the pricing rules this touches",
+    "only if whoever owns pricing has already agreed to it"
+   ],
    "recommended": 0,
    "reason": "One paragraph from Author puts on record what customers will see, and nobody has to read code.",
+   "author_task": "state in the PR description what changes for customers",
    "why": "No agent checks money logic, so a person has to confirm what it changes.",
    "where": [
     {
      "path": "src/notify/send.ts",
      "line_start": 13,
      "line_end": 16,
-     "what": "Each reminder now takes one SMS credit from the clinic balance."
+     "what": "Each reminder now takes one SMS credit from the clinic balance.",
+     "kind": null,
+     "behaviour": null,
+     "risk": null
     }
    ],
    "area": "not checked",

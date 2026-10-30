@@ -203,7 +203,9 @@ to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of 
 
 **The money lines** (`pr_money.py`, R32). For a PR that touches billing, plans, credits or pricing, one
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
-charges, credits, plans or limits; clipped at 30 words) and its kind, in calls of 20 places. A place
+charges, credits, plans or limits; clipped at 30 words), its kind, whether it changes behaviour and its
+risk, plus one sentence on what the whole change does and its default state, and the question on its
+concrete effect after merge; in calls of 20 places. A place
 that comes back without a line gets one more try, then keeps its link with "(not summarized)". It runs apart from the review, so the money decision
 keeps its lines even when the full review is held.
 
@@ -336,7 +338,9 @@ fixed, keeps it while CI is red, sends a block on content to a review of the new
 on a held head (R35). Host-local cases 09-11: the mayor's 9a62c85 runs on three real PRs (two expected
 to fail; one passes with only the v5 format rules firing). Host-local cases 12-13: the db9026d reruns (the
 bare note on a billing PR fails, R33; a questions review passes). Cases 45-46: the note with its floor
-passes, a note without its decision fails (R33).
+passes, a note without its decision fails (R33). Case 69: line 2 that misses the recommended option's task
+(R22); case 70: a money review with its places collapsed (R32). Host-local case 14: the 29a3588 money review
+(19 places one by one) fails (R32).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a

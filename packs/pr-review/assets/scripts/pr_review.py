@@ -684,14 +684,16 @@ def flags_for(files, ruleset, hits, area_of):
 
 
 def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_cut, money, ruleset, author, model,
-             idx=None, digest=None, conflicts=()):
+             idx=None, digest=None, conflicts=(), money_info=None):
     """The review dict (pr_format): the not-checked decision first when the PR touches that area (R20,
     R32; `money` holds its changed ranges with their lines); blockers for a conflict or CI that did not
     pass (R22); the repository's rules for the links (R37); an approval only when the bar holds (R27), and
     a low-risk review that misses the bar asks the author for what is missing instead."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     if money:
-        decisions = [pr_format.not_checked_decision(money, words, author)] + decisions[:pr_format.MAX_DECISIONS - 1]
+        mi = money_info or {}
+        decisions = [pr_format.not_checked_decision(money, words, author, mi.get('overview', ''), mi.get('question', ''))] + \
+            decisions[:pr_format.MAX_DECISIONS - 1]
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
     skip = [dict(g, paths=[x for x in g['paths'] if idx is None or x in idx]) for g in (skim or {}).get('skip') or []]
@@ -717,11 +719,11 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
     return rv
 
 
-def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author):
+def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info=None):
     """R33 (the mayor, 2026-10-29 21:57Z): the review of a PR that touches a not-checked area, when the
     reader test held the full one twice: line 2, the money decision (each place linked to its changed range
     with its one line, R32) and the status line, nothing the review model wrote."""
-    rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False)
+    rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False, money_info=money_info)
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -730,19 +732,20 @@ def describe_money(cfg, idx, located, ruleset):
     (every place is linked; the mayor, 2026-10-30 01:40Z: never a bare count; 02:11Z: a missing line gets
     one retry, then "(not summarized)"). Returns (ranges, meta)."""
     ranges = pr_format.money_ranges(idx, located)
-    words, out, cost = ruleset.get('not_checked') or 'billing, plans, credits or pricing', [], 0
+    words, out, cost, info = ruleset.get('not_checked') or 'billing, plans, credits or pricing', [], 0, {}
     for k in range(0, len(ranges), pr_money.MAX_PLACES):
         part, m = pr_money.describe(cfg, idx, ranges[k:k + pr_money.MAX_PLACES], words)
         out, cost = out + part, cost + (m.get('cost_usd') or 0)
+        info = info or {'overview': clean(m.get('overview') or ''), 'question': clean(m.get('question') or '')}
     miss = [j for j, r in enumerate(out) if not r['what'].strip()]
     if miss:  # one more try for just the places that came back without a line (the mayor, 02:11Z)
         again, m = pr_money.describe(cfg, idx, [out[j] for j in miss], words)
         cost += m.get('cost_usd') or 0
         for j, r in zip(miss, again):
-            out[j].update(what=r['what'], kind=r.get('kind') or out[j].get('kind'))
+            out[j].update({k: r[k] for k in ('what', 'kind', 'behaviour', 'risk') if k in r})
     # A place still without a line keeps its link and says so: it never holds the money review.
     return [dict(r, what=clip(clean(r['what']), pr_format.MONEY_WORDS) or pr_format.NOT_SUMMARIZED) for r in out], \
-        {'cost_usd': cost}
+        {'cost_usd': cost, **info}
 
 
 def clip(text, words):
@@ -822,7 +825,7 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     author = author_of(pr)
     money, mmeta = describe_money(cfg, pr_format.diff_index(pr_diff(entry['repo'], pr['number'])), nc, ruleset) \
         if nc else ([], {})
-    rv = assemble(cfg, entry['repo'], pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False)
+    rv = assemble(cfg, entry['repo'], pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False, money_info=mmeta)
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
     reasons = pr_format.gate(rv, {}, body, None, pr.get('body') or '', [], [])
     if dry:
@@ -890,11 +893,11 @@ def model_review(cfg, key, entry, dry, rereview=False):
                             if x['line'] in (idx.get(x['path']) or {}).get('new', set())]
             nc_key = tuple(sorted({(x['path'], x['line']) for x in nc}))
             if nc_key not in money_memo:  # R32: the money lines, once per set of places
-                money_memo[nc_key], mm = describe_money(cfg, idx, nc, ruleset) if nc else ([], {})
-                extra['money_cost_usd'] += mm.get('cost_usd') or 0
-            money = money_memo[nc_key]
+                money_memo[nc_key] = describe_money(cfg, idx, nc, ruleset) if nc else ([], {})
+                extra['money_cost_usd'] += money_memo[nc_key][1].get('cost_usd') or 0
+            money, money_info = money_memo[nc_key]
             rv = assemble(cfg, repo, pr, ci, decisions, items, model['cleared'], model, flagged,
-                          flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, conflicts=conflicts)
+                          flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info, conflicts=conflicts)
             body = pr_format.render(repo, pr, rv, NAME, author)
             comments = pr_format.inline_comments(rv['items'], author)
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
@@ -929,7 +932,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             asked = [question_from(c, risky_q.get(j)) for j, c in enumerate(rv['cleared'], 1) if j in risky]
             rv = assemble(cfg, repo, pr, ci, decisions, (items + asked)[:pr_format.MAX_ITEMS],
                           [c for j, c in enumerate(model['cleared'], 1) if j not in risky], model,
-                          flagged, flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest,
+                          flagged, flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
                           conflicts=conflicts)
             if in_skip:
                 rv['approve'] = False
@@ -956,7 +959,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         if fallback == 'not-checked-minimal':
             # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
             # deliver only line 2, the money decision and the facts line, with no model findings (R33).
-            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author)
+            rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info)
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,

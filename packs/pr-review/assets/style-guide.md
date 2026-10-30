@@ -1,4 +1,4 @@
-# Review style guide, v5.1
+# Review style guide, v5.2
 
 What a delivered review must look like. The review model gets this file with its instructions. The
 gate in `pr_format.py` checks every rule marked **[gate]** before anything is delivered. A review that
@@ -37,6 +37,8 @@ names the complaint it came from. A new complaint becomes a new rule and a regre
   billing PR's money review was held over 2 of 22 places without a line and fell to a bare note ("a
   hand-off with no options still forces Alex to read the PR"). R32 and R33 changed; body items became one
   line each (their text is in the inline comment); R31's question comes from the reader.
+- v5.2, 2026-10-30 02:24Z: the money review was one point short on length (30 lines for 19 places) and
+  line 2 said "Nils: nothing" though the recommended option gave Nils a task. R22 and R32 changed.
 
 ## Who reads it
 
@@ -52,18 +54,20 @@ REQUEST_CHANGES for changes (R35), else COMMENT. The items are also inline comme
 
 ```
 **Needs you** · automated, Alex hasn't read this PR
-Alex: 1 decision (billing, plans, credits or pricing not checked). Nils: 1 change, get CI running.
+Alex: 1 decision (billing, plans, credits or pricing not checked). Nils: 1 change, get CI running, if Alex picks A, state in the PR description what changes for customers.
 
 **What it does:** Reminders now take an SMS credit and name the patient in the text.
 
 **For Alex:**
-1. **Who confirms what this PR changes in billing, plans, credits or pricing before it merges?**
-   No agent checks money logic, so a person has to confirm what it changes.
-   **What changes:**
-   - Credits · [`ledger.ts` L10-L24](…/blob/<head>/src/billing/ledger.ts#L10-L24): each reminder now takes one SMS credit.
-   A. Nils states in the PR description what changes for customers
-   B. A person who owns billing reviews the changes
-   C. Accept as is
+1. **After merge every clinic pays one SMS credit per reminder by default; who confirms that?**
+   Reminders now take one SMS credit each, on for every clinic by default.
+   **Credits:**
+   - [`ledger.ts` L10-L24](…/blob/<head>/src/billing/ledger.ts#L10-L24): each reminder now takes one SMS credit.
+   **Other places:**
+   - No behaviour change: [`types.ts` L3](…), [`ledger.test.ts` L40-L52](…)
+   A. Nils states in the PR description what changes for customers: one paragraph puts on record what customers will see
+   B. A person who owns billing reviews the changes: they know the pricing rules this touches
+   C. Accept as is: only if whoever owns pricing has already agreed to it
    **Recommended: A.** One paragraph from Nils puts on record what customers will see, and nobody has to read code.
 
 **For Nils:**
@@ -116,7 +120,7 @@ Nothing for Alex or Nils.
 | R19 | Never "nothing to check" when a content rule fired. Each flagged hunk is cleared in the review (`Checked and cleared:`, R29), or becomes an item or a decision on its lines. | [gate] | v4: "nothing to check" hid fired rules |
 | R20 | A PR that touches a NOT-CHECKED area (billing, plans, credits, pricing) says so in line 2 and gets a decision on who confirms what it changes (R32). Never low risk, never an approval. Found by a zero-token rule and by the lines the model reports. | [gate] | v4: billing-touching PRs called low risk, despite the honesty rule |
 | R21 | Each finding is said once: its inline comment states it in full on the exact lines, anchored (GitHub reports a line for it), and the body has one line pointing at it. No suggested reply, no two items on the same lines. | [gate] (+ delivery) | v4: one review said its finding three times; the mayor, 02:11Z |
-| R22 | Line 2 says who acts: `<reviewer>: N decisions` or `nothing`, then `<author>:` the changes, questions and blockers, e.g. "Alex: nothing. Nils: 1 change, resolve the merge conflict, get CI running."; "Nothing for <reviewer> or <author>." when nobody acts. A blocker in the status line (CI red, missing, skipped or running, a merge conflict) is a linked ask for the author; a merge conflict names and links the conflicting files. | [gate] | v4; the mayor, 01:40Z |
+| R22 | Line 2 says who acts: `<reviewer>: N decisions` or `nothing`, then `<author>:` the changes, questions and blockers, e.g. "Alex: nothing. Nils: 1 change, resolve the merge conflict, get CI running."; "Nothing for <reviewer> or <author>." when nobody acts. When a decision's recommended option gives the author a task, line 2 names it ("if Alex picks A, state in the PR description what changes for customers"): the author may stop reading at line 2. A blocker in the status line (CI red, missing, skipped or running, a merge conflict) is a linked ask for the author; a merge conflict names and links the conflicting files. | [gate] | v4; the mayor, 01:40Z |
 | R23 | No rule-codes section; a collapsed section only in an approval (R36). "Not checked" appears only when the PR touches that area. | [gate] | v4 |
 | R24 | ONE review of ours per PR head: an approval carries the whole review in its body, with no separate comment. | [gate] (delivery) | v4: a comment plus an approval on one head |
 | R25 | No "[link removed]" fragments: a sentence that needed a link to another site is rewritten without it. | [gate] | v4 |
@@ -126,7 +130,7 @@ Nothing for Alex or Nils.
 | R29 | Each cleared entry and each item leads with 3-6 plain words on what this PR changed there (never a category label, never a raw identifier), then the ONE fact that makes it safe, or the one ask, in at most 25 words. | [gate] | the mayor, 22:03Z and 01:40Z |
 | R30 | No identical boilerplate across reviews. The status line shows only when something did not pass. `Safe to skip:` links every file it names, by group ("tests: [`a.test.ts`](…), …"). A change in product behaviour is never in it (R37). | [gate] | the mayor, 22:03Z and 01:40Z |
 | R31 | A cleared entry that describes a behaviour that could be a risk without saying why it is acceptable or intended is not cleared: the reader test names it, the review is regenerated, and what the reader still names becomes a question for the author, so there is no approval. The question is the reader's one concrete check on those lines, never a stock prompt. | [gate] (model) | the mayor, 22:03Z: a risky "cleared" entry inside an approval; 02:11Z |
-| R32 | The money decision (R20) saves the reviewer time: one neutral line per changed place saying what the change does to charges, credits, plans or limits (it describes, never judges), from a zero-tool reading of the hunk, so it holds even when the full review is held (a place without a line gets one more try, then keeps its link with "(not summarized)": a missing line never holds the money review); EVERY place linked to its changed range at the head, grouped by kind, the short file name as the link text, never a bare count; the options on lettered lines and the recommendation with a reason; "not checked" said ONCE, in line 2. | [gate] | the mayor, 22:08Z and 01:40Z: "go look yourself" |
+| R32 | The money decision (R20) saves the reviewer time. Its question is the concrete effect after merge with the default setting, and who confirms it; it opens with one sentence on what the change does and its default state. The places that change behaviour come first, by risk, at most 6, under one header per kind; the other places (lower risk, or no behaviour change) collapse into one line each that still links every place. Each option has its reason. One neutral line per changed place saying what the change does to charges, credits, plans or limits (it describes, never judges), from a zero-tool reading of the hunk, so it holds even when the full review is held (a place without a line gets one more try, then keeps its link with "(not summarized)": a missing line never holds the money review); EVERY place linked to its changed range at the head, grouped by kind, the short file name as the link text, never a bare count; the options on lettered lines and the recommendation with a reason; "not checked" said ONCE, in line 2. | [gate] | the mayor, 22:08Z and 01:40Z: "go look yourself" |
 | R33 | Never silent on a PR that requests the reviewer, and never below a floor the reviewer can act on: the fallback ladder is monotone. When the gate or the reader test holds a review twice, a PR that touches a not-checked area gets the money review (line 1, line 2, the money decision of R32, the status line; nothing the review model wrote). Otherwise, or if that is held too, a PR that requests the reviewer gets the note: "**Not reviewed automatically**" as its verdict, why it was held in plain words (for example "it touches billing in 22 places, which no agent checks"), the places the zero-token rules know, each linked, and one rule-level decision, "Who reviews this PR before it merges?", with lettered options and a recommended letter with its reason (none asks the reviewer to read code, R37). Slack "Not reviewed: <review URL>". The reader test scores the fallbacks for the log; it never holds them. The reader's reasons for each held attempt are kept host-local. | [gate] | the mayor, 21:57Z, 22:30Z and 02:11Z: requested PRs held and silent, then a bare note |
 | R34 | Missing, skipped or red CI never skips the model on a PR that requests the reviewer: the model reviews it, and the CI blocker is one linked ask for the author (R22). | [gate] (routing) | the mayor, 22:30Z: a PR without CI got "Questions" with no question |
 | R35 | The outcome word matches the event. "Changes requested" only on a REQUEST_CHANGES review (with `PR_REVIEW_REQUEST_CHANGES=on`, the reviewer's word); a COMMENT review says "Changes suggested". Questions and escalations stay COMMENT. Our newest review is our only live verdict: it dismisses our earlier REQUEST_CHANGES and APPROVE reviews on the PR (never one the reviewer wrote). A block that rested only on a merge conflict or CI is lifted by the sweep once both are fixed on a new head; a block on content gets a review of the new head. | [gate] (+ sweep) | the mayor, 22:30Z and 01:40Z; the reviewer, 23:09Z |

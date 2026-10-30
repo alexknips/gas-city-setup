@@ -295,6 +295,20 @@ CASES = {
         'facts': 'CI passed · merge conflict · open',
         'blockers': pr_format.blockers('example/repo', {'number': 1, 'mergeable': 'CONFLICTING'}, 'green', (),
                                        ['src/notify/send.ts'])},
+    # 2026-10-30 02:24Z (the mayor on the 29a3588 money review: one point short on length; line 2 said
+    # "Nils: nothing" though the recommended option gave Nils a task): R32, R22.
+    'case69-line-2-misses-the-recommended-task': {
+        'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'tree_lines': TREE, 'decisions': [MONEY], 'not_checked': NOT_CHECKED,
+        'body_edit': ['Author: if Reviewer picks A, state in the PR description what changes for customers.', 'Author: nothing.']},
+    'case70-money-places-collapsed': {
+        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'tree_lines': {**TREE, **{f'src/billing/p{k}.ts': 40 for k in range(9)}},
+        'not_checked': NOT_CHECKED, 'decisions': [pr_format.not_checked_decision(
+            [{'path': f'src/billing/p{k}.ts', 'line_start': 10, 'line_end': 20, 'kind': ['credits', 'plans'][k % 2],
+              'what': f'Place {k} now charges one credit per reminder sent.', 'behaviour': k < 7, 'risk': 1 + k % 5}
+             for k in range(9)], NOT_CHECKED, 'Author', 'Reminders now cost one credit each, on for every clinic by default.',
+            'After merge every clinic pays one credit per reminder by default; who confirms that?')]},
     # 2026-10-30 01:40Z (the mayor: a formal block on a merge conflict outlived the conflict): the sweep lifts
     # a block that rested only on a conflict or CI once both are fixed; a block on content gets a review of
     # the new head, once.

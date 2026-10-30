@@ -42,6 +42,7 @@ SUGGESTED = 'Changes suggested'
 MAX_ITEMS, MAX_DECISIONS, MAX_FIELD, MAX_BODY = 5, 3, 300, 6000
 MAX_SKIP_LINKS = 12  # files the skip list links one by one; then one link to the files view (R30)
 MONEY_KINDS = ['charges', 'credits', 'plans', 'limits', 'other']  # R32: the money places, grouped
+MONEY_SHOWN = 6  # R32: the money places shown one by one (behaviour first, by risk); the rest in two linked lines
 MONEY_WORDS = 30  # R32: one line per place ("about 25 words"; pr_review clips longer ones)
 GREEN_FACTS = 'CI passed · no merge conflict · open'  # R30: the status line shows only when it is not this
 
@@ -240,7 +241,8 @@ def who_acts(rv, name, author):
     n_change = sum(1 for i in rv['items'] if i['kind'] == 'change')
     n_q = sum(1 for i in rv['items'] if i['kind'] == 'question')
     parts = ([plural(n_change, 'change', 'changes')] if n_change else []) + \
-            ([plural(n_q, 'question', 'questions')] if n_q else []) + [b['short'] for b in rv['blockers']]
+            ([plural(n_q, 'question', 'questions')] if n_q else []) + [b['short'] for b in rv['blockers']] + \
+            [f"if {name} picks {LETTERS[x['recommended']]}, {x['author_task']}" for x in d if x.get('author_task')]
     if not d and not parts:
         return f'Nothing for {name} or {author}.'
     you = plural(len(d), 'decision', 'decisions') if d else 'nothing'
@@ -309,19 +311,23 @@ def render(repo, pr, rv, name, author):
     if rv['decisions']:
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
+            money = d.get('area') == NOT_CHECKED_AREA
             opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
-            lines += [f"{k}. **{d['question']}**{opener}", f"   {d['why']}"]
+            lines += [f"{k}. **{d['question']}**{opener}"]
+            if d.get('opening' if money else 'why'):
+                lines.append(f"   {d['opening' if money else 'why']}")
             if rule_ref(repo, rv, d.get('rule')):
                 lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
-            if d.get('where'):
-                money = d.get('area') == NOT_CHECKED_AREA
-                lines.append('   **What changes:**' if money else '   **Where:**')
-                order = {k: j for j, k in enumerate(MONEY_KINDS)}
-                for x in sorted(d['where'], key=lambda x: order.get(x.get('kind') or 'other', len(order))) if money else d['where']:
+            if d.get('where') and money:
+                lines += money_lines(repo, head, d['where'])
+            elif d.get('where'):
+                lines.append('   **Where:**')
+                for x in d['where']:
                     url = code_link(repo, head, x['path'], x['line_start'], x['line_end'])
-                    kind = f"{(x.get('kind') or 'other').capitalize()} · " if money else ''
-                    lines.append(f"   - {kind}[`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
-            lines += [f'   {LETTERS[j]}. {o}' for j, o in enumerate(d['options'][:len(LETTERS)])]
+                    lines.append(f"   - [`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
+            why_opt = d.get('option_reasons') or []
+            lines += [f'   {LETTERS[j]}. {o}' + (f': {why_opt[j]}' if j < len(why_opt) and why_opt[j] else '')
+                      for j, o in enumerate(d['options'][:len(LETTERS)])]
             rec = d.get('recommended', 0)
             lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
                          f"{d['reason']}")
@@ -347,6 +353,31 @@ def render(repo, pr, rv, name, author):
     if rv['facts'] != GREEN_FACTS:
         lines.append(rv['facts'])
     return '\n'.join(lines).rstrip()
+
+
+def place_link(repo, head, x):
+    return f"[`{short_name(x['path'])}` {rng_text(x)}]({code_link(repo, head, x['path'], x['line_start'], x['line_end'])})"
+
+
+def money_lines(repo, head, where):
+    """R32 (the mayor, 2026-10-30 02:24Z): the places that change behaviour first, by risk, at most
+    MONEY_SHOWN, each with its line, under one header per kind; the other behaviour places and the places
+    that change no behaviour in one linked line each. Every place stays linked; never a bare count."""
+    moving = sorted((x for x in where if x.get('behaviour', True)), key=lambda x: -(x.get('risk') or 3))
+    shown, more = moving[:MONEY_SHOWN], moving[MONEY_SHOWN:]
+    quiet = [x for x in where if not x.get('behaviour', True)]
+    out, order = [], {k: j for j, k in enumerate(MONEY_KINDS)}
+    for kind in sorted({x.get('kind') or 'other' for x in shown}, key=lambda k: order.get(k, len(order))):
+        out.append(f'   **{kind.capitalize()}:**')
+        out += [f"   - {place_link(repo, head, x)}: {x.get('what') or NOT_SUMMARIZED}"
+                for x in shown if (x.get('kind') or 'other') == kind]
+    if more or quiet:
+        out.append('   **Other places:**')
+    if more:
+        out.append('   - Lower risk: ' + ', '.join(place_link(repo, head, x) for x in more))
+    if quiet:
+        out.append('   - No behaviour change: ' + ', '.join(place_link(repo, head, x) for x in quiet))
+    return out
 
 
 def skip_text(repo, number, groups):
@@ -399,19 +430,33 @@ def money_ranges(idx, located):
     return out
 
 
-def not_checked_decision(ranges, words, author):
+def one_question(q):
+    q = (q or '').strip()
+    return q if q.endswith('?') and q.count('?') == 1 and len(q.split()) >= 6 else ''
+
+
+def not_checked_decision(ranges, words, author, overview='', question=''):
     """R20, R32, R37: the PR touches an area no agent checks, so a person must confirm what it changes.
-    `ranges`: [{path, line_start, line_end, what}], each changed range with one neutral line on what it
-    does (money_ranges, then pr_money). The options never ask the reviewer to read code (R37)."""
+    `ranges`: [{path, line_start, line_end, what, kind, behaviour, risk}], each changed range with one
+    neutral line (money_ranges, then pr_money); `overview`: what the change does and its default state;
+    `question`: its concrete effect after merge (the mayor, 02:24Z), else a plain fallback. The options
+    never ask the reviewer to read code (R37); each has its reason, and the recommended one's task for the
+    author goes into line 2."""
     first = ranges[0]
-    return {'question': f'Who confirms what this PR changes in {words} before it merges?',
+    return {'question': one_question(question) or f'Who confirms what this PR changes in {words} before it merges?',
+            'opening': overview,
             'options': [f'{author} states in the PR description what changes for customers',
                         'A person who owns billing reviews the changes',
                         'Accept as is'],
+            'option_reasons': ['one paragraph puts on record what customers will see',
+                               'they know the pricing rules this touches',
+                               'only if whoever owns pricing has already agreed to it'],
             'recommended': 0,
             'reason': f'One paragraph from {author} puts on record what customers will see, and nobody has to read code.',
+            'author_task': 'state in the PR description what changes for customers',
             'why': 'No agent checks money logic, so a person has to confirm what it changes.',
-            'where': [{k: x.get(k) for k in ('path', 'line_start', 'line_end', 'what')} for x in ranges],
+            'where': [{k: x.get(k) for k in ('path', 'line_start', 'line_end', 'what', 'kind', 'behaviour', 'risk')}
+                      for x in ranges],
             'area': NOT_CHECKED_AREA, 'rule': '',
             'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line_start'], 'line_end': first['line_end']},
             'verified': 'zero-token rule', 'confidence': 10, 'auto': True}
@@ -426,7 +471,11 @@ def floor_decision(places, author, why):
          'options': [f'{author} asks a teammate who knows this code to review it',
                      f'{author} states in the PR description what it changes and why that is safe, and you then decide',
                      'Accept it as is'],
+         'option_reasons': ['a person who knows the code checks in one pass what our review could not',
+                            'the author knows the change; a written account lets you decide without reading code',
+                            'only if a wrong change here would be cheap to undo'],
          'recommended': 0, 'reason': 'A person who knows the code checks in one pass what our review could not.',
+         'author_task': 'ask a teammate who knows this code to review it',
          'why': why, 'area': 'other', 'rule': '', 'verified': 'zero-token rules', 'confidence': 10, 'auto': True}
     if places:
         first = places[0]
@@ -522,7 +571,8 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         rec = d.get('recommended')
         if not isinstance(rec, int) or not 0 <= rec < len(d.get('options') or []):
             why.append(f'R16: {p} recommends none of its options')
-        if any(REVIEW_CODE_RE.search(t or '') for t in list(d.get('options') or []) + [d.get('reason'), d.get('question')]):
+        if any(REVIEW_CODE_RE.search(t or '') for t in list(d.get('options') or []) + list(d.get('option_reasons') or [])
+               + [d.get('reason'), d.get('question')]):
             why.append(f'R37: {p} asks the reviewer to read or review code; decide at the level of rules and goals')
         for j, x in enumerate(d.get('where') or [], 1):  # R32: every place, linked, with its line
             if not isinstance(x.get('line_start'), int) or not isinstance(x.get('line_end'), int):
@@ -655,6 +705,11 @@ def gate_body(body, rv, comments=None):
             why.append(f'R22: line 2 counts {m.group(3) or 0} decisions, the review has {n_dec}')
         if bool(m.group(4)) != bool(rv.get('not_checked')):
             why.append('R20: line 2 must say when the PR touches a not-checked area, and only then')
+        tasks = [x for x in rv.get('decisions') or [] if x.get('author_task')]
+        for x in tasks:
+            if f"picks {LETTERS[x['recommended']]}, {x['author_task']}" not in m.group(7):
+                why.append("R22: line 2 does not name the task the recommended option gives the author")
+        asks += len(tasks)
         if (m.group(7) == 'nothing') != (asks == 0):
             why.append(f'R22: line 2 says the author has {m.group(7)!r}, the review has {asks} asks')
         if not n_dec and not asks:
@@ -696,6 +751,11 @@ def gate_body(body, rv, comments=None):
                 why.append(f"R22: the status line has a blocker but line 2 does not ask for it: {', '.join(missing)}")
         if rest and rest[-1] != fl:
             why.append('R9: the status line is not the last line')
+    block = body.split('   **What changes:**', 1)[1].split('\n   A. ', 1)[0] if '   **What changes:**' in body else ''
+    one_by_one = re.findall(r'^   - .*\]\(https://github\.com/[^)]+/blob/[0-9a-f]{40}/[^)]+\): \S', block, re.M)
+    if len(one_by_one) > MONEY_SHOWN:
+        why.append(f'R32: {len(one_by_one)} money places listed one by one; show at most {MONEY_SHOWN}, the rest in a '
+                   f'linked line')
     said = len(re.findall(r'(?i)\bnot checked\b', body))
     if rv.get('not_checked') and said != 1:
         why.append(f'R32: "not checked" is said {said} times; say it once, in line 2')
@@ -844,6 +904,8 @@ def regress(dirs):
                       'headRefOid': 'a' * 40}
                 rv = review_of(fx)
                 body = render('example/repo', pr, rv, 'Reviewer', 'Author')
+                if fx.get('body_edit'):  # a rendered body broken on purpose
+                    body = body.replace(*fx['body_edit'])
                 reasons = gate(rv, idx, body, fx.get('tree_lines'), fx.get('pr_text', ''), fx.get('flagged', []),
                                inline_comments(rv['items'], 'Author'))
                 if 'approve_check' in fx:
