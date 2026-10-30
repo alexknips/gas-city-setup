@@ -1,0 +1,197 @@
+{
+ "expect": "pass",
+ "voice": "reviewer",
+ "outcome": "questions",
+ "derived": true,
+ "diff": "diff --git a/src/notify/send.ts b/src/notify/send.ts\nindex 1111111..2222222 100644\n--- a/src/notify/send.ts\n+++ b/src/notify/send.ts\n@@ -10,6 +10,9 @@ export async function remind(visit: Visit) {\n   const contact = await loadContact(visit.contactId);\n   if (!contact.optIn) return;\n-  await queue.add(visit.id);\n+  const body = `Reminder for ${contact.fullName}, born ${contact.dob}`;\n+  await smsClient.send(contact.phone, body);\n+  logger.info(`sent reminder ${body}`);\n+  await queue.add(visit.id);\n   return true;\n }\ndiff --git a/test/notify.test.ts b/test/notify.test.ts\nindex 3333333..4444444 100644\n--- a/test/notify.test.ts\n+++ b/test/notify.test.ts\n@@ -1,3 +1,4 @@\n import { remind } from '../src/notify/send';\n+it('sends', async () => expect(await remind(fake)).toBe(true));\n\n",
+ "items": [],
+ "model": false,
+ "decisions": [
+  {
+   "question": "What sign-off does this change to billing, plans, credits or pricing need before it merges?",
+   "opening": "Overdue invoices get a late fee after thirty days, on by default.",
+   "opening_places": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "options": [
+    "You state in the PR description what changes for customers",
+    "Whoever owns billing signs off, here or by linking where they already did",
+    "You merge it as is"
+   ],
+   "option_reasons": [
+    "a short written account puts on record what customers will see",
+    "they know the pricing rules this touches",
+    "when customers see no change from it yet, for example while it is off"
+   ],
+   "actors": [
+    "author",
+    "picked",
+    "author"
+   ],
+   "recommended": 0,
+   "reason": "It takes you one paragraph, and it gives whoever owns billing something concrete to agree with.",
+   "why": "No agent checks money logic, so a person has to confirm what it changes.",
+   "where": [
+    {
+     "path": "src/billing/part0.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 0 now reads the fee from the plan.",
+     "kind": "charges",
+     "behaviour": true,
+     "risk": 3
+    },
+    {
+     "path": "src/billing/part1.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 1 now reads the fee from the plan.",
+     "kind": "credits",
+     "behaviour": true,
+     "risk": 2
+    },
+    {
+     "path": "src/billing/part2.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 2 now reads the fee from the plan.",
+     "kind": "plans",
+     "behaviour": true,
+     "risk": 1
+    },
+    {
+     "path": "src/billing/part3.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 3 now reads the fee from the plan.",
+     "kind": "limits",
+     "behaviour": true,
+     "risk": 3
+    },
+    {
+     "path": "src/billing/part4.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 4 now reads the fee from the plan.",
+     "kind": "other",
+     "behaviour": true,
+     "risk": 2
+    },
+    {
+     "path": "src/billing/part5.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 5 now reads the fee from the plan.",
+     "kind": "charges",
+     "behaviour": true,
+     "risk": 1
+    },
+    {
+     "path": "src/billing/part6.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 6 now reads the fee from the plan.",
+     "kind": "credits",
+     "behaviour": true,
+     "risk": 3
+    },
+    {
+     "path": "src/billing/part7.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 7 now reads the fee from the plan.",
+     "kind": "plans",
+     "behaviour": true,
+     "risk": 2
+    },
+    {
+     "path": "src/billing/part8.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 8 now reads the fee from the plan.",
+     "kind": "limits",
+     "behaviour": true,
+     "risk": 1
+    },
+    {
+     "path": "src/billing/part9.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 9 now reads the fee from the plan.",
+     "kind": "other",
+     "behaviour": true,
+     "risk": 3
+    },
+    {
+     "path": "src/billing/part10.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 10 now reads the fee from the plan.",
+     "kind": "charges",
+     "behaviour": false,
+     "risk": 2
+    },
+    {
+     "path": "src/billing/part11.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 11 now reads the fee from the plan.",
+     "kind": "credits",
+     "behaviour": false,
+     "risk": 1
+    },
+    {
+     "path": "src/billing/part12.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 12 now reads the fee from the plan.",
+     "kind": "plans",
+     "behaviour": false,
+     "risk": 3
+    },
+    {
+     "path": "src/billing/part13.ts",
+     "line_start": 10,
+     "line_end": 12,
+     "what": "Billing step 13 now reads the fee from the plan.",
+     "kind": "limits",
+     "behaviour": false,
+     "risk": 2
+    }
+   ],
+   "area": "not checked",
+   "rule": "",
+   "link": {
+    "kind": "code",
+    "path": "src/billing/part0.ts",
+    "line_start": 10,
+    "line_end": 12
+   },
+   "verified": "zero-token rule",
+   "confidence": 10,
+   "auto": true,
+   "scope": "Billing, plans, credits or pricing are outside this review."
+  }
+ ],
+ "not_checked": "billing, plans, credits or pricing",
+ "fallback": true,
+ "gaps": [
+  {
+   "kind": "not-checked",
+   "accepted": true
+  },
+  {
+   "kind": "below-bar",
+   "accepted": true
+  }
+ ],
+ "body_re": [
+  "^\\n\\[10 other places\\]\\(https://github\\.com/example/repo/pull/1/files\\) in the files view\\.$"
+ ],
+ "body_not_re": [
+  "<details>"
+ ]
+}

@@ -13,6 +13,9 @@ left alone and counted.
 
 Prints counts only. A dismissed review keeps its dismissal message (GitHub has no edit for it).
   pr_restamp.py --ours ID,ID ...      also treat these review ids as ours (bodies whose marker was removed by hand)
+
+Either way it counts the reviewer's reviews that have a body but no marker (`unmarked_with_body`, with their
+ids): a lost marker, or the reviewer's own words. They are never touched unless named with --ours.
   pr_restamp.py --selftest            the shapes and the PR list on synthetic data
 """
 import argparse
@@ -159,7 +162,7 @@ def restamp(cfg, apply, merged, ours=()):
     found = searched_prs(cfg)
     todo = targets(entries, found)
     n = collections.Counter(prs=len(todo), prs_in_state=len(entries), prs_not_in_state=len(todo) - len(entries))
-    new_sha = {}
+    new_sha, lost_ids = {}, []
     for repo, num, e in todo:
         key = f'{repo}#{num}'
         try:
@@ -174,6 +177,9 @@ def restamp(cfg, apply, merged, ours=()):
             n['prs_skipped_not_open'] += 1
             continue
         author = names.get(pr['author'], pr['author'])
+        lost = unmarked(reviews, ours)
+        n['unmarked_with_body'] += len(lost)
+        lost_ids += lost
         mine = [rv for rv in reviews if pr_format.is_ours(rv['body']) or int(rv['id']) in ours]
         retarget = dict(pr_format.repoints(mine, name, 'reviewer'))  # pointers follow the newest review
         for rv in mine:
@@ -222,7 +228,14 @@ def restamp(cfg, apply, merged, ours=()):
             for key, sha in new_sha.items():
                 if key in st['prs']:
                     st['prs'][key]['body_sha'] = sha
-    print(json.dumps({'apply': apply, 'merged': merged, **dict(sorted(n.items()))}))
+    print(json.dumps({'apply': apply, 'merged': merged, **dict(sorted(n.items())), 'unmarked_with_body_ids': lost_ids}))
+
+
+def unmarked(reviews, ours=()):
+    """The ids of the reviewer's reviews with a body but no marker and not named as ours: a marker lost to a
+    hand edit, or the reviewer's own words (the mayor, 2026-10-30 15:45Z). Counted, never changed."""
+    return [int(r['id']) for r in reviews if (r.get('body') or '').strip() and not pr_format.is_ours(r['body'])
+            and int(r['id']) not in ours]
 
 
 def selftest():
@@ -252,6 +265,9 @@ def selftest():
              {'id': 3, 'body': approval, 'html_url': u + '3'}]
     moved = dict(pr_format.repoints(chain, 'A', 'reviewer'))
     checks['v5.8: every pointer follows the newest review'] = list(moved) == [1] and moved[1].endswith(f'({u}3).')
+    hand = [{'id': 7, 'body': 'Looks good to me.'}, {'id': 8, 'body': ''}, {'id': 9, 'body': approval}]
+    checks['v5.8.2: a body without the marker is counted, an empty approval and ours are not'] = \
+        unmarked(hand) == [7] and unmarked(hand, ours=(7,)) == []
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())

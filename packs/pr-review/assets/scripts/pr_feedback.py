@@ -149,6 +149,32 @@ def summarize(st, weeks=2):
     return out
 
 
+def fallback_split(state_dir, weeks=2):
+    """Per ISO week, from every model review run in the log (the mayor, 2026-10-30 16:10Z): the runs, those
+    that ended in a fallback, split by what held them (wording or format reasons only, or a content rule;
+    runs before v5.8.2 did not record it), the runs a repair saved, and the R29 miss rate (first answers
+    that missed R29, runs R29 still held at the end)."""
+    rows = collections.defaultdict(collections.Counter)
+    path = os.path.join(state_dir, 'pr-review.jsonl')
+    for line in open(path) if os.path.exists(path) else []:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if r.get('run') != 'review' or not r.get('attempts') or not r.get('at'):
+            continue
+        c = rows[week_of(r['at'])]
+        c['model_runs'] += 1
+        c['r29_first'] += 'R29' in (r.get('gate_first') or [])  # the R29 miss rate (the mayor, 16:36Z)
+        c['r29_held'] += 'R29' in (r.get('held_gate') or r.get('gate') or [])
+        if r.get('fallback'):
+            c['fallback'] += 1
+            c['fallback_' + (r.get('held_by') or 'unsplit')] += 1
+        elif (r.get('repaired') or r.get('rewritten')) and 'repair_held' in r and not r['repair_held']:
+            c['repaired'] += 1
+    return {w: dict(rows[w]) for w in sorted(rows)[-weeks:]}
+
+
 def panel(cfg, summary, now):
     week = week_of(pr_state.iso(now))
     c = summary.get(week, {})
@@ -165,7 +191,13 @@ def panel(cfg, summary, now):
                       f"{c.get('outcome_not-reviewed', 0)} got the short not-reviewed note)"],
                      [f"{c['median_useful']:g} / {c['median_markers']:g}" if c.get('judged') else 'no data',
                       f"reader test, median useful / markers of 5 ({c.get('judged', 0)} read, "
-                      f"{c.get('judge_below_bar', 0)} below the bar)"]],
+                      f"{c.get('judge_below_bar', 0)} below the bar)"],
+                     [f"{c.get('fallback', 0)} / {c.get('model_runs', 0)}",
+                      f"review runs that ended in a fallback ({c.get('fallback_format', 0)} held by format reasons only, "
+                      f"{c.get('fallback_content', 0)} by a content rule, {c.get('fallback_unsplit', 0)} before the split; "
+                      f"{c.get('repaired', 0)} saved by a repair)"],
+                     [f"{c.get('r29_first', 0)} / {c.get('model_runs', 0)}",
+                      f"first answers that missed R29, plain words ({c.get('r29_held', 0)} still held by it at the end)"]],
             'note': (f"{c.get('replies', 0)} with a reply in Slack, {c.get('false_alarm', 0)} 'needs you' you approved "
                      f"as is. Read hourly from Slack and GitHub; the texts stay on the host.")}
 
@@ -207,6 +239,8 @@ def run(cfg, dry):
         pr_judge.audit(cfg, int(os.environ.get('PR_REVIEW_JUDGE_PER_RUN', '5')))
     with pr_state.locked(cfg['state']) as st:
         summary = summarize(st)
+        for w, c in fallback_split(cfg['state']).items():
+            summary.setdefault(w, {}).update(c)
         st['feedback_summary'] = summary
     os.makedirs(os.path.dirname(cfg['panel']) or '.', exist_ok=True)
     with open(cfg['panel'] + '.tmp', 'w') as f:

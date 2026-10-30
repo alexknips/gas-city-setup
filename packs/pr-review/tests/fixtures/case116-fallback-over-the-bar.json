@@ -1,0 +1,16 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R33"
+ ],
+ "only_reasons": [
+  "R33"
+ ],
+ "voice": "reviewer",
+ "outcome": "questions",
+ "n_author_decisions": 1,
+ "model": false,
+ "not_checked": "billing, plans, credits or pricing",
+ "fallback": true,
+ "body": "**Questions** <!-- pr-review v5.6 -->\nAuthor: 1 question.\n\n**For Author:**\n1. **What sign-off does this change to billing, plans, credits or pricing need before it merges?** \u00b7 [`part0.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part0.ts#L10-L12)\n   Billing, plans, credits or pricing are outside this review. Overdue invoices get a late fee after thirty days, on by default ([`part1.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part1.ts#L10-L12), [`part2.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part2.ts#L10-L12), [`part3.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part3.ts#L10-L12)).\n   A. You state in the PR description what changes for customers: a short written account puts on record what customers will see\n   B. Whoever owns billing signs off, here or by linking where they already did: they know the pricing rules this touches\n   C. You merge it as is: when customers see no change from it yet, for example while it is off\n   **Recommended: A.** It takes you one paragraph, and it gives whoever owns billing something concrete to agree with.\n\n**Charges:**\n- [`part5.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part5.ts#L10-L12): Billing step 5 now reads the fee from the plan.\n**Credits:**\n- [`part6.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part6.ts#L10-L12): Billing step 6 now reads the fee from the plan.\n**Plans:**\n- [`part7.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part7.ts#L10-L12): Billing step 7 now reads the fee from the plan.\n**Limits:**\n- [`part8.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part8.ts#L10-L12): Billing step 8 now reads the fee from the plan.\n**Other:**\n- [`part9.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part9.ts#L10-L12): Billing step 9 now reads the fee from the plan.\n- [`part4.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part4.ts#L10-L12): Billing step 4 now reads the fee from the plan.\n\n<details><summary>Other places</summary>\n\n- No behaviour change: [`part10.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part10.ts#L10-L12), [`part11.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part11.ts#L10-L12), [`part12.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part12.ts#L10-L12), [`part13.ts` L10-L12](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/billing/part13.ts#L10-L12)\n\n</details>"
+}

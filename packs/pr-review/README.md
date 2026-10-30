@@ -306,7 +306,9 @@ the reviewer renamed "Open questions"; findings, links and options stay. It know
 (v3, v4, v5-v5.5, the notes and pointers) and leaves alone, counted, a review whose text would still hold a
 disclosure phrase (R38). It finds the PRs by GitHub's search (reviewed by the reviewer on the configured
 repositories) as well as the state, so a review older than the state is found too; `--ours ID,...` also
-treats the named review ids as ours (a body whose marker was removed by hand). A review already in the
+treats the named review ids as ours (a body whose marker was removed by hand). Either way it counts the
+reviewer's reviews that have a body but no marker (`unmarked_with_body`, with their ids): a lost marker, or
+the reviewer's own words, never touched unless named with `--ours`. A review already in the
 voice gets the v5.8 changes: line 2 names the author when nothing is needed, an approval with one cleared
 entry shows its reason above "What was checked", and every pointer follows the newest review. A dry run by default
 (counts only); `--apply` rewrites the reviews on open PRs, `--apply --merged` those on merged and closed PRs too. GitHub keeps each edited review's history, and a
@@ -319,8 +321,23 @@ counts only), `held-gate` (the gate or the reader test failed twice; nothing del
 `held-secret` (the text held a credential shape). Neither is silent on a PR that requests the
 reviewer: it gets the short note (`not-reviewed`, logged `fallback: not-reviewed`, R33). A PR that
 touches a not-checked area whose review the reader test held twice gets the minimal review first,
-logged `fallback: not-checked-minimal`. The reader's reasons for each held attempt go to
-`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`. Also `held-inline` (GitHub refused an inline comment;
+logged `fallback: not-checked-minimal`. The posted review is never worse than the one it replaces (the
+mayor, 2026-10-30 16:10Z and 16:36Z): a review held only by wording or format reasons is repaired, gated
+again and read by the reader test instead of falling back. First one narrow turn (the judge model, at most
+2 turns) rewrites the entries a wording rule failed (R29's lead words, length and identifiers; R5, R6, R10,
+R14 and R25 on a field): it gets only those entries, the rule messages, their style-guide rows and the
+entries' own lines, and only the named fields are taken from its answer. Then the script makes right what
+it can from the parts: a question's ask without its question mark (R13), a cleared entry that repeats an
+earlier one (R36), the citation of a rule the digest does not hold (R37). The log has `rewritten`,
+`repaired` and `repair_held` (what still held it). A content reason (R19 coverage, the reader test) still
+falls back, and a held run logs `held_by: format` or `content` (the Today card's fallback split, with the
+R29 miss rate). A fallback passes the bar the full review
+failed (R33): its money places are cut to the question's own, at most 2 more, and one link to the files
+view for the rest, and the gate holds a fallback over 8 links, 17 lines or 2,100 characters shown (the
+largest full reviews that passed the reader test). The reader's reasons for each held attempt go to
+`PR_REVIEW_WORK_DIR/feedback/reader.jsonl`, and the held attempt itself (the review dict, its body, the
+gate's reasons, the flags and the diff) to `feedback/held.jsonl`, so `pr_format.py --regate FILE` gates it
+again with later code at zero tokens (PR numbers and rule ids only). Also `held-inline` (GitHub refused an inline comment;
 nothing delivered, since a review without its markers breaks R4), `error` (the run failed, or a
 delivered review broke a delivery rule; see the log). A PR whose head or CI changed between the review
 and the post goes back to the queue (`requeued`).
@@ -425,7 +442,14 @@ the line it depends on, then the scope line, the evidence after the decision and
 option's own reason fails (R16). Case 91 also pins the approval's reason line. Cases 110-111 (v5.8.1,
 the mayor's P1, 2026-10-30 16:19Z): an approval whose flags sit on comments, one in a code hunk and one in a
 hunk of comments only, cleared on those comments, with a line break in the summary (passes); a markdown
-heading and bullet are text, not comments (passes). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+heading and bullet are text, not comments (passes). Cases 112-120 (v5.8.2, the mayor, 2026-10-30 10:25Z,
+16:10Z and 16:36Z; `repair` runs the run's repair flow first, `rewrite` stands for the narrow turn's
+answer): a low-risk approval held only by a repeated cleared entry is repaired and approved; a question
+without its question mark is repaired; with no answer from the turn, R29 still holds it; the #1981 fallback
+shape, 14 money places, renders the question's place, 2 more and one link to the files view (passes), and
+the same places in the full layout as a fallback fail (R33); entries that fail R29 are rewritten and the
+review posted (the #1982 approval and #112 question shapes); R19 next to R29 is not rewritten (content);
+an answer beyond the ask (another field, another entry) is ignored. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail
@@ -459,6 +483,8 @@ resumable, a spend cap) and `--score REPO` reports recall, recall on labelled de
 version. The run also keeps the model's own entries with their confidence, so `by_confidence` scores the
 same run at the bars 8 (what the script posts), 9 and 10. The version hashes the files that shape a review
 and the settings `PR_REVIEW_PROMPT`, `PR_REVIEW_CONTEXT`, `PR_REVIEW_SUGGESTIONS` and `PR_REVIEW_INCREMENTAL`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
+Each review a run makes is kept whole next to its results (`<repo>-reviews-<version>.jsonl`, the same rows
+as `feedback/held.jsonl`), so `pr_format.py --regate` gates a run again with later code at zero tokens.
 
 ## Calibration
 

@@ -13,7 +13,9 @@ are the lines of P that Q changed, found with `git blame` at Q's parent in the m
 squash-merges, so a blamed commit is a PR's merge commit. A CONTROL is a merged PR with at least 10
 added lines outside tests whose lines nobody changed within the same time. The benchmark is the
 repository's text, so it stays host-local (PR_REVIEW_WORK_DIR/bench, mode 600) and this script prints
-counts only.
+counts only. Each review a run makes is kept whole next to the results (`<repo>-reviews-<version>.jsonl`:
+the review dict, its body, the gate's reasons, the flags and the diff), so `pr_format.py --regate` can gate
+a run again with later code at zero tokens.
 """
 import argparse
 import collections
@@ -343,7 +345,8 @@ def run(cfg, repo, n_cases, n_controls):
             continue
         got = run_cfg['collect'][0] if run_cfg['collect'] else None
         x = (got or {}).get('extra') or {}
-        cost = sum(x.get(k) or 0 for k in ('cost_usd', 'judge_cost_usd', 'money_cost_usd', 'digest_cost_usd'))
+        cost = sum(x.get(k) or 0 for k in ('cost_usd', 'judge_cost_usd', 'money_cost_usd', 'digest_cost_usd',
+                                            'rewrite_cost_usd'))
         res['prs'][key] = {'kind': kind, 'head': c['head'], 'cost_usd': round(cost, 4), 'held': (got or {}).get('held'),
                            'anchors': anchors(got['rv']) if got else None,
                            'raw': raw_anchors(got.get('model')) if got else None,
@@ -354,6 +357,16 @@ def run(cfg, repo, n_cases, n_controls):
         with open(res_p, 'w') as f:
             json.dump(res, f)
         os.chmod(res_p, 0o600)
+        if got:  # each review kept whole, as pr_review keeps a held attempt (`pr_format.py --regate` reads both)
+            rev_p = res_p[:-len('.json')].replace('-results-', '-reviews-') + '.jsonl'
+            diff = got.get('diff') or ''
+            with open(rev_p, 'a') as f:
+                f.write(json.dumps({'pr': entry['url'], 'head': got.get('head'), 'attempt': f'bench {kind}',
+                                    'author': got.get('author'), 'reasons': got.get('reasons') or [], 'rv': got['rv'],
+                                    'body': got.get('body'), 'flagged': got.get('flagged') or [],
+                                    'pr_text': got.get('pr_text') or '',
+                                    'diff': diff if len(diff) <= pr_review.HELD_DIFF_MAX else None}) + '\n')
+            os.chmod(rev_p, 0o600)
     score(cfg, repo, ver)
 
 

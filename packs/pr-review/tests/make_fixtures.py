@@ -162,6 +162,12 @@ CLEARED_C1 = dict(CLEARED, flag='F1', line_start=12, line_end=12, change='Commen
                   why='Only a comment is added; the send path and its recipients stay as they are.')
 CLEARED_C2 = dict(CLEARED, flag='F2', path='src/notify/channel.ts', line_start=3, line_end=4,
                   change='Comment on what reminders say', why='Only the file comment changes; no code runs differently.')
+# The #1981 shape (synthetic): a money question over many places, as the fallback after reader holds.
+MONEY_MANY_VOICE = pr_format.not_checked_decision(
+    [{'path': f'src/billing/part{k}.ts', 'line_start': 10, 'line_end': 12, 'kind': pr_format.MONEY_KINDS[k % 5],
+      'risk': 3 - k % 3, 'behaviour': k < 10, 'what': f'Billing step {k} now reads the fee from the plan.'}
+     for k in range(14)], NOT_CHECKED, 'Author',
+    'Overdue invoices get a late fee after thirty days, on by default.', [0, 1, 2, 3], voice='reviewer')
 FLAG_MD = dict(FLAG, id='F1', path='docs/reminders.mdx', line=3)
 CLEARED_MD = dict(CLEARED, flag='F1', path='docs/reminders.mdx', line_start=2, line_end=3,
                   change='Guide section on text reminders', why='Only the guide changes; no code reads this page.')
@@ -630,6 +636,54 @@ CASES = {
         'expect': 'pass', 'voice': 'reviewer', 'outcome': 'low-risk', 'derived': True, 'approve': True,
         'approve_check': GREEN, 'diff': COMMENTS_DIFF, 'items': [], 'flagged': [FLAG_MD], 'cleared': [CLEARED_MD],
         'summary': 'The guide says how reminders are sent.', 'skip': []},
+    # The flow fix (the mayor, 2026-10-30 16:10Z): a review held only by reasons the script fixes from its
+    # own parts is repaired and gated again, not replaced by a fallback; a content reason still holds it.
+    'case112-repair-repeated-cleared-entry-then-approved': {  # the #1982 shape: low risk, R36 only
+        'expect': 'pass', 'voice': 'reviewer', **dict(LOW, approve=True), 'approve_check': GREEN,
+        'cleared': [CLEARED, dict(CLEARED, change='SMS reminder path')], 'repair': ['R36'],
+        'line2': 'Author: nothing needed.'},
+    'case113-repair-question-mark': {
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG],
+        'items': [dict(QUESTION, ask='Does the SMS text need the full name at all.')], 'repair': ['R13'], **SKIP},
+    'case114-no-rewrite-answer-stays-held': {  # the turn gave nothing back: R36 repaired, R29 still holds it
+        'expect': 'fail', 'expect_reasons': ['R29'], 'only_reasons': ['R29'], 'voice': 'reviewer',
+        **dict(LOW, approve=True),
+        'cleared': [dict(CLEARED, change='sendReminder now uses SMS'), dict(CLEARED, change='SMS reminder path')],
+        'repair': ['R36']},
+    # The narrow repair turn (the mayor, 2026-10-30 16:36Z): an otherwise clean review whose entries fail a
+    # wording rule is rewritten (`rewrite`: the turn's answer) and posted, never replaced by a fallback.
+    'case117-rewrite-r29-then-approved': {  # the #1982 shape: low risk, a cleared entry fails R29 twice
+        'expect': 'pass', 'voice': 'reviewer', **dict(LOW, approve=True), 'approve_check': GREEN, 'repair': [],
+        'cleared': [dict(CLEARED, change='sendReminder now calls smsClient.send', why='The send call is the existing reminder path that every visit already used before this change, and only the text of the message changes here, so it carries no new recipient and no new provider at all.')],
+        'rewrite': {'cleared entry 1': {'change': 'Reminder now sent by SMS',
+                                        'why': 'The send call is the existing reminder path; only the text changes.'}},
+        'line2': 'Author: nothing needed.'},
+    'case118-rewrite-r29-question': {  # the #112 shape: a question whose change is not 3-6 plain words
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG], 'repair': [],
+        'items': [dict(QUESTION, change='patient data')],
+        'rewrite': {'item 1': {'change': 'Reminder text names the patient'}}, **SKIP},
+    'case119-no-rewrite-with-a-content-reason': {
+        'expect': 'fail', 'expect_reasons': ['R19', 'R29'], 'only_reasons': ['R19', 'R29'], **LOW, 'repair': [],
+        'flagged': [FLAG, dict(FLAG, id='F2', path='test/notify.test.ts', line=2)],
+        'cleared': [dict(CLEARED, change='sendReminder now uses SMS')],
+        'rewrite': {'cleared entry 1': {'change': 'Reminder now sent by SMS'}}},
+    'case120-rewrite-answer-beyond-the-ask-is-ignored': {
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG], 'repair': [],
+        'items': [dict(QUESTION, change='patient data')],
+        'rewrite': {'item 1': {'change': 'Reminder text names the patient', 'ask': 'x'},
+                    'cleared entry 9': {'change': 'x'}}, **SKIP},
+    # R33 (the mayor, 2026-10-30 10:25Z): the fallback passes the bar the full review failed; the #1981 shape.
+    'case115-fallback-money-places-cut-to-the-question': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'items': [],
+        'model': False, 'decisions': [MONEY_MANY_VOICE], 'not_checked': NOT_CHECKED,
+        'fallback': True, 'gaps': [{'kind': 'not-checked', 'accepted': True}, {'kind': 'below-bar', 'accepted': True}],
+        'body_re': [r'^\n\[10 other places\]\(https://github\.com/example/repo/pull/1/files\) in the files view\.$'],
+        'body_not_re': [r'<details>']},
+    'case116-fallback-over-the-bar': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'], 'voice': 'reviewer',
+        'outcome': 'questions', 'n_author_decisions': 1, 'model': False, 'not_checked': NOT_CHECKED, 'fallback': True,
+        'body': body(outcome='questions', decisions=[MONEY_MANY_VOICE], not_checked=NOT_CHECKED, model=False,
+                     voice='reviewer')},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,

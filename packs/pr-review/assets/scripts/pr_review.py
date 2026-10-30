@@ -817,6 +817,7 @@ def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info=No
     with its one line, R32) and the status line, nothing the review model wrote."""
     rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False, money_info=money_info)
     rv['gaps'].append({'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)})
+    rv['fallback'] = True  # R33: held to the bar the full review failed, its places cut to the question's
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -884,8 +885,91 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, 
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
           'request_changes': False, 'rules': {}, 'rules_sha': '', 'voice': voice,
           'gaps': [{'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)}] if cfg else [],
-          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author]}
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author], 'fallback': True}
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
+
+
+def reader_reasons(scores, jm, risky):
+    """The reader test's hold reasons (R26 below the bar, R31 risky cleared entries, R37 a behaviour change
+    in the skip list): the same bar for an attempt and for a repaired review."""
+    return pr_judge.below_bar(scores) + ([
+        f'R31: cleared entries {risky} describe a possible risk without saying why it is acceptable or '
+        f'intended; give the fact that makes each one safe, or make it a question for the author']
+        if risky and scores is not None else []) + ([
+        'R37: a change in product behaviour sits in "Safe to skip"; give it its own linked line saying '
+        'it is intended and its default is safe, or make it a decision'] if jm.get('behaviour_in_skip') else [])
+
+
+# The narrow repair turn (the mayor, 2026-10-30 16:36Z): a finished review is never turned into a fallback
+# by a wording rule. Only the failing entries, their rules and their own lines go to the model, bounded by
+# turns; it rewrites the named fields and nothing else.
+REWRITE_TURNS = 2
+REWRITE_PROMPT = """Some entries of a code review failed the wording rules of its style guide. Rewrite ONLY the
+fields named in each entry's "rewrite" list so that they pass, in plain words. Keep the meaning and every
+fact; add nothing, and do not add, drop or merge entries. "lines" are the entry's own lines of code, for
+context only.
+
+The reasons they failed:
+{rules}
+
+The style guide's rows for these rules:
+{rows}
+
+The entries (JSON):
+{entries}
+
+Answer with each entry's id and its rewritten fields."""
+REWRITE_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['entries'], 'properties': {
+    'entries': {'type': 'array', 'items': {
+        'type': 'object', 'additionalProperties': False, 'required': ['id'],
+        'properties': {'id': {'type': 'string'}, **{f: {'type': 'string'} for f in pr_format.WORDING_FIELDS}}}}}}
+
+
+def style_rows(ids):
+    """The style guide's table rows for these rule ids, as the model's own prompt has them."""
+    return '\n'.join(line for line in open(STYLE).read().splitlines() if any(line.startswith(f'| {r} |') for r in ids))
+
+
+def rewrite(cfg, rv, reasons, idx):
+    """The narrow repair turn: the entries a wording rule failed, with the rules, their rows and the
+    entries' own lines, to the judge model for at most REWRITE_TURNS turns; the named fields come back
+    rewritten (cleaned like any model text) and nothing else changes. Returns (rv, meta)."""
+    asks = pr_format.rewrite_asks(rv, reasons)
+    if not asks:
+        return rv, {'cost_usd': 0, 'rewritten': 0, 'asked': 0}
+    entries = []
+    for eid, a in asks.items():
+        kind, k = eid.rsplit(' ', 1)
+        x = rv[pr_format.REPAIR_GROUP[kind]][int(k) - 1]
+        text = (idx.get(x.get('path')) or {}).get('text') or {}
+        lines = [text.get(ln, '') for ln in range(x.get('line_start') or 1, (x.get('line_end') or 0) + 1)][:30]
+        entries.append({'id': eid, 'rewrite': a['fields'], **{f: x[f] for f in pr_format.WORDING_FIELDS if x.get(f)},
+                        'lines': '\n'.join(lines)})
+    rules = [r for a in asks.values() for r in a['rules']]
+    prompt = REWRITE_PROMPT.format(rules='\n'.join(f'- {r}' for r in rules),
+                                   rows=style_rows({r.split(':')[0] for r in rules}),
+                                   entries=json.dumps(entries, indent=1))
+    so, meta = pr_judge.ask(cfg, prompt, REWRITE_SCHEMA, cfg['judge_model'], REWRITE_TURNS)
+    rv, n = pr_format.apply_rewrite(rv, asks, (so or {}).get('entries'), clean)
+    return rv, dict(meta, rewritten=n, asked=sum(len(a['fields']) for a in asks.values()))
+
+
+HELD_DIFF_MAX = 400_000  # characters of diff kept with a held attempt; a larger diff is left out
+
+
+def keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author):
+    """A held attempt's structure, host-local (it holds the repository's text): the review dict, its body,
+    the gate's full reasons, the flags, the PR description and the diff, so `pr_format.py --regate` can
+    gate it again with later code at zero tokens. Not for the benchmark (it keeps its own)."""
+    if cfg.get('collect') is not None:
+        return
+    p = os.path.join(pr_state.private_dir(cfg, 'feedback'), 'held.jsonl')
+    with open(p, 'a') as f:
+        f.write(json.dumps({'pr': entry['url'], 'head': pr['headRefOid'], 'attempt': attempt, 'author': author, 'reasons': reasons,
+                            'rv': rv, 'body': body, 'flagged': flagged, 'pr_text': pr.get('body') or '',
+                            'diff': diff if len(diff) <= HELD_DIFF_MAX else None,
+                            'at': pr_state.iso(pr_state.now())}) + '\n')
+    os.chmod(p, 0o600)
 
 
 def keep_reader(cfg, entry, head, attempt, scores, problems):
@@ -1026,12 +1110,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 risky_q = jm.get('risky_questions') or {}
                 answered = [n - pr_format.first_item(rv) + 1 for n in jm.get('answered') or []]  # body no. -> item no.
                 extra['risky_cleared'] = len(risky)
-                reasons = pr_judge.below_bar(scores) + ([
-                    f'R31: cleared entries {risky} describe a possible risk without saying why it is acceptable or '
-                    f'intended; give the fact that makes each one safe, or make it a question for the author']
-                    if risky and scores is not None else []) + ([
-                    'R37: a change in product behaviour sits in "Safe to skip"; give it its own linked line saying '
-                    'it is intended and its default is safe, or make it a decision'] if jm.get('behaviour_in_skip') else [])
+                reasons = reader_reasons(scores, jm, risky)
                 extra['behaviour_in_skip'] = bool(jm.get('behaviour_in_skip'))
                 if reasons and scores is not None:
                     keep_reader(cfg, entry, pr['headRefOid'], attempt, scores, problems)
@@ -1039,6 +1118,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                     break
             if not reasons:
                 break
+            keep_held(cfg, entry, pr, attempt, rv, body, reasons, flagged, diff, author)
             extra.setdefault('gate_first', sorted({r.split(':')[0] for r in reasons}))
         if not reasons and answered:  # R31's converse: a question its own text answers is checked, not asked
             kept, more = pr_format.self_answered(rv['items'], set(answered), flagged, idx)
@@ -1073,6 +1153,41 @@ def model_review(cfg, key, entry, dry, rereview=False):
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             extra['r31_questions'] = len(asked)
+        if pr_format.fixable(reasons):
+            # The flow fix (the mayor, 2026-10-30 16:10Z and 16:36Z): the posted review is never worse than the
+            # one it replaces, so a wording or format rule never turns a finished review into a fallback.
+            # (1) One narrow turn rewrites the entries a wording rule failed; (2) the script makes right
+            # what it can from the parts; (3) the gate and the reader test again. Only a content rule
+            # then sends it to the fallback.
+            def gated(x):
+                b = pr_format.render(repo, pr, x, NAME, author)
+                c = pr_format.inline_comments(x['items'], author, cfg.get('voice'), pr_format.first_item(x))
+                ln = [(d.get('link') or {}).get('path') for d in x['decisions'] if (d.get('link') or {}).get('kind') == 'code']
+                return b, c, pr_format.gate(x, idx, b, tree_lines(tree, ln), pr.get('body') or '', flagged, c)
+            rv_r = rv
+            if any(pr_format.WORDING_RE.match(r) for r in reasons):
+                rv_r, wm = rewrite(cfg, rv, reasons, idx)
+                extra.update(rewrite_cost_usd=wm.get('cost_usd') or 0, rewrite_turns=wm.get('turns'),
+                             rewrite_asked=wm.get('asked', 0), rewritten=wm.get('rewritten', 0),
+                             **({'rewrite_error': wm['error']} if wm.get('error') else {}))
+            rv_r, fixed = pr_format.repair(rv_r, reasons)
+            body_r, comments_r, again = gated(rv_r)
+            if pr_format.format_only(again):  # a rewrite can leave what the script fixes (a missing "?")
+                rv_r, more = pr_format.repair(rv_r, again)
+                fixed = sorted(set(fixed) | set(more))
+                body_r, comments_r, again = gated(rv_r)
+            extra['repaired'] = fixed
+            if not again and cfg['judge']:
+                scores, _, jm = pr_judge.judge(cfg, body_r, comments_r, NAME, author)
+                extra['judge_cost_usd'] += jm.get('cost_usd') or 0
+                extra.update(judge=scores, repair_judged=True)
+                again = reader_reasons(scores, jm, [j for j in jm.get('risky_cleared') or [] if j <= len(rv_r['cleared'])])
+            extra['repair_held'] = sorted({r.split(':')[0] for r in again})
+            if again:  # still held: the reasons that hold it now (the fallback split below)
+                keep_held(cfg, entry, pr, 'repaired', rv_r, body_r, again, flagged, diff, author)
+            else:
+                rv, body, comments = rv_r, body_r, comments_r
+            reasons = again
         # Enum values, counts and rule ids only, so the log can say why reviews end where they do.
         extra.update(decisions=len(rv['decisions']), author_decisions=len(pr_format.split(rv['decisions'])[1]),
                      items=len(rv['items']), cleared=len(rv['cleared']),
@@ -1086,8 +1201,11 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      gate=sorted({r.split(':')[0] for r in reasons}))
         if cfg.get('collect') is not None:  # the benchmark (pr_bench.py): the review as it stands, nothing delivered
             cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra),
-                                   'model': model})
+                                   'model': model, 'body': body, 'reasons': reasons, 'flagged': flagged, 'author': author,
+                                   'pr_text': pr.get('body') or '', 'head': pr['headRefOid'], 'diff': diff})
             return
+        if reasons:  # the weekly split: held by wording or format reasons only, or by a content rule
+            extra['held_by'] = 'format' if pr_format.fixable(reasons) else 'content'
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         fallback = held and pr_rules.held_fallback(
             'requested' in hits, bool(rv['not_checked']),
@@ -1100,7 +1218,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1,
                          author_decisions=1, items=0, cleared=0, held_gate=extra['gate'], gate=sorted({r.split(':')[0] for r in reasons}))
-            if cfg['judge'] and not reasons:  # for the log only: the money review is never held by the reader
+            if cfg['judge'] and not reasons and not extra.get('repair_judged'):  # for the log only: never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
@@ -1114,7 +1232,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, author_decisions=1, items=0, cleared=0,
                          blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}))
-            if cfg['judge'] and not reasons:  # the reader test, for the log: the floor is never held by it
+            if cfg['judge'] and not reasons and not extra.get('repair_judged'):  # for the log: never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None

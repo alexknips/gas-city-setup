@@ -14,6 +14,8 @@ not_checked (the words for a not-checked area the PR touches, or ''), model (whe
 names ([reviewer, author], for the check that each option starts with who carries it out).
 
 `pr_format.py --regress DIR...` runs the gate over regression fixtures (README.md, "Quality loop").
+`pr_format.py --regate FILE` gates the held attempts pr_review kept (feedback/held.jsonl) again with this
+code, at zero tokens; it prints PR numbers, attempts and rule ids only.
 """
 import hashlib
 import json
@@ -73,6 +75,11 @@ MAX_SKIP_LINKS = 12  # files the skip list links one by one; then one link to th
 MONEY_KINDS = ['charges', 'credits', 'plans', 'limits', 'other']  # R32: the money places, grouped
 MONEY_SHOWN = 6  # R32: the money places shown one by one (behaviour first, by risk); the rest in two linked lines
 MONEY_WORDS = 30  # R32: one line per place ("about 25 words"; pr_review clips longer ones)
+# R33: a fallback (the money review or the note, made when the full review was held) passes the bar the
+# full review failed (the mayor, 2026-10-30 10:25Z): no larger than the largest full reviews that passed
+# the reader test (7 links, 17 lines, 2,085 characters shown, 10-29..10-30); its money places beyond the
+# question's own, at most FALLBACK_SHOWN, then one link to the files view.
+FALLBACK_LINKS, FALLBACK_LINES, FALLBACK_CHARS, FALLBACK_SHOWN = 8, 17, 2100, 2
 GREEN_FACTS = 'CI passed · no merge conflict · open'  # R30: the status line shows only when it is not this
 
 # R6: phrases that carry no information on their own. Matched case-insensitively in every text field.
@@ -465,6 +472,8 @@ def decision_lines(repo, pr, rv, k, d):
     head, lines = pr['headRefOid'], []
     money = d.get('area') == NOT_CHECKED_AREA
     key = money_key(d) if money else None
+    if money and rv.get('fallback'):  # R33: the opening backed by at most FALLBACK_SHOWN places
+        d = dict(d, opening_places=(d.get('opening_places') or [])[:FALLBACK_SHOWN])
     if money:  # the question first, linked to the line it depends on; that place is linked there only (R21)
         link = f" · {place_link(repo, head, d['where'][key])}" if key is not None else ''
         lines += [f"{k}. **{d['question']}**{link}", '   ' + opening_text(repo, head, d, skip=key)]
@@ -485,7 +494,14 @@ def decision_lines(repo, pr, rv, k, d):
     others = []
     if d.get('where') and money:
         backed = {j for j in d.get('opening_places') or []} if d.get('opening') else set()
-        shown, others = money_lines(repo, head, [x for j, x in enumerate(d['where']) if j not in backed | {key}])
+        rest = [x for j, x in enumerate(d['where']) if j not in backed | {key}]
+        if rv.get('fallback'):  # R33: the places the question needs, then one link for the rest
+            shown, _ = money_lines(repo, head, rest, FALLBACK_SHOWN)
+            left = len(rest) - sum(1 for x in shown if x.startswith('- '))
+            shown += ['', f"[{plural(left, 'other place', 'other places').capitalize()}](https://github.com/{repo}/pull/"
+                          f"{pr['number']}/files) in the files view."] if left else []
+        else:
+            shown, others = money_lines(repo, head, rest)
         lines += [''] + shown if shown else []
     elif d.get('where'):
         lines.append('   **Where:**')
@@ -510,13 +526,13 @@ def place_link(repo, head, x):
     return f"[`{short_name(x['path'])}` {rng_text(x)}]({code_link(repo, head, x['path'], x['line_start'], x['line_end'])})"
 
 
-def money_lines(repo, head, where):
-    """R32: the places that change behaviour first, by risk, at most MONEY_SHOWN, each with its line, under
+def money_lines(repo, head, where, most=MONEY_SHOWN):
+    """R32: the places that change behaviour first, by risk, at most `most`, each with its line, under
     one header per kind (visible); then the other places for the collapsed "Other places": the lower-risk
     ones with a few words each, the ones that change no behaviour as links. Every place stays linked;
     never a bare count. Returns (visible lines, collapsed lines)."""
     moving = sorted((x for x in where if x.get('behaviour', True)), key=lambda x: -(x.get('risk') or 3))
-    shown, more = moving[:MONEY_SHOWN], moving[MONEY_SHOWN:]
+    shown, more = moving[:most], moving[most:]
     quiet = [x for x in where if not x.get('behaviour', True)]
     out, order = [], {k: j for j, k in enumerate(MONEY_KINDS)}
     for kind in sorted({x.get('kind') or 'other' for x in shown}, key=lambda k: order.get(k, len(order))):
@@ -572,6 +588,90 @@ def self_answered(items, ns, flagged=(), idx=None):
         else:
             keep.append(it)
     return keep, out
+
+
+# The flow fix (the mayor, 2026-10-30 16:10Z): gate reasons whose right form the script makes from the
+# answer's own parts. A review held by these only is repaired and gated again instead of falling back;
+# any other reason (coverage, plain words, a comment link, the reader test) still falls back.
+REPAIRABLE = {
+    'R13': re.compile(r'^R13: item (\d+) is a question but its ask does not end with a question mark$'),
+    'R36': re.compile(r'^R36: cleared entry (\d+) repeats cleared entry \d+$'),
+    'R37': re.compile(r"^R37: (decision|item|cleared entry) (\d+) cites rule .+, which is not in the repository's digest$"),
+}
+REPAIR_GROUP = {'decision': 'decisions', 'item': 'items', 'cleared entry': 'cleared'}
+
+
+def format_only(reasons):
+    """There are reasons, and repair() fixes every one of them."""
+    return bool(reasons) and all(any(p.match(r) for p in REPAIRABLE.values()) for r in reasons)
+
+
+def repair(rv, reasons):
+    """The review with what format_only() reasons name made right from its own parts: a question's ask ends
+    in "?" (R13), a cleared entry that repeats an earlier one is dropped (R36), the citation of a rule the
+    digest does not hold is dropped (R37). The caller gates the result again. Returns (rv, rule ids)."""
+    rv = dict(rv, **{g: [dict(x) for x in rv.get(g) or []] for g in REPAIR_GROUP.values()})
+    drop, fixed = set(), set()
+    for r in reasons:
+        m13, m36, m37 = (REPAIRABLE[k].match(r) for k in ('R13', 'R36', 'R37'))
+        if m13:
+            it = rv['items'][int(m13.group(1)) - 1]
+            it['ask'] = (it.get('ask') or '').rstrip().rstrip('.!:;') + '?'
+            fixed.add('R13')
+        elif m36:
+            drop.add(int(m36.group(1)) - 1)
+            fixed.add('R36')
+        elif m37:
+            rv[REPAIR_GROUP[m37.group(1)]][int(m37.group(2)) - 1]['rule'] = ''
+            fixed.add('R37')
+    rv['cleared'] = [c for j, c in enumerate(rv['cleared']) if j not in drop]
+    return rv, sorted(fixed)
+
+
+# The narrow repair turn (the mayor, 2026-10-30 16:36Z): a reason about an entry's own words (R29 lead words,
+# length and identifiers; R5, R6, R10, R14, R25 on a field) is fixed by rewriting that field, nothing else.
+WORDING_RE = re.compile(r'^R(?:5|6|10|14|19|25|29): (item|cleared entry|decision) (\d+) (?:(change|why|ask|question|'
+                        r'reason) (?:is|has|had)\b|does not lead with|leads with a category|names a raw identifier)')
+WORDING_FIELDS = ('change', 'why', 'ask', 'question', 'reason')
+
+
+def fixable(reasons):
+    """There are reasons, and each is one repair() fixes or one a rewrite of an entry's own words fixes: a
+    review held only by these is never replaced by a fallback before both were tried."""
+    return bool(reasons) and all(any(p.match(r) for p in REPAIRABLE.values()) or WORDING_RE.match(r) for r in reasons)
+
+
+def rewrite_asks(rv, reasons):
+    """{entry id ("item 2"): {fields, rules}} for the wording reasons; a decision the script made (auto) is
+    not the model's to rewrite."""
+    out = {}
+    for r in reasons:
+        m = WORDING_RE.match(r)
+        if not m or (m.group(1) == 'decision' and rv['decisions'][int(m.group(2)) - 1].get('auto')):
+            continue
+        a = out.setdefault(f'{m.group(1)} {m.group(2)}', {'fields': [], 'rules': []})
+        f = m.group(3) or 'change'
+        a['fields'] += [] if f in a['fields'] else [f]
+        a['rules'].append(r)
+    return out
+
+
+def apply_rewrite(rv, asks, answer, clean=lambda t: t):
+    """The review with the rewritten fields the answer gives for the asked entries and fields only; anything
+    else in the answer is ignored. Returns (rv, fields rewritten)."""
+    rv = dict(rv, **{g: [dict(x) for x in rv.get(g) or []] for g in REPAIR_GROUP.values()})
+    n = 0
+    for e in answer or []:
+        a = asks.get(e.get('id')) if isinstance(e, dict) else None
+        if not a:
+            continue
+        kind, k = e['id'].rsplit(' ', 1)
+        x = rv[REPAIR_GROUP[kind]][int(k) - 1]
+        for f in a['fields']:
+            v = ' '.join((e.get(f) or '').split())
+            if v:
+                x[f], n = clean(v), n + 1
+    return rv, n
 
 
 def first_item(rv):
@@ -1164,6 +1264,11 @@ def gate_body_rest(body, lines, rest, rv, comments, said_to_author, nothing, n_d
     shown = len(re.sub(r'\]\([^)]*\)', ']', body))  # what a reader reads: link targets do not count
     if shown > MAX_BODY:
         why.append(f'R14: the text is {shown} characters, at most {MAX_BODY}')
+    if rv.get('fallback'):  # R33: the fallback passes the bar the full review failed (the mayor, 10:25Z)
+        n_links, n_lines = len(re.findall(r'\]\(https?://', body)), sum(1 for x in lines if x.strip())
+        if n_links > FALLBACK_LINKS or n_lines > FALLBACK_LINES or shown > FALLBACK_CHARS:
+            why.append(f'R33: the fallback is {n_links} links, {n_lines} lines and {shown} characters; at most '
+                       f'{FALLBACK_LINKS}, {FALLBACK_LINES} and {FALLBACK_CHARS}')
     return why
 
 
@@ -1285,7 +1390,8 @@ def review_of(fx):
             'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True),
             'request_changes': fx.get('request_changes', False), 'rules': fx.get('rules', {}),
             'rules_sha': 'c' * 40, 'since': fx.get('since'), 'voice': fx.get('voice', 'disclose'),
-            'gaps': fx.get('gaps', []), 'names': ['Reviewer', YOU if fx.get('voice') == 'reviewer' else 'Author']}
+            'gaps': fx.get('gaps', []), 'names': ['Reviewer', YOU if fx.get('voice') == 'reviewer' else 'Author'],
+            'fallback': fx.get('fallback', False)}
 
 
 def route(fx):
@@ -1302,7 +1408,9 @@ def regress(dirs):
     n_items, n_decisions, n_author_decisions) for a delivered body, or the review's parts (outcome,
     decisions, items, blockers, cleared, flagged, diff, ...) to render and gate (`line2`: the rendered line 2;
     `derived`: the parts must give the outcome; `body_re` / `body_not_re`: patterns the rendered body must /
-    must not hold, multiline, reason LAYOUT); `delivery` ({pr_state, review_url, review_state, ...})
+    must not hold, multiline, reason LAYOUT; `repair`: the run's repair flow first (`rewrite`: the narrow
+    turn's answer, {entry id: {field: text}}), a list = the rule ids the script must repair, reason REPAIR;
+    `fallback`: a fallback body, R33); `delivery` ({pr_state, review_url, review_state, ...})
     adds the delivery checks and `approve_check` ({fresh: {state, head, checks}, head}) the approval bar.
     Returns the number of mismatches."""
     bad = total = 0
@@ -1322,7 +1430,7 @@ def regress(dirs):
                       'items': [{}] * fx.get('n_items', 0), 'not_checked': fx.get('not_checked', ''),
                       'approve': fx.get('approve', False), 'model': fx.get('model', True),
                       'request_changes': fx.get('request_changes', False), 'facts': fx.get('facts'),
-                      'voice': fx.get('voice', 'disclose')}
+                      'voice': fx.get('voice', 'disclose'), 'fallback': fx.get('fallback', False)}
                 reasons = gate_body(fx['body'], rv, fx.get('comments_v'))
             else:
                 idx = diff_index(fx['diff'])
@@ -1335,10 +1443,28 @@ def regress(dirs):
                 body = render('example/repo', pr, rv, 'Reviewer', 'Author')
                 if fx.get('body_edit'):  # a rendered body broken on purpose
                     body = body.replace(*fx['body_edit'])
+                fixed = None
+                if 'repair' in fx:  # the run's flow: held by fixable reasons only -> rewritten, repaired, gated again
+                    def gated(x):
+                        return gate(x, idx, render('example/repo', pr, x, 'Reviewer', 'Author'), fx.get('tree_lines'),
+                                    fx.get('pr_text', ''), fx.get('flagged', []),
+                                    inline_comments(x['items'], 'Author', x['voice'], first_item(x)))
+                    first, fixed = gated(rv), []
+                    if fixable(first):  # `rewrite`: the narrow turn's answer, {entry id: {field: text}}
+                        answer = [dict(v, id=k) for k, v in (fx.get('rewrite') or {}).items()]
+                        rv = apply_rewrite(rv, rewrite_asks(rv, first), answer)[0]
+                        rv, fixed = repair(rv, first)
+                        again = gated(rv)
+                        if format_only(again):
+                            rv, more = repair(rv, again)
+                            fixed = sorted(set(fixed) | set(more))
+                    body = render('example/repo', pr, rv, 'Reviewer', 'Author')
                 if 'line2' in fx and body.splitlines()[1] != fx['line2']:
                     reasons_l2 = ["R22: line 2 is not the fixture's line2"]
                 else:
                     reasons_l2 = []
+                if isinstance(fx.get('repair'), list) and fixed != fx['repair']:
+                    reasons_l2.append(f"REPAIR: repaired {fixed}, the fixture wants {fx['repair']}")
                 reasons_l2 += [f'LAYOUT: the body does not hold pattern {j + 1}' for j, x in enumerate(fx.get('body_re', []))
                                if not re.search(x, body, re.M)]
                 reasons_l2 += [f'LAYOUT: the body holds pattern {j + 1} it must not' for j, x in enumerate(fx.get('body_not_re', []))
@@ -1379,7 +1505,36 @@ def regress(dirs):
     return bad
 
 
+def regate(path):
+    """Each held attempt kept by pr_review.keep_held, rendered and gated again with this code, through the
+    run's repair of format-only reasons (no rewrite turn and no reader test: they cost tokens). Prints the PR number, the
+    attempt, the rule ids then and now, and what a repair fixed; never the text. Returns the rows read."""
+    n = 0
+    for line in open(path):
+        h = json.loads(line)
+        m = re.match(r'https://github\.com/([^/]+/[^/]+)/pull/(\d+)', h['pr'])
+        pr = {'number': int(m.group(2)), 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'headRefOid': h['head']}
+        rv, idx, author = h['rv'], diff_index(h.get('diff') or ''), h.get('author') or 'the author'
+
+        def gated(rv):
+            body = render(m.group(1), pr, rv, rv['names'][0], author)
+            comments = inline_comments(rv['items'], author, rv.get('voice'), first_item(rv))
+            return gate(rv, idx, body, None, h.get('pr_text', ''), h.get('flagged') or [], comments)
+        now, fixed = gated(rv), []
+        if format_only(now):
+            rv, fixed = repair(rv, now)
+            now = gated(rv)
+        ids = lambda rs: sorted({r.split(':')[0] for r in rs})  # noqa: E731
+        print(f"{m.group(2)} attempt {h['attempt']}: then {ids(h['reasons'])}, now {ids(now)}"
+              + (f', repaired {fixed}' if fixed else '') + ('' if h.get('diff') else ' (no diff kept)'))
+        n += 1
+    return n
+
+
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[1] == '--regress':
         sys.exit(1 if regress(sys.argv[2:]) else 0)
+    if len(sys.argv) == 3 and sys.argv[1] == '--regate':
+        regate(sys.argv[2])
+        sys.exit(0)
     print(__doc__)
