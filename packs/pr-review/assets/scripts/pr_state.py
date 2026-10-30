@@ -220,14 +220,76 @@ def prune_jsonl(path, days, at_now=None):
     return dropped
 
 
-def prune_private(cfg):
-    """The retention bound on both stores of whole reviews: feedback/held.jsonl and the benchmark's
-    <repo>-reviews-<version>.jsonl (PR_REVIEW_KEEP_DAYS). Returns the rows dropped."""
-    paths = [os.path.join(cfg['work'], 'feedback', 'held.jsonl')]
+def prune_map(path, days, at_now=None):
+    """prune_jsonl for a host-local JSON map {key: {..., 'at'}} (the client entry's words). Returns the rows
+    dropped."""
+    if not os.path.exists(path):
+        return 0
+    at_now = at_now or now()
+    try:
+        rows = json.load(open(path))
+    except ValueError:
+        rows = {}
+    cut, keep, stamped = at_now - dt.timedelta(days=days), {}, False
+    for k, r in rows.items():
+        if not isinstance(r, dict):
+            continue
+        if not r.get('at'):
+            r['at'], stamped = iso(at_now), True
+        if parse(r['at']) >= cut:
+            keep[k] = r
+    if len(keep) < len(rows) or stamped:
+        with os.fdopen(os.open(path + '.tmp', os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+            json.dump(keep, f)
+        os.replace(path + '.tmp', path)
+    return len(rows) - len(keep)
+
+
+POSTED_NAME = re.compile(r'(.+)-(\d+)-[0-9a-f]{1,40}\.json')
+
+
+def prune_posted(cfg, closed_at, at_now=None):
+    """feedback/posted: a delivered review's result stays while its PR is open, and goes PR_REVIEW_KEEP_DAYS
+    after the PR merged or closed (the mayor, 2026-10-30 17:50Z: --redeliver never needs a closed PR's
+    result). A PR closes after its review was delivered, so only files older than that are looked up, once
+    per PR, through `closed_at(repo, number)`: the merge or close time, or None while open or unknown (then
+    the file stays). Returns the files dropped."""
+    d = os.path.join(cfg['work'], 'feedback', 'posted')
+    if not os.path.isdir(d):
+        return 0
+    cut, dropped, seen = (at_now or now()) - dt.timedelta(days=cfg['keep_days']), 0, {}
+    for name in sorted(os.listdir(d)):
+        m, p = POSTED_NAME.fullmatch(name), os.path.join(d, name)
+        try:
+            at = parse(json.load(open(p)).get('at') or '') if m else None
+        except (ValueError, OSError):
+            at = dt.datetime.fromtimestamp(os.path.getmtime(p), dt.timezone.utc) if m else None
+        if at is None or at >= cut:
+            continue
+        pr = (m.group(1).replace('__', '/', 1), int(m.group(2)))
+        if pr not in seen:
+            seen[pr] = closed_at(*pr)
+        if seen[pr] is not None and seen[pr] < cut:
+            os.remove(p)
+            dropped += 1
+    return dropped
+
+
+def prune_private(cfg, closed_at=None):
+    """The retention bound on the host-local stores that hold the repositories' text (PR_REVIEW_KEEP_DAYS):
+    feedback/held.jsonl, the benchmark's <repo>-reviews-<version>.jsonl, feedback/reader.jsonl and the
+    client entry's words by rows; feedback/posted by its PR's merge or close (with `closed_at`, see
+    prune_posted). Returns the rows or files dropped per store."""
     bench = os.path.join(cfg['work'], 'bench')
-    paths += [os.path.join(bench, f) for f in sorted(os.listdir(bench)) if '-reviews-' in f and f.endswith('.jsonl')] \
-        if os.path.isdir(bench) else []
-    return sum(prune_jsonl(x, cfg['keep_days']) for x in paths)
+    days = cfg['keep_days']
+    out = {'held': prune_jsonl(os.path.join(cfg['work'], 'feedback', 'held.jsonl'), days),
+           'bench': sum(prune_jsonl(os.path.join(bench, f), days) for f in sorted(os.listdir(bench))
+                        if '-reviews-' in f and f.endswith('.jsonl')) if os.path.isdir(bench) else 0,
+           'reader': prune_jsonl(os.path.join(cfg['work'], 'feedback', 'reader.jsonl'), days),
+           'words': prune_map(os.path.join(cfg['work'], 'client-slack', 'words.json'), days)}
+    if closed_at:
+        out['posted'] = prune_posted(cfg, closed_at)
+    return out
 
 
 def private_dir(cfg, *parts):

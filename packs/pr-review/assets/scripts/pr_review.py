@@ -1021,6 +1021,7 @@ def keep_reader(cfg, entry, head, attempt, scores, problems):
     """The reader test's reasons for a held attempt, host-local (they can describe the repository's
     code), to tune the review and the reader."""
     p = os.path.join(pr_state.private_dir(cfg, 'feedback'), 'reader.jsonl')
+    pr_state.prune_jsonl(p, cfg.get('keep_days', 30))  # PR_REVIEW_KEEP_DAYS, as the held attempts
     with open(p, 'a') as f:
         f.write(json.dumps({'pr': entry['url'], 'head': head, 'attempt': attempt, 'scores': scores,
                             'problems': problems, 'at': pr_state.iso(pr_state.now())}) + '\n')
@@ -1389,10 +1390,44 @@ def selftest():
         [r['pr'] for r in rows] == ['new', 'unstamped'] and rows[1].get('at') == pr_state.iso(t) and \
         os.stat(held).st_mode & 0o777 == 0o600
     checks['retention: nothing to drop leaves the file as it is'] = pr_state.prune_jsonl(held, 30, t) == 0
+    checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
+
+
+def selftest_retention(work, t):
+    """The sweep's retention pass (the mayor, 2026-10-30 17:50Z): reader.jsonl and the client words by age;
+    a posted result stays while its PR is open and goes PR_REVIEW_KEEP_DAYS after the PR merged or closed."""
+    old, new = pr_state.iso(t - dt.timedelta(days=31)), pr_state.iso(t - dt.timedelta(days=2))
+    cfg = {'work': work, 'keep_days': 30}
+    reader = os.path.join(pr_state.private_dir(cfg, 'feedback'), 'reader.jsonl')
+    with open(reader, 'w') as f:
+        f.write(json.dumps({'pr': 'old', 'at': old}) + '\n' + json.dumps({'pr': 'new', 'at': new}) + '\n')
+    with open(os.path.join(pr_state.private_dir(cfg, 'client-slack'), 'words.json'), 'w') as f:
+        json.dump({'o/r#1': {'words': 'a b c', 'at': old}, 'o/r#2': {'words': 'a b c', 'at': new}}, f)
+    posted = pr_state.private_dir(cfg, 'feedback', 'posted')
+    files = {'o-x__r-y-1-aaaaaaaaaa.json': old, 'o-x__r-y-2-bbbbbbbbbb.json': old, 'o-x__r-y-3-cccccccccc.json': old,
+             'o-x__r-y-4-dddddddddd.json': new, 'o-x__r-y-5-eeeeeeeeee.json': old}
+    for name, at in files.items():
+        with open(os.path.join(posted, name), 'w') as f:
+            json.dump({'at': at}, f)
+    closed = {1: None, 2: t - dt.timedelta(days=31), 3: t - dt.timedelta(days=3), 4: t - dt.timedelta(days=40)}
+    asked = []
+
+    def closed_at(repo, n):  # 1 open, 2 merged 31 days ago, 3 closed 3 days ago, 4 never asked, 5 unknown
+        asked.append((repo, n))
+        return closed.get(n)
+    got = pr_state.prune_private(cfg, closed_at)
+    left = sorted(os.listdir(posted))
+    return {'retention: reader.jsonl and the client words by age; a posted result goes 30 days after its PR closed':
+            got == {'held': 0, 'bench': 0, 'reader': 1, 'words': 1, 'posted': 1} and
+            [json.loads(x)['pr'] for x in open(reader)] == ['new'] and
+            list(json.load(open(os.path.join(work, 'client-slack', 'words.json')))) == ['o/r#2'] and
+            left == sorted(set(files) - {'o-x__r-y-2-bbbbbbbbbb.json'}),
+            'retention: only results older than the bound are looked up, by repository and number':
+            sorted(asked) == [('o-x/r-y', 1), ('o-x/r-y', 2), ('o-x/r-y', 3), ('o-x/r-y', 5)]}
 
 
 def selftest_client_once(cfg, tmp):

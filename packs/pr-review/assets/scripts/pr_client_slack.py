@@ -326,8 +326,8 @@ def stored_words(cfg):
 def keep_words(cfg, key, head, words, how):
     """The PR's words for the queue, in the 700 work dir (the client's PR content), mode 600. Rows older than
     PR_REVIEW_KEEP_DAYS go on every write."""
-    cut = pr_state.now() - dt.timedelta(days=cfg.get('keep_days', 30))
-    rows = {k: v for k, v in stored_words(cfg).items() if pr_state.parse(v.get('at') or '1970-01-01T00:00:00Z') >= cut}
+    pr_state.prune_map(words_path(cfg), cfg.get('keep_days', 30))
+    rows = stored_words(cfg)
     if words:
         rows[key] = {'head': head, 'words': words, 'from': how, 'at': pr_state.iso(pr_state.now())}
     p = words_path(cfg)

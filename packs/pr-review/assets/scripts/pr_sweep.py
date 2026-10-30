@@ -256,10 +256,20 @@ def sweep(cfg, dry):
     if not partial:
         with pr_state.locked(cfg['state']) as st:
             st['last_sweep'] = pr_state.iso(t0)
-    pruned = pr_state.prune_private(cfg)  # PR_REVIEW_KEEP_DAYS on the stores of whole reviews (held, bench)
+    pruned = pr_state.prune_private(cfg, closed_at)  # PR_REVIEW_KEEP_DAYS on the stores of the repositories' text
     pr_state.log(cfg['state'], {'run': 'sweep', 'since': pr_state.iso(since), 'counts': counts, 'partial': partial,
                                 'secs': round((pr_state.now() - t0).total_seconds()), 'pruned': pruned})
     print(json.dumps({'sweep': pr_state.iso(t0), 'partial': partial, 'counts': counts}))
+
+
+def closed_at(repo, number):
+    """The PR's merge or close time, for prune_posted; None while it is open or when GitHub does not answer."""
+    try:
+        pr = pr_rules.get_pr(repo, number)
+    except pr_rules.GhError:
+        return None
+    t = pr and pr['state'] != 'OPEN' and (pr.get('mergedAt') or pr.get('closedAt'))
+    return pr_state.parse(t) if t else None
 
 
 # What a PR's entry keeps across new heads: the delivered review, for re-reviews, the feedback order and
