@@ -66,6 +66,12 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
 | `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for the author"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
+| `PR_REVIEW_CLIENT_SLACK` | `off` | `on` posts each new review's line (the word and its link) in the client's own Slack workspace, as the reviewer, through the runner in [The client's Slack](#the-clients-slack); `dry-run` prints the ids and the word instead. |
+| `PR_REVIEW_CLIENT_SLACK_CHANNEL` | (none) | The conversation id the lines go to. It must also be in the allowlist. |
+| `PR_REVIEW_CLIENT_SLACK_CONVERSATIONS` | (none) | The allowlist: the only conversation ids the runner may post to, enforced in code around the call. |
+| `PR_REVIEW_CLIENT_SLACK_TOOL` | (none) | The connector's post tool, by its full name (`--check` lists the connector's tools). |
+| `PR_REVIEW_CLIENT_SLACK_REPOS` | (all) | The repositories whose reviews get a line there. |
+| `PR_REVIEW_CLIENT_SLACK_MODEL`, `_MAX_TURNS` | `haiku`, `3` | The runner's model and turn limit. |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
 | `PR_REVIEW_SLACK_ENV` | `~/.config/gc/slack.env ~/.config/gc/slack2.env` | Files searched for the first `xoxb-` bot token. |
 | `PR_REVIEW_DAILY_CAP` | `off` | Model reviews per UTC day (a number), or `off` for no cap. CI escalations do not count. |
@@ -83,6 +89,33 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_WORK_DIR` | `/var/tmp/gc-pr-review` | Bare blob-less mirrors and per-review worktrees: the repositories' code. Mode 700, outside the town runtime, and not under `/home`, `/data` or `/tmp`, which the review model may not read. |
 | `PR_REVIEW_BEADS` | `on` | `off` skips the beads (tests). |
 | `PR_REVIEW_MAX_LOAD` | `15` | Above this 1-minute load average a run skips and logs. |
+
+## The client's Slack
+
+decision-14bb1b55: the client's own Slack workspace, where our bot cannot post, is reached as the reviewer
+through their claude.ai Slack connector, in exactly one place: `pr_client_slack.py`'s runner.
+
+- The fence: a server-level deny on the connector in the user settings
+  (`permissions.deny: ["mcp__claude_ai_Slack"]`) removes its tools from every normal session. The pack's
+  own model calls use `--strict-mcp-config`, which loads no claude.ai connector.
+- The runner: `claude -p --restricted --tools "" --allowedTools <the post tool>`. `--restricted` ignores
+  the settings files, so the deny and the town's hooks do not apply. It also gets a PreToolUse hook
+  (`pr_client_slack.py --hook`) through `--settings`, the stripped environment of the review runs,
+  capture off, no session kept, MCP connected before the first turn, and a small model bounded by turns.
+- The hook lets exactly one call through: the post tool, to the expected conversation (in
+  `PR_REVIEW_CLIENT_SLACK_CONVERSATIONS`), with the exact text the script built and no other field (a
+  thread, say). It refuses any other call and a second post. After the run, the transcript's calls are
+  checked against the same rule.
+- The text is the review's line-1 word in the reviewer's voice and the review's own link, never a word
+  meant for the reviewer only ("Needs you", "Review gap") and nothing the model wrote. Logs keep ids, the
+  word and counts.
+
+The runner also sees the account's other connectors' tools; none is allowed and the hook refuses every
+call to them. `pr_client_slack.py --check` lists, by name and count, what a normal session (the user's
+settings, from the city directory) and the runner load; it passes when only the runner has the
+connector's tools and the configured post tool is among them. `--post-review OWNER/NAME#N` posts the
+line of a delivered review by hand (with `PR_REVIEW_CLIENT_SLACK=dry-run`, the ids and the word only).
+The first real post is a test with the town's owner.
 
 ## What never leaves GitHub
 

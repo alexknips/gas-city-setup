@@ -41,6 +41,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_client_slack  # noqa: E402
 import pr_context  # noqa: E402
 import pr_digest  # noqa: E402
 import pr_format  # noqa: E402
@@ -674,6 +675,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     extra['slack'] = slack
     if new_ts:
         extra['slack_ts'] = new_ts
+    if cfg['client_slack'] != 'off' and not ts:  # decision-14bb1b55: a new review's line in the client's channel
+        extra['client_slack'] = pr_client_slack.deliver_line(cfg, repo, url, rv['outcome'], event == 'APPROVE', event)[0]
     finish(cfg, key, dict(entry, head=head), rv['outcome'], extra)
 
 

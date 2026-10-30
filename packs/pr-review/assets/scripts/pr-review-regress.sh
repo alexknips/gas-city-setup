@@ -11,6 +11,7 @@ rc=$?
 # The restamp's shapes and its PR list (synthetic; decision-ed7320b7); the sweep's bead closing.
 python3 "$here/pr_restamp.py" --selftest > /dev/null || { echo 'pr_restamp selftest: FAIL'; rc=1; }
 python3 "$here/pr_sweep.py" --selftest > /dev/null || { echo 'pr_sweep selftest: FAIL'; rc=1; }
+python3 "$here/pr_client_slack.py" --selftest > /dev/null || { echo 'pr_client_slack selftest: FAIL'; rc=1; }
 # Host-local: no public file names a town person or repository (skipped without the town overrides).
 python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
 exit $rc
