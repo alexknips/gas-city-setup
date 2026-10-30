@@ -73,6 +73,9 @@ def config():
         'context': e('PR_REVIEW_CONTEXT', 'off') == 'on',
         'suggestions': e('PR_REVIEW_SUGGESTIONS', 'off') == 'on',
         'incremental': e('PR_REVIEW_INCREMENTAL', 'off') == 'on',
+        # decision-ed7320b7: 'reviewer' = the review speaks as the reviewer (no disclosure line); the pack
+        # default 'disclose' says on line 1 that it is automated and the reviewer hasn't read the PR.
+        'voice': 'reviewer' if e('PR_REVIEW_VOICE', 'disclose') == 'reviewer' else 'disclose',
         'max_usd': e('PR_REVIEW_MAX_USD', '5'),
         'timeout_s': int(e('PR_REVIEW_TIMEOUT_S', '1200')),
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
@@ -217,17 +220,34 @@ def slack_call(token, method, payload):
 
 APPROVED = 'Approved as low risk'
 CHANGES_SUGGESTED = 'Changes suggested'
+# decision-3aeec149: "needs me should be reserved for escalations that cannot be escalated to [the author],
+# such as potential gaps in our review methodology". The PR gets its normal review; Slack says this.
+REVIEW_GAP = 'Review gap'
+ACCEPTED_GAPS = ['not-checked']  # gap kinds the reviewer accepted (billing: "ignore, but be honest we don't check it")
 
 
-def slack_post(cfg, outcome, url, review_url, approved=False, ts=None, event='COMMENT'):
+def accepted_gaps(cfg):
+    """The gap kinds the reviewer accepted, host-local (gaps/accepted.json; written with the default once)."""
+    p = os.path.join(private_dir(cfg, 'gaps'), 'accepted.json')
+    if not os.path.exists(p):
+        with open(p, 'w') as f:
+            json.dump(ACCEPTED_GAPS, f)
+        os.chmod(p, 0o600)
+    return set(json.load(open(p)))
+
+
+def slack_post(cfg, outcome, url, review_url, approved=False, ts=None, event='COMMENT', gap=False):
     """Post '<word>: <review URL>' to the channel (R17): the submitted review's own GitHub URL. The text is
     built here from a fixed word and the link; nothing the model wrote reaches Slack. The word matches the
     review's event (R35): changes are "requested" only on a REQUEST_CHANGES review. With `ts`, the
     message of an earlier review of the same head is updated in place instead (R18). Returns (status,
-    message ts): 'ok', 'off' or an error code; the ts lets the feedback order find reactions and replies."""
+    message ts): 'ok', 'off' or an error code; the ts lets the feedback order find reactions and replies.
+    `gap`: a gap in our method the reviewer has not accepted, so the word is "Review gap" (decision-3aeec149)."""
     word = APPROVED if approved else OUTCOMES[outcome][1 if cfg['mode'] == 'live' else 0]
     if outcome == 'changes' and event != 'REQUEST_CHANGES':
         word = CHANGES_SUGGESTED
+    if gap:
+        word = REVIEW_GAP
     if not word or not cfg['slack_channel']:
         return 'off', None
     if not re.fullmatch(r'https://github\.com/[\w.-]+/[\w.-]+/pull/\d+#pullrequestreview-\d+', review_url or '') or \

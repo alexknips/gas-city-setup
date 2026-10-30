@@ -53,6 +53,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
 | `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
 | `PR_REVIEW_SUGGESTIONS` | `off` | `on` lets each "change" item carry a one-click fix: the schema gets a `suggestion` field (the whole replacement for the item's lines) and the inline comment ends with it as a GitHub suggestion block (R4). The script drops a fix the gate would refuse (on a question or the old side, more than 12 lines, a code fence inside, or no change) and keeps the item. With `off` the schema and prompt are unchanged. Part of the benchmark's version. |
+| `PR_REVIEW_VOICE` | `disclose` | `reviewer` makes the review speak as the reviewer (decision-ed7320b7): line 1 is the verdict word and an invisible marker, line 2 what the author must do, a not-checked area is said as scope, and the gate refuses any disclosure phrase (R28, R38). `disclose` keeps the honesty note on line 1. Set it only for repositories whose reviewer asked for it. |
 | `PR_REVIEW_INCREMENTAL` | `off` | `on` makes the review of a new head of a PR we reviewed incremental ([The review prompt](#the-review-prompt)): the prompt gets our earlier asks and the new commits' diff, the body says what became of the asks, and our earlier threads are resolved where the new commits back it. With `off`, or when there is no earlier review, the prompt is unchanged. Part of the benchmark's version. |
 | `PR_REVIEW_CONTEXT` | `off` | `on` adds REPOSITORY CONTEXT to the prompt ([The review prompt](#the-review-prompt)): where the code outside the diff uses what the PR changes, where the code the new lines call is defined, and the tests. Zero tokens to build; part of the benchmark's version, so on and off score apart. With `off` the prompt is unchanged. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
@@ -284,7 +285,7 @@ every review is the outcome word with the automated note (R28); line 2 says who 
 
 | Outcome | When | Line 2 | Event | Slack |
 | --- | --- | --- | --- | --- |
-| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each with an option the reviewer carries out, one question with lettered options (each starting with who carries it out), a recommendation with its reason and a link to the code at the head or the PR text | `**Needs you** · automated, Reviewer hasn't read this PR` / `Reviewer: N decisions. Author: …` | COMMENT | "Needs you" |
+| `escalate` | no longer an outcome on the PR (decision-3aeec149): every finding goes to the author. A gap in our method (R16) keeps the PR's normal review and changes only the Slack word | (older reviews: `**Needs you** · …`) | COMMENT | "Review gap" for an open gap, whatever the outcome |
 | `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Reviewer: nothing. Author: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
 | `questions` | only questions for the author: a decision whose options are all the author's (R16), the sign-off on a not-checked area (R20, R32), or CI that did not run, was skipped or is still running | `**Questions** · …` / `Reviewer: nothing. Author: 2 questions.` | COMMENT | "Questions for the author" |
 | `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Reviewer: nothing. Author: 1 question, …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" for the author with lettered options | COMMENT | "Not reviewed" |
@@ -394,7 +395,12 @@ passes, a note without its decision fails (R33). Case 69: line 2 that misses the
 (19 places one by one) fails (R32). Case 71: a money opening
 without the places that back it (R32); host-local case 15: the dfc5ea2 money review (other places not
 collapsed) fails (R32). Case 72:
-a code place linked twice (R21). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+a code place linked twice (R21). Cases 87-98 (v5.6, decision-3aeec149 and decision-ed7320b7): a finding with
+choices goes to the author (passes), a gap of an unknown kind fails (R16), and the reviewer's voice: a
+changes review, billing as scope, an approval, the R33 note as the author's question, choices that start
+with "You" (pass), choices that name the author, a disclosure phrase in the body or an inline comment, the
+old note on line 1 (fail, R22, R38, R28), and a delivered body in the voice (passes). Case 6 ("Needs you"
+with a decision for the reviewer) fails since v5.6. Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
 wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
 author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
 the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail

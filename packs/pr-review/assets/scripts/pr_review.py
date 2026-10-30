@@ -64,27 +64,27 @@ NAMES = dict(x.split('=', 1) for x in os.environ.get('PR_REVIEW_NAMES', '').spli
 _TEXT = {'type': 'string'}
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
-    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'summary', 'skip', 'checks'],
+    'required': ['decisions', 'items', 'cleared', 'not_checked_lines', 'summary', 'skip', 'checks', 'gaps'],
     'properties': {
         'decisions': {'type': 'array', 'maxItems': 3, 'description': (
-            'Only decisions the reviewer alone can make: a product, risk or compliance trade-off, never a code '
-            'fix the author can make. Empty when there is none.'), 'items': {
+            'Choices for the author: a rule, product, risk or compliance trade-off they must settle, with '
+            'options. Empty when there is none.'), 'items': {
             'type': 'object', 'additionalProperties': False,
             'required': ['question', 'options', 'actors', 'recommended', 'reason', 'why', 'area', 'rule', 'link',
                          'verified', 'confidence'],
             'properties': {
                 'question': {'type': 'string', 'maxLength': 280, 'description': 'One question ending in "?", at most 280 characters.'},
                 'options': {'type': 'array', 'minItems': 2, 'maxItems': 4, 'items': _TEXT,
-                            'description': 'Each one sentence that starts with the name of who carries it out.'},
+                            'description': 'Each one sentence that starts with who carries it out.'},
                 'actors': {'type': 'array', 'minItems': 2, 'maxItems': 4,
-                           'items': {'type': 'string', 'enum': list(pr_format.ACTORS)},
-                           'description': 'For each option, in order, who carries it out: reviewer, author, or '
-                                          'picked (someone the author picks: a teammate, the owner of billing).'},
+                           'items': {'type': 'string', 'enum': ['author', 'picked']},
+                           'description': 'For each option, in order, who carries it out: author, or picked '
+                                          '(someone the author picks: a teammate, the owner of billing).'},
                 'recommended': {'type': 'integer', 'minimum': 0, 'maximum': 3,
                                 'description': 'The index of the option you recommend (0 = the first).'},
                 'reason': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence: why that option.'},
                 'rule': {'type': 'string', 'description': 'The id of the repository rule this is about (e.g. "D3"), or "" when none is.'},
-                'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why only the reviewer can decide this.'},
+                'why': {'type': 'string', 'maxLength': 280, 'description': 'One sentence, at most 280 characters: why the author must settle this.'},
                 'area': {'type': 'string', 'enum': pr_format.AREAS},
                 'link': {'type': 'object', 'additionalProperties': False, 'required': ['kind'], 'properties': {
                     'kind': {'type': 'string', 'enum': ['code', 'description', 'ticket'],
@@ -148,6 +148,16 @@ SCHEMA = {
             'properties': {
                 'group': {'type': 'string', 'maxLength': 30, 'description': '1-3 plain words, e.g. "tests", "types", "UI copy".'},
                 'paths': {'type': 'array', 'maxItems': 40, 'items': _TEXT, 'description': 'File paths as in the diff.'}}}},
+        'gaps': {'type': 'array', 'maxItems': 2, 'description': (
+            'Gaps in this review\'s method that the author cannot close: never a finding about the PR. Empty '
+            'when there is none.'), 'items': {
+            'type': 'object', 'additionalProperties': False, 'required': ['kind', 'rule', 'why'],
+            'properties': {
+                'kind': {'type': 'string', 'enum': ['unverifiable-rule', 'new-risk'],
+                         'description': 'unverifiable-rule = a repository rule this PR touches that no reading of '
+                                        'the code can verify; new-risk = a kind of risk these instructions do not cover.'},
+                'rule': {'type': 'string', 'description': 'The rule id for unverifiable-rule, else "".'},
+                'why': {'type': 'string', 'maxLength': 200, 'description': 'One sentence: what the method cannot check.'}}}},
         'checks': {'type': 'object', 'additionalProperties': False,
                    'required': ['description_matches_diff', 'behaviour_changes_have_tests',
                                 'migrations_reversible_and_ordered'],
@@ -181,20 +191,19 @@ in order:
    instructions ask about. Apply their filtering rules, give each candidate a confidence from 1 to 10,
    and drop anything below 8.
 3. Sort what is left into these lists:
-   - `decisions`: only what {name} alone can decide, at the level of goals and rules, never of code. For
-     example: "Rule D3 says X; this PR does Y. Accept it as an exception, ask {author} to change it, or
-     update the rule?" A product, risk or compliance trade-off (whether patient data may go to a vendor,
-     whether a destructive step may run in production) is one too. Each is ONE question ending in "?",
-     with 2 to 4 options, `recommended` (the index of the option you recommend) and `reason` (one short
-     sentence on why), `why` (why only {name} can decide it), `rule`, and a link to where it lives: lines
-     of a file at the head ("code"), the PR description ("description"), or a ticket URL that appears in
-     the description ("ticket"). Never ask {name} to read, review or check code. A code fix the author can
-     make is never a decision. Each option is one sentence that starts with who carries it out, and
-     `actors` says who that is, in order: "reviewer" ({name}), "author" ({author}) or "picked" (someone
-     {author} picks: a teammate, the owner of billing). For example "{name} accepts it as an exception to
-     the rule" (reviewer), "{author} changes it to follow the rule" (author), "A teammate who owns
-     billing confirms it" (picked). A decision none of whose options {name} carries out is a question for
-     {author}: the review gives it to them.
+   - `decisions`: choices for {author}, at the level of goals and rules, never of code: a trade-off they
+     must settle, with options. For example: "Rule D3 says X; this PR does Y. Change it to follow the rule,
+     or put on record why it is an exception?" A product, risk or compliance trade-off (whether patient
+     data may go to a vendor, whether a destructive step may run in production) is one too: ask for the
+     evidence (the vendor terms, the migration plan). Every finding about the PR goes to {author}, never
+     to {name}. Each is ONE question ending in "?", with 2 to 4 options, `recommended` (the index of the
+     option you recommend) and `reason` (one short sentence on why), `why` (why {author} must settle it),
+     `rule`, and a link to where it lives: lines of a file at the head ("code"), the PR description
+     ("description"), or a ticket URL that appears in the description ("ticket"). A plain code fix is an
+     item, not a decision. Each option is one sentence that starts with who carries it out, and `actors`
+     says who that is, in order: "author" or "picked" (someone {author} picks: a teammate, the owner of
+     billing). For example {author_option} (author), "A teammate who owns billing confirms it"
+     (picked).
    - `items` for {author}: a "change" they must make or a "question" they must answer, each anchored to
      lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). `change`
      is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter and `ask`
@@ -211,15 +220,18 @@ in order:
      security and compliance against the repository's own rules; where it has none, say so in `why`.
    - `not_checked_lines`: new-side lines that change {not_checked}. This review does NOT check that area:
      never write decisions, items or cleared entries about it; only list where it is.
+   - `gaps`: only a gap in this review's method that {author} cannot close: a repository rule this PR
+     touches that no reading of the code can verify ("unverifiable-rule", with its id), or a kind of risk
+     these instructions do not cover ("new-risk"). Never a finding about the PR: that is an item or a
+     decision for {author}. Usually empty.
 4. Keep at most 3 decisions and 5 items, worst first. Write `summary`, one sentence on what the PR does,
    and `skip`, the files that need no look, by group. A change in product behaviour never goes in `skip`:
    it is a cleared entry that says it is intended and its default is safe, or a decision. `change` is
    plain words about the line, never an identifier (no function, variable or type names).
 
 Your answer is the JSON object of the schema you were given; it replaces the markdown output format
-described above. You do not pick the outcome: the script derives it (a decision with an option {name}
-carries out means {name} is needed; a change means changes are requested; only questions means
-questions for {author}; nothing means low risk). Follow the STYLE GUIDE above to the letter: plain
+described above. You do not pick the outcome: the script derives it (a change means changes are
+requested; only questions and decisions means questions for {author}; nothing means low risk). Follow the STYLE GUIDE above to the letter: plain
 words, no filler, no rule codes or flag ids in any text (cite a repository rule only through `rule`),
 no praise, and no link to any site but github.com (write the sentence without it). Never copy secrets,
 tokens or personal data into your answer; point at them by path and line instead.
@@ -317,6 +329,8 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
                       for f in flagged) or '- none'
     final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
     final = final.replace('{name}', NAME).replace('{author}', author)
+    final = final.replace('{author_option}', '"You change it to follow the rule"' if cfg.get('voice') == 'reviewer'
+                          else f'"{author} changes it to follow the rule"')
     final = final.replace('{context_step}', CONTEXT_STEP if context_block else '')
     final = final.replace('{since_step}', pr_incremental.STEP if since_block else '')
     final = final.replace('{suggest_step}', SUGGEST_STEP.replace('{author}', author) if cfg.get('suggestions') else '')
@@ -540,9 +554,10 @@ def ours_on_head(repo, number, head):
 POINTER = 'Replaced by [the new review of this commit]'
 OURS_JQ = pr_format.ours_jq()
 DISMISSAL = 'Replaced by a newer automated review.'
+DISMISSAL_VOICE = 'Replaced by a newer review.'  # decision-ed7320b7
 
 
-def dismiss_stale(repo, number, keep_id, reviewer):
+def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose'):
     """R35, R31: our newest review is our only live verdict on a PR. A later COMMENT review would leave an
     earlier REQUEST_CHANGES blocking, or an earlier APPROVE standing after the review found a question, so
     every newer review dismisses our earlier ones in those states. Only automated reviews (their body
@@ -556,14 +571,16 @@ def dismiss_stale(repo, number, keep_id, reviewer):
     ok = bad = 0
     for rid in (l.strip() for l in r.stdout.splitlines() if l.strip()):
         d = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{repo}/pulls/{number}/reviews/{rid}/dismissals',
-                            '-f', f'message={DISMISSAL}', '-f', 'event=DISMISS'],
+                            '-f', f"message={DISMISSAL_VOICE if voice == 'reviewer' else DISMISSAL}", '-f', 'event=DISMISS'],
                            capture_output=True, text=True, timeout=60)
         ok, bad = ok + (d.returncode == 0), bad + (d.returncode != 0)
     return ok, bad
 
 
-def pointer_body(name, new_url):
+def pointer_body(name, new_url, voice='disclose'):
     """What an earlier review of the same head becomes when a new one replaces it (R24)."""
+    if voice == 'reviewer':
+        return f"**Replaced** {pr_format.MARK}\n\n{POINTER}({new_url})."
     return f"**Replaced**{pr_format.SUFFIX.format(name=name)}\n\n{POINTER}({new_url})."
 
 
@@ -584,6 +601,9 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     event, no inline comments), else replaces it with a pointer; its Slack message is updated in place."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
     event = pr_format.event_of(rv)
+    # The gap kinds, host-local and counts only (decision-3aeec149); the feedback order asks once per kind.
+    extra.update(gaps=sorted({g['kind'] for g in rv.get('gaps') or []}),
+                 gaps_open=sorted({g['kind'] for g in pr_format.open_gaps(rv)}), voice=rv.get('voice'))
     if cfg.get('no_deliver'):
         finish(cfg, key, entry, rv['outcome'], {**extra, 'event': event, 'inline': len(comments), 'body_chars': len(body)})
         return
@@ -611,13 +631,13 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     else:
         posted, url, state, rid = post_review(repo, pr, body, comments, event)
         if old_id and posted == 'ok':
-            p2 = update_review(repo, n, old_id, pointer_body(NAME, url))[0]
+            p2 = update_review(repo, n, old_id, pointer_body(NAME, url, cfg.get('voice')))[0]
             extra.update(replaced=old_id, replaced_status=p2)
     if posted == 'ok' and state == 'PENDING':  # R0: never leave one in the reviewer's slot
         subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{repo}/pulls/{n}/reviews/{rid}'],
                        capture_output=True, text=True, timeout=60)
     elif posted == 'ok':
-        extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'])
+        extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'], cfg.get('voice'))
         if cfg.get('incremental') and rv.get('since'):  # gc-sy1hm.2 c: only once the new review is up
             extra['threads_resolved'], extra['threads_resolve_failed'] = pr_incremental.resolve_threads(repo, n, rv['since'])
     if not url:
@@ -640,7 +660,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
         return
     ts = entry.get('slack_ts') if rereview and head in (entry.get('review_heads') or []) else None
     slack, new_ts = pr_state.slack_post(cfg, rv['outcome'], entry['url'], url, approved=event == 'APPROVE', ts=ts,
-                                        event=event)
+                                        event=event, gap=bool(pr_format.open_gaps(rv)))
     extra['slack'] = slack
     if new_ts:
         extra['slack_ts'] = new_ts
@@ -665,10 +685,11 @@ def redeliver(cfg, key):
     author = author_of(pr)
     ci = pr_rules.ci_state(pr)
     rv = dict(res, blockers=pr_format.blockers(entry['repo'], pr, ci, ci_detail(pr)),
-              facts=pr_format.facts_line(pr, ci, ci_detail(pr)), approve=False, request_changes=cfg['request_changes'])
+              facts=pr_format.facts_line(pr, ci, ci_detail(pr)), approve=False, request_changes=cfg['request_changes'],
+              voice=cfg.get('voice'), names=[NAME, pr_format.YOU if cfg.get('voice') == 'reviewer' else author])
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     body = pr_format.render(entry['repo'], pr, rv, NAME, author)
-    comments = pr_format.inline_comments(rv['items'], author)
+    comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
     idx = pr_format.diff_index(pr_diff(entry['repo'], pr['number']))
     reasons = pr_format.gate(rv, idx, body, None, pr.get('body') or '', res.get('flagged') or [], comments)
     if reasons:
@@ -744,10 +765,15 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
     pass (R22); the repository's rules for the links (R37); an approval only when the bar holds (R27), and
     a low-risk review that misses the bar asks the author for what is missing instead."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
+    voice = cfg.get('voice') or 'disclose'
+    accepted = pr_state.accepted_gaps(cfg)
+    gaps = [dict(kind=g['kind'], rule=g.get('rule') or '', accepted=g['kind'] in accepted)
+            for g in (skim or {}).get('gaps') or [] if isinstance(g, dict) and g.get('kind')]
     if money:
         mi = money_info or {}
-        decisions = [pr_format.not_checked_decision(money, words, author, mi.get('overview', ''), mi.get('overview_places', ()))] + \
-            decisions[:pr_format.MAX_DECISIONS - 1]
+        decisions = [pr_format.not_checked_decision(money, words, author, mi.get('overview', ''), mi.get('overview_places', ()),
+                                                    voice)] + decisions[:pr_format.MAX_DECISIONS - 1]
+        gaps.append({'kind': 'not-checked', 'rule': '', 'accepted': 'not-checked' in accepted})
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
     skip = [dict(g, paths=[x for x in g['paths'] if idx is None or x in idx]) for g in (skim or {}).get('skip') or []]
@@ -757,7 +783,8 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
           'not_checked': words if money else '', 'model': model, 'flags_cut': flags_cut, 'approve': False,
           'request_changes': cfg['request_changes'], 'rules': (digest or {}).get('rules') or {},
-          'rules_sha': (digest or {}).get('sha') or '', 'names': [NAME, author]}
+          'rules_sha': (digest or {}).get('sha') or '', 'voice': voice, 'gaps': gaps,
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author]}
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     if rv['outcome'] == 'low-risk' and cfg['approve']:
         if not pr_format.ci_strict(pr):
@@ -769,7 +796,8 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
                                    'url': f"https://github.com/{repo}/pull/{pr['number']}/files",
                                    'detail': f'{len(flagged) + flags_cut} flagged changes are more than one review checks.'})
         rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
-        rv['approve'] = rv['outcome'] == 'low-risk' and not pr_format.gate_approve(rv, pr, pr['headRefOid'], flagged, idx)
+        rv['approve'] = rv['outcome'] == 'low-risk' and not pr_format.open_gaps(rv) and \
+            not pr_format.gate_approve(rv, pr, pr['headRefOid'], flagged, idx)
     return rv
 
 
@@ -778,6 +806,7 @@ def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info=No
     reader test held the full one twice: line 2, the money decision (each place linked to its changed range
     with its one line, R32) and the status line, nothing the review model wrote."""
     rv = assemble(cfg, repo, pr, ci, [], [], [], '', [], 0, money, ruleset, author, model=False, money_info=money_info)
+    rv['gaps'].append({'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)})
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -818,7 +847,7 @@ def question_from(c, question=''):
             'confidence': 8}
 
 
-def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words):
+def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg=None):
     """R33: a PR that requests the reviewer is never silent, and the note keeps a floor the reviewer can act
     on (the mayor, 2026-10-30 02:11Z): why the review was held, in plain words; the places the zero-token
     rules know, each linked (the money places with their lines, the flagged hunks with what the rule saw);
@@ -839,10 +868,13 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words):
     elif codes:
         parts.append('our review broke the review format twice')
     why = "Our review of this PR didn't reach the quality bar: " + '; '.join(parts or ['it was held']) + '.'
-    rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why)], 'items': [],
+    voice = (cfg or {}).get('voice') or 'disclose'
+    rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why, voice)], 'items': [],
           'cleared': [], 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'summary': '', 'skip': [],
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
-          'request_changes': False, 'rules': {}, 'rules_sha': '', 'names': [NAME, author]}
+          'request_changes': False, 'rules': {}, 'rules_sha': '', 'voice': voice,
+          'gaps': [{'kind': 'below-bar', 'rule': '', 'accepted': 'below-bar' in pr_state.accepted_gaps(cfg)}] if cfg else [],
+          'names': [NAME, pr_format.YOU if voice == 'reviewer' else author]}
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -972,7 +1004,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if since_block:
                 rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
-            comments = pr_format.inline_comments(rv['items'], author)
+            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             problems = []
@@ -1012,7 +1044,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             if since_block:
                 rv['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), rv['items'], prev, pr['headRefOid'])
             body = pr_format.render(repo, pr, rv, NAME, author)
-            comments = pr_format.inline_comments(rv['items'], author)
+            comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'))
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             extra['r31_questions'] = len(asked)
@@ -1052,7 +1084,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             # A PR that requests the reviewer is never silent: the note, with its floor (R33).
             codes = extra.get('held_gate') or extra['gate']
             rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes,
-                                              ruleset.get('not_checked') or 'billing, plans, credits or pricing')
+                                              ruleset.get('not_checked') or 'billing, plans, credits or pricing', cfg)
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0].get('where') or []]),
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, author_decisions=1, items=0, cleared=0,

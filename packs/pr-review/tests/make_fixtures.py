@@ -81,6 +81,13 @@ MONEY = pr_format.not_checked_decision(
     [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16,
       'what': 'Overdue invoices now get a late fee after thirty days.'}], NOT_CHECKED, 'Author',
     'Overdue invoices get a late fee after thirty days, on by default.', [0])
+# decision-ed7320b7: the same in the reviewer's voice (the author is "you", the gap is scope).
+MONEY_VOICE = pr_format.not_checked_decision(
+    [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16,
+      'what': 'Overdue invoices now get a late fee after thirty days.'}], NOT_CHECKED, 'Author',
+    'Overdue invoices get a late fee after thirty days, on by default.', [0], voice='reviewer')
+AUTHORS_CALL_VOICE = dict(AUTHORS_CALL, options=['You send only the clinic name and time',
+                                                 'You ask the SMS vendor for a BAA first'])
 # The money decision as v5.4 delivered it: no actors, the recommended task in line 2, under "For Reviewer".
 MONEY_V54 = dict({k: v for k, v in MONEY.items() if k != 'actors'},
                  author_task='state in the PR description what changes for customers')
@@ -91,6 +98,10 @@ SKIP = {'summary': 'Reminders now name the patient and log the message text.',
 FLOOR = pr_format.floor_decision(
     [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 15, 'what': 'a message sent to people (SMS, email, push)'}],
     'Author', "Our review of this PR didn't reach the quality bar: a second reader found our review too hard to act on.")
+FLOOR_VOICE = pr_format.floor_decision(
+    [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 15, 'what': 'a message sent to people (SMS, email, push)'}],
+    'Author', "Our review of this PR didn't reach the quality bar: a second reader found our review too hard to act on.",
+    voice='reviewer')
 # R37: a repository rule the digest found (synthetic).
 RULES = {'D1': {'rule': 'Never write patient data to logs or third-party messages.', 'area': 'patient data',
                 'path': 'AGENTS.md', 'line_start': 3, 'line_end': 3}}
@@ -154,8 +165,11 @@ CASES = {
         **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED', 'post_slack': True, 'head': 'a' * 40,
                      'slack_heads': ['a' * 40]}},
+    # Since 2026-10-30 06:09Z (decision-3aeec149: "needs me should be reserved for escalations that cannot be
+    # escalated to [the author], such as potential gaps in our review methodology") this shape fails: a
+    # finding about the PR is the author's, and "Needs you" is not an outcome on the PR.
     'case06-needs-you-with-a-linked-decision': {
-        'expect': 'pass', 'outcome': 'escalate', 'derived': True, 'line2': 'Reviewer: 1 decision. Author: 1 change.',
+        'expect': 'fail', 'expect_reasons': ['R16'], 'only_reasons': ['R16'], 'outcome': 'escalate',
         'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
         'items': [GOOD_ITEM], **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
@@ -448,6 +462,52 @@ CASES = {
     'case86-decision-without-actors': {
         'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
         'items': [], 'decisions': [{k: v for k, v in DECISION.items() if k != 'actors'}], **SKIP},
+    # decision-3aeec149: a finding with choices goes to the author, as their question.
+    'case87-finding-with-choices-goes-to-the-author': {
+        'expect': 'pass', 'outcome': 'changes', 'derived': True,
+        'line2': 'Reviewer: nothing. Author: 1 change, 1 question.',
+        'diff': DIFF, 'tree_lines': TREE, 'items': [GOOD_ITEM], 'decisions': [AUTHORS_CALL], **SKIP},
+    'case88-gap-of-an-unknown-kind': {
+        'expect': 'fail', 'expect_reasons': ['R16'], 'only_reasons': ['R16'], **LOW, 'gaps': [{'kind': 'hunch'}]},
+    # decision-ed7320b7 (the reviewer, 06:05Z: "do not post ever that i did not read the PRs" / "just act as
+    # if you are me"): with voice 'reviewer', line 1 is the verdict word and an invisible marker, line 2
+    # what the author must do, a gap is said as scope, and no disclosure phrase appears anywhere (R38).
+    'case89-voice-changes': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'changes', 'derived': True, 'line2': 'Author: 1 change.',
+        'diff': DIFF, 'items': [GOOD_ITEM], **SKIP},
+    'case90-voice-billing-is-scope': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'line2': 'Author: 1 question.',
+        'diff': DIFF, 'items': [], 'decisions': [MONEY_VOICE], 'tree_lines': TREE, 'flagged': [FLAG],
+        'cleared': [CLEARED], 'not_checked': NOT_CHECKED, 'gaps': [{'kind': 'not-checked', 'accepted': True}], **SKIP},
+    'case91-voice-approval': {
+        'expect': 'pass', 'voice': 'reviewer', **dict(LOW, approve=True), 'approve_check': GREEN,
+        'line2': 'Nothing needed.'},
+    'case92-voice-note-is-the-author-question': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'not-reviewed', 'line2': 'Author: 1 question, get CI running.',
+        'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE, 'decisions': [FLOOR_VOICE], 'blockers': NO_CI,
+        'facts': 'No CI ran · no merge conflict · open', 'gaps': [{'kind': 'below-bar'}]},
+    'case93-voice-author-choice-starts-with-you': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'questions', 'derived': True, 'line2': 'Author: 1 question.',
+        'diff': DIFF, 'tree_lines': TREE, 'items': [], 'decisions': [AUTHORS_CALL_VOICE], **SKIP},
+    'case94-voice-author-choice-names-the-author': {
+        'expect': 'fail', 'expect_reasons': ['R22'], 'only_reasons': ['R22'], 'voice': 'reviewer', 'outcome': 'questions',
+        'diff': DIFF, 'tree_lines': TREE, 'items': [], 'decisions': [AUTHORS_CALL], **SKIP},
+    'case95-voice-disclosure-in-the-body': {
+        'expect': 'fail', 'expect_reasons': ['R38'], 'only_reasons': ['R38'], 'voice': 'reviewer', 'outcome': 'changes',
+        'diff': DIFF, 'items': [GOOD_ITEM], **SKIP,
+        'body_edit': ['Reminders now name the patient', 'An automated check found reminders now name the patient']},
+    'case96-voice-disclosure-in-an-inline-comment': {
+        'expect': 'fail', 'expect_reasons': ['R38'], 'only_reasons': ['R38'], 'voice': 'reviewer', 'outcome': 'changes',
+        'diff': DIFF, **SKIP,
+        'items': [dict(GOOD_ITEM, why='Claude Code found that the log line writes the message body with the name.')]},
+    'case97-voice-line-1-keeps-the-old-note': {
+        'expect': 'fail', 'expect_reasons': ['R28', 'R38'], 'voice': 'reviewer', 'outcome': 'changes', 'diff': DIFF,
+        'items': [GOOD_ITEM], **SKIP,
+        'body_edit': ['**Changes suggested** <!-- pr-review v5.6 -->', "**Changes suggested** · automated, Reviewer hasn't read this PR"]},
+    'case98-voice-delivered-body': {
+        'expect': 'pass', 'voice': 'reviewer', 'outcome': 'changes', 'n_items': 1, 'model': True,
+        'facts': pr_format.GREEN_FACTS,
+        'body': body(outcome='changes', items=[GOOD_ITEM], voice='reviewer', **SKIP)},
 }
 
 if __name__ == '__main__':

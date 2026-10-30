@@ -42,18 +42,21 @@ SCHEMA = {
                 'question': {'type': 'string', 'maxLength': 200, 'description': (
                     'The one concrete check the author can answer about those lines, ending in "?", at most 25 '
                     'words; never a stock question.')}}}},
-        'decisions': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '0 = no decision for the reviewer (n/a)'},
+        'decisions': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '0 = no choice for the author (n/a)'},
         'problems': {'type': 'array', 'maxItems': 3, 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['what', 'fix'],
             'properties': {'what': {'type': 'string', 'maxLength': 240}, 'fix': {'type': 'string', 'maxLength': 240}}}},
     },
 }
 
-RUBRIC = """You judge one pull-request review written by an AI review agent for {name}, a busy engineering lead.
+RUBRIC = """You judge one pull-request review written by an AI review agent for {name}.
 It is posted on the PR under {name}'s login; {author}, the PR's author, reads it too. {name} is the
-harness engineer and does not know this codebase; {author} wrote the change and reviewed it. A good
-review checks the change against the repository's own written goals and rules, citing them, and never
-asks {name} to read or review code. {name} has said:
+harness engineer and does not know this codebase; {author} wrote the change and answers what the review
+asks. Every finding goes to {author} as a change or a question, with options where it is a trade-off;
+{name} is needed only for a gap in the review's own method, which is not on the PR. A sign-off that goes
+to {author} is the intended routing, not a contradiction. A good review checks the change against the
+repository's own written goals and rules, citing them, and never asks {name} to read or review code.
+{name} has said:
 - "it just fluff and really hard to read. there are no markers in the review what I actually need to manually review"
 - "that review comment needs to link to the human decisions (either in text or code reference that still need to be answered). otherwise you do not need me!"
 
@@ -61,8 +64,8 @@ Score 1-5 (5 = best):
 1. scan: can {name} tell in 10 seconds what the outcome is and whether he must act?
 2. markers: does every point {name} or {author} must act on, and every flagged change it calls safe, link to
    the exact code line or text? Inline comments count as markers on their lines.
-3. decisions: if {name} must decide something, is it one clear question with options and a recommendation?
-   0 when there is no decision for {name}.
+3. decisions: if the review asks {author} to choose (a question with options), is it one clear question
+   with options and a recommendation? 0 when there is none.
 4. plain: plain words, no rule codes, jargon or boilerplate?
 5. length: no longer than needed; nothing said twice?
 6. useful: would this save {name} time compared with reading the PR himself, or is it empty or obvious?
@@ -72,8 +75,8 @@ without saying why it is acceptable or intended, each with the one concrete ques
 answer about those lines, and say whether the "Safe to skip" line holds a change
 in product behaviour (what users, patients or staff see or get).
 
-Required by the style guide, so never a problem and never counted against a score: line 1, the verdict
-with the note that it is automated and {name} hasn't read the PR; line 2, who acts; each item for
+Required by the style guide, so never a problem and never counted against a score: line 1, {line1};
+line 2, {line2}; each item for
 {author} as one line in the body that points at its inline comment, which carries the full text on the
 exact lines; the "What it does" sentence; the "Safe to skip" line, the rest of the
 diff by group with each file linked; the status line (CI, merge conflict, state), shown only when
@@ -124,7 +127,11 @@ def ask(cfg, prompt, schema, model, max_usd, timeout=300):
 def judge(cfg, body, comments, name, author):
     """(scores or None, problems, meta). Scores: {scan, markers, decisions, plain, length, useful};
     meta['risky_cleared']: the cleared entries (1 = first) the reader found risky without a reason (R31)."""
-    prompt = RUBRIC.format(name=name, author=author, review=review_text(body, comments))
+    voice = cfg.get('voice') == 'reviewer'  # decision-ed7320b7: the review speaks as the reviewer
+    prompt = RUBRIC.format(name=name, author=author, review=review_text(body, comments),
+                           line1='the verdict word alone' if voice else
+                           f"the verdict with the note that it is automated and {name} hasn't read the PR",
+                           line2=f'what {author} must do' if voice else 'who acts')
     so, meta = ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
     if so is None:
         return None, [], meta
