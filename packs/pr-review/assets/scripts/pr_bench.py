@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import statistics
 import subprocess
 import sys
 
@@ -230,13 +231,13 @@ What the LATER PR changed in the earlier PR's files:
 {diff}"""
 
 
-def label(cfg, repo):
+def label(cfg, repo, limit=None):
     """For each case, whether its later PR fixes a defect of the earlier one (a capture-off reader with no
     tools); stored in the benchmark, printed as counts."""
     bench_p, mirror, _ = paths(cfg, repo)
     bench = json.load(open(bench_p))
     got, cost = collections.Counter(), 0.0
-    for c in bench['cases']:
+    for c in (sample(bench['cases'], limit) if limit else bench['cases']):
         if c.get('label'):
             got[c['label']['defect']] += 1
             continue
@@ -332,6 +333,7 @@ def run(cfg, repo, n_cases, n_controls, max_usd):
         res['prs'][key] = {'kind': kind, 'head': c['head'], 'cost_usd': round(cost, 4), 'held': (got or {}).get('held'),
                            'anchors': anchors(got['rv']) if got else None, 'cleared': len((got or {}).get('rv', {}).get('cleared') or []),
                            'outcome': ((got or {}).get('rv') or {}).get('outcome'), 'turns': x.get('turns'),
+                           'judge': x.get('judge'),
                            'error': None if got else 'no review'}
         with open(res_p, 'w') as f:
             json.dump(res, f)
@@ -361,9 +363,25 @@ def head_lines(mirror, merge, head, path, lines):
     return out
 
 
+def reader_spread(scores):
+    """The reader test's scores over the reviewed PRs (the mayor, 02:35Z: a distribution per version, not
+    one PR): median and 10th percentile of useful and markers, and how many reached the bar."""
+    got = [x for x in scores if x]
+    out = {'reader_n': len(got)}
+    for dim in ('useful', 'markers'):
+        v = sorted(x[dim] for x in got)
+        out[f'{dim}_median'] = statistics.median(v) if v else None
+        out[f'{dim}_p10'] = v[int(0.1 * (len(v) - 1))] if v else None
+    out['reader_at_bar'] = sum(1 for x in got if not pr_judge.below_bar(x))
+    return out
+
+
 def score(cfg, repo, ver):
     """Recall on the cases, a precision proxy and false alarms on the controls, and cost per PR."""
     bench_p, mirror, res_p = paths(cfg, repo, ver)
+    if not os.path.exists(res_p):
+        print(json.dumps({'repo': repo, 'version': ver, 'results': 'none for this version; --run first'}))
+        return None
     bench, res = json.load(open(bench_p)), json.load(open(res_p))
     cases = {str(c['pr']): c for c in bench['cases']}
     hit = reviewed = entries = on_target = alarms = controls = defects = defects_hit = 0
@@ -394,6 +412,7 @@ def score(cfg, repo, ver):
            'precision_proxy': round(on_target / entries, 3) if entries else None,
            'controls_reviewed': controls, 'controls_with_a_change_ask': alarms,
            'errors': sum(1 for r in res['prs'].values() if r.get('anchors') is None),
+           **reader_spread([r.get('judge') for r in done]),
            'cost_per_pr_usd': round(sum(r['cost_usd'] for r in done) / len(done), 3) if done else None}
     print(json.dumps(out))
     return out
@@ -410,6 +429,7 @@ def main():
     ap.add_argument('--cases', type=int, default=5)
     ap.add_argument('--controls', type=int, default=5)
     ap.add_argument('--max-usd', type=float, default=10)
+    ap.add_argument('--limit', type=int, help='--label: an even sample of this many cases')
     a = ap.parse_args()
     cfg = pr_state.config()
     if a.mine:
@@ -417,7 +437,7 @@ def main():
     elif a.run:
         run(cfg, a.run, a.cases, a.controls, a.max_usd)
     elif a.label:
-        label(cfg, a.label)
+        label(cfg, a.label, a.limit)
     elif a.score:
         score(cfg, a.score, version(cfg))
     else:
