@@ -25,7 +25,7 @@ AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'beha
 NOT_CHECKED_AREA = 'not checked'  # the area of the decision R20 adds; the model never uses it
 KINDS = {'question': 'Ask {author}', 'change': 'Change'}
 # R28: line 1 is the verdict, then the honesty note as a suffix (the review is posted under the reviewer's
-# login, so the author must see it is automated): "**Approved as low risk** · automated, Alex hasn't read this PR".
+# login, so the author must see it is automated): "**Approved as low risk** · automated, <reviewer> hasn't read this PR".
 SUFFIX = " · automated, {name} hasn't read this PR"
 # R33: what a requested PR gets when its review was held: never silence.
 NOT_REVIEWED = '**Not reviewed automatically.**'  # how the notes of v4.2-v5 began
@@ -62,7 +62,7 @@ CUT_RE = re.compile(r'\[(link|image) removed\]')
 LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk|'
                       r'Not reviewed automatically)\*\*'
                       r" · automated, (.+) hasn't read this PR$")
-# R22: line 2, who acts: "Alex: 1 decision. Nils: 1 change, get CI running." or "Nothing for Alex or Nils."
+# R22: line 2, who acts: "<reviewer>: 1 decision. <author>: 1 change, get CI running." or "Nothing for <reviewer> or <author>."
 WHO_RE = re.compile(r'^(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.$')
 NOTHING_RE = re.compile(r'^Nothing for (.+) or (.+)\.$')
 # R37: a decision never asks the reviewer to read or review code (the reviewer does not know the codebase).
@@ -310,30 +310,33 @@ def render(repo, pr, rv, name, author):
         lines.append(f'**For {name}:**')
         for k, d in enumerate(rv['decisions'], 1):
             money = d.get('area') == NOT_CHECKED_AREA
-            opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
-            lines += [f"{k}. **{d['question']}**{opener}"]
+            # The decision block first (the mayor, 2026-10-30 03:05Z): for money, the plain risk sentence,
+            # then the question, the options and the recommendation; the evidence after them.
             if money:
-                lines.append('   ' + opening_text(repo, head, d))
-            elif d.get('why'):
-                lines.append(f"   {d['why']}")
+                lines += [f'{k}. ' + opening_text(repo, head, d), f"   **{d['question']}**"]
+            else:
+                opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
+                lines.append(f"{k}. **{d['question']}**{opener}")
+                if d.get('why'):
+                    lines.append(f"   {d['why']}")
             if rule_ref(repo, rv, d.get('rule')):
                 lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
-            others = []
-            if d.get('where') and money:
-                shown, others = money_lines(repo, head, d['where'])
-                lines += shown
-            elif d.get('where'):
-                lines.append('   **Where:**')
-                for x in d['where']:
-                    url = code_link(repo, head, x['path'], x['line_start'], x['line_end'])
-                    lines.append(f"   - [`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
             why_opt = d.get('option_reasons') or []
             lines += [f'   {LETTERS[j]}. {o}' + (f': {why_opt[j]}' if j < len(why_opt) and why_opt[j] else '')
                       for j, o in enumerate(d['options'][:len(LETTERS)])]
             rec = d.get('recommended', 0)
             lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
                          f"{d['reason']}")
-            if others:  # R32: every place stays linked, out of the visible length (the mayor, 02:35Z)
+            others = []
+            if d.get('where') and money:
+                backed = {j for j in d.get('opening_places') or []} if d.get('opening') else set()
+                shown, others = money_lines(repo, head, [x for j, x in enumerate(d['where']) if j not in backed])
+                lines += shown
+            elif d.get('where'):
+                lines.append('   **Where:**')
+                for x in d['where']:
+                    lines.append(f"   - {place_link(repo, head, x)}: {x.get('what') or ''}")
+            if others:  # R32: every place stays linked, once, out of the visible length
                 lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
         lines.append('')
     if rv['items'] or rv['blockers']:
@@ -460,10 +463,10 @@ def not_checked_decision(ranges, words, author, overview='', overview_places=())
             'opening': overview if overview and backing else '', 'opening_places': backing if overview else [],
             'options': [f'{author} states in the PR description what changes for customers',
                         'A person who owns billing reviews the changes',
-                        'Accept as is'],
+                        'Whoever owns pricing has already agreed to it, so merge'],
             'option_reasons': ['a short written account puts on record what customers will see',
                                'they know the pricing rules this touches',
-                               'only if whoever owns pricing has already agreed to it'],
+                               'when the sign-off happened outside this PR'],
             'recommended': 0,
             'reason': f'One paragraph from {author} puts on record what customers will see, and nobody has to read code.',
             'author_task': 'state in the PR description what changes for customers',
@@ -476,17 +479,17 @@ def not_checked_decision(ranges, words, author, overview='', overview_places=())
 
 
 def floor_decision(places, author, why):
-    """R33 (the mayor, 2026-10-30 02:11Z: "a hand-off with no options still forces Alex to read the PR"):
+    """R33 (the mayor, 2026-10-30 02:11Z: "a hand-off with no options still forces the reviewer to read the PR"):
     the note's decision. `places`: [{path, line_start, line_end, what}] the zero-token rules know (the
     flagged hunks and the money places), each linked; `why`: the structural reason the review was held.
     Rule-level options; none asks the reviewer to read code (R37)."""
     d = {'question': 'Who reviews this PR before it merges?',
          'options': [f'{author} asks a teammate who knows this code to review it',
                      f'{author} states in the PR description what it changes and why that is safe, and you then decide',
-                     'Accept it as is'],
+                     'Merge it as is'],
          'option_reasons': ['a person who knows the code checks in one pass what our review could not',
                             'the author knows the change; a written account lets you decide without reading code',
-                            'only if a wrong change here would be cheap to undo'],
+                            'when a wrong change here would be cheap to undo'],
          'recommended': 0, 'reason': 'A person who knows the code checks in one pass what our review could not.',
          'author_task': 'ask a teammate who knows this code to review it',
          'why': why, 'area': 'other', 'rule': '', 'verified': 'zero-token rules', 'confidence': 10, 'auto': True}
@@ -771,6 +774,11 @@ def gate_body(body, rv, comments=None):
     if len(one_by_one) > MONEY_SHOWN:
         why.append(f'R32: {len(one_by_one)} money places listed one by one; show at most {MONEY_SHOWN}, the rest in a '
                    f'linked line')
+    code = re.sub(r'(?m)^   Rule: .*$|rule: \[[^\]]*\]\([^)]*\)', '', body)  # rule citations may repeat
+    urls = re.findall(r'\]\((https://github\.com/[^)]+/blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?)\)', code)
+    twice = len(urls) - len(set(urls))
+    if twice:
+        why.append(f'R21: {twice} code links repeat a place already linked; link each place once')
     said = len(re.findall(r'(?i)\bnot checked\b', body))
     if rv.get('not_checked') and said != 1:
         why.append(f'R32: "not checked" is said {said} times; say it once, in line 2')
@@ -841,7 +849,7 @@ def ci_strict(pr):
 
 
 def gate_approve(rv, fresh, head, flagged=(), idx=None):
-    """R27, the bar for an APPROVE (Alex, 2026-10-29 21:01Z: "actually approve low risk PRs not just say you
+    """R27, the bar for an APPROVE (the reviewer, 2026-10-29 21:01Z: "actually approve low risk PRs not just say you
     do"): the PR is open and its head is the reviewed head (checked right before posting); CI is green
     (ci_strict); low risk with no decision, item or blocker and no not-checked area; and every flagged
     hunk has its cleared entry (an item or a decision would not be low risk)."""

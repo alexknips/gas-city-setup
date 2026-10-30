@@ -6,4 +6,8 @@
 # ${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression; the inbox/ under it is not run until triaged.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
-exec python3 "$here/pr_format.py" --regress "$here/../../tests/fixtures" "${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression"
+python3 "$here/pr_format.py" --regress "$here/../../tests/fixtures" "${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression"
+rc=$?
+# Host-local: no public file names a town person or repository (skipped without the town overrides).
+python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
+exit $rc

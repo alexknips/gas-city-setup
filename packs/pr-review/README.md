@@ -59,7 +59,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_REPOS` | (none) | `owner/repo=rig …`. The rig is where the PR's bead goes; without `=rig` it is the repo name. |
 | `PR_REVIEW_REVIEWER` | (none) | GitHub login whose review requests select a PR, and whose `gh` login posts the reviews. |
 | `PR_REVIEW_REVIEWER_NAME` | the login | The name in every review's footer ("<name> has not read this PR"). |
-| `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for Nils"). |
+| `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for the author"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
 | `PR_REVIEW_SLACK_ENV` | `~/.config/gc/slack.env ~/.config/gc/slack2.env` | Files searched for the first `xoxb-` bot token. |
@@ -206,7 +206,8 @@ to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of 
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
 charges, credits, plans or limits; clipped at 30 words), its kind, whether it changes behaviour and its
 risk, plus one sentence on what the whole change does and its default state, and the question on its
-concrete effect after merge; in calls of 20 places. A place
+concrete effect after merge; in calls of 20 places. The money decision shows its block first (risk, question,
+options, recommendation), then the evidence; each place is linked once. A place
 that comes back without a line gets one more try, then keeps its link with "(not summarized)". It runs apart from the review, so the money decision
 keeps its lines even when the full review is held.
 
@@ -235,11 +236,11 @@ every review is the outcome word with the automated note (R28); line 2 says who 
 
 | Outcome | When | Line 2 | Event | Slack |
 | --- | --- | --- | --- | --- |
-| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each one question with lettered options, a recommendation with its reason and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20, R32) | `**Needs you** · automated, Alex hasn't read this PR` / `Alex: N decisions. Nils: …` | COMMENT | "Needs you" |
-| `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Alex: nothing. Nils: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
-| `questions` | only questions for the author, or CI that did not run, was skipped or is still running | `**Questions** · …` / `Alex: nothing. Nils: 2 questions.` | COMMENT | "Questions for the author" |
-| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Alex: 1 decision. Nils: …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" with lettered options | COMMENT | "Not reviewed" |
-| `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | `**Approved as low risk** · …` / `Nothing for Alex or Nils.` and "What was checked" collapsed (R36) (or `**Low risk**` with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
+| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each one question with lettered options, a recommendation with its reason and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20, R32) | `**Needs you** · automated, Reviewer hasn't read this PR` / `Reviewer: N decisions. Author: …` | COMMENT | "Needs you" |
+| `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Reviewer: nothing. Author: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
+| `questions` | only questions for the author, or CI that did not run, was skipped or is still running | `**Questions** · …` / `Reviewer: nothing. Author: 2 questions.` | COMMENT | "Questions for the author" |
+| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Reviewer: 1 decision. Author: …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" with lettered options | COMMENT | "Not reviewed" |
+| `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | `**Approved as low risk** · …` / `Nothing for Reviewer or Author.` and "What was checked" collapsed (R36) (or `**Low risk**` with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
 
 Rule flags alone never route a PR to the reviewer: they tell the model where to look first, and the
 review shows each one cleared (with a link) or acted on (R19). `pr_review.py --redeliver REPO#N` posts
@@ -343,7 +344,9 @@ passes, a note without its decision fails (R33). Case 69: line 2 that misses the
 (R22); case 70: a money review with its places collapsed (R32). Host-local case 14: the 29a3588 money review
 (19 places one by one) fails (R32). Case 71: a money opening
 without the places that back it (R32); host-local case 15: the dfc5ea2 money review (other places not
-collapsed) fails (R32).
+collapsed) fails (R32). Case 72:
+a code place linked twice (R21). `pr-review-regress.sh` also runs `pr_hygiene.py`: no public file of the pack names a
+person or repository from the town's overrides (host-local; skipped without them).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a

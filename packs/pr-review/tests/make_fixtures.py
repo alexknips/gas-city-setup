@@ -94,8 +94,8 @@ def body(**fx):
 
 LOW = dict(outcome='low-risk', diff=DIFF, items=[], flagged=[FLAG], cleared=[CLEARED], **SKIP)
 
-LEGACY_CI_BODY = """**Automated review** by Alex's review agents (Claude Code). Alex has not read this PR unless he says so.
-Shadow mode: this review is pending and only Alex sees it; he submits or discards it.
+LEGACY_CI_BODY = """**Automated review** by Reviewer's review agents (Claude Code). Reviewer has not read this PR unless they say so.
+Shadow mode: this review is pending and only Reviewer sees it; they submit or discard it.
 
 **Needs you** · head `0123456789`. Reviewed after the merge.
 
@@ -228,7 +228,7 @@ CASES = {
     'case37-billing-minimal-after-reader-holds': {
         'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
         'decisions': [MONEY], 'not_checked': NOT_CHECKED},
-    # 2026-10-29 21:01Z (Alex: "actually approve low risk PRs not just say you do"): the approval bar, R27.
+    # 2026-10-29 21:01Z (the reviewer: "actually approve low risk PRs not just say you do"): the approval bar, R27.
     'case33-approve-with-an-uncleared-flag': {
         'expect': 'fail', 'expect_reasons': ['R19', 'R27'], **dict(LOW, cleared=[], approve=True), 'approve_check': GREEN},
     'case34-approve-with-ci-not-green': {
@@ -297,11 +297,17 @@ CASES = {
         'blockers': pr_format.blockers('example/repo', {'number': 1, 'mergeable': 'CONFLICTING'}, 'green', (),
                                        ['src/notify/send.ts'])},
     # 2026-10-30 02:24Z (the mayor on the 29a3588 money review: one point short on length; line 2 said
-    # "Nils: nothing" though the recommended option gave Nils a task): R32, R22.
+    # "Author: nothing" though the recommended option gave the author a task): R32, R22.
     'case69-line-2-misses-the-recommended-task': {
         'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
         'tree_lines': TREE, 'decisions': [MONEY], 'not_checked': NOT_CHECKED,
         'body_edit': ['Author: if Reviewer picks A, state in the PR description what changes for customers.', 'Author: nothing.']},
+    # 2026-10-30 03:05Z (the mayor: 28 links for 20 places): each code place is linked once. R21.
+    'case72-code-place-linked-twice': {
+        'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'tree_lines': TREE, 'decisions': [MONEY], 'not_checked': NOT_CHECKED,
+        'body_edit': ['   **Recommended: A.**', '   Also: [`send.ts` L13-L16](' + pr_format.code_link(
+            'example/repo', 'a' * 40, 'src/notify/send.ts', 13, 16) + ')\n   **Recommended: A.**']},
     # 2026-10-30 02:35Z (the mayor: the question named an effect no linked place backs).
     'case71-money-opening-without-its-places': {
         'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
@@ -358,7 +364,7 @@ CASES = {
     'case45-not-reviewed-note': {
         'expect': 'pass', 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
         'decisions': [FLOOR], 'blockers': NO_CI, 'facts': 'No CI ran · no merge conflict · open'},
-    # 2026-10-30 02:11Z (the mayor: a bare note "still forces Alex to read the PR"): the note keeps its floor.
+    # 2026-10-30 02:11Z (the mayor: a bare note "still forces the reviewer to read the PR"): the note keeps its floor.
     'case46-note-without-its-decision': {
         'expect': 'fail', 'expect_reasons': ['R33'], 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False,
         'decisions': [], 'blockers': NO_CI, 'facts': 'No CI ran · no merge conflict · open'},

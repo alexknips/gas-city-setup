@@ -7,7 +7,7 @@ only read; this script renders, gates and delivers the result.
   pr_review.py --dry-run [--pr REPO#N]
                                 pick, prepare and build the prompt; run no model, deliver nothing
 
-Delivery (Alex, 2026-10-29 20:45Z and 21:01Z): every reviewed open PR gets ONE SUBMITTED review on GitHub
+Delivery (the reviewer, 2026-10-29 20:45Z and 21:01Z): every reviewed open PR gets ONE SUBMITTED review on GitHub
 under the reviewer's login (R0, R24), never a pending one: event APPROVE for a low-risk PR that meets the
 bar (R27, PR_REVIEW_APPROVE=on), else COMMENT (REQUEST_CHANGES is not authorized). Its first line says it
 is automated and not yet read by the reviewer, line 2 says who acts (R22); the items are inline comments

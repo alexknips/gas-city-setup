@@ -14,12 +14,12 @@
    "options": [
     "Author asks a teammate who knows this code to review it",
     "Author states in the PR description what it changes and why that is safe, and you then decide",
-    "Accept it as is"
+    "Merge it as is"
    ],
    "option_reasons": [
     "a person who knows the code checks in one pass what our review could not",
     "the author knows the change; a written account lets you decide without reading code",
-    "only if a wrong change here would be cheap to undo"
+    "when a wrong change here would be cheap to undo"
    ],
    "recommended": 0,
    "reason": "A person who knows the code checks in one pass what our review could not.",

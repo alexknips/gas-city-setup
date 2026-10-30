@@ -19,12 +19,12 @@
    "options": [
     "Author states in the PR description what changes for customers",
     "A person who owns billing reviews the changes",
-    "Accept as is"
+    "Whoever owns pricing has already agreed to it, so merge"
    ],
    "option_reasons": [
     "a short written account puts on record what customers will see",
     "they know the pricing rules this touches",
-    "only if whoever owns pricing has already agreed to it"
+    "when the sign-off happened outside this PR"
    ],
    "recommended": 0,
    "reason": "One paragraph from Author puts on record what customers will see, and nobody has to read code.",
