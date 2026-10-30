@@ -20,15 +20,19 @@
  "not_checked": "billing, plans, credits or pricing",
  "decisions": [
   {
-   "question": "After merge every clinic pays one credit per reminder by default; who confirms that?",
-   "opening": "Reminders now cost one credit each, on for every clinic by default.",
+   "question": "What sign-off does this change to billing, plans, credits or pricing need before it merges?",
+   "opening": "Overdue invoices get a late fee, on by default.",
+   "opening_places": [
+    0,
+    2
+   ],
    "options": [
     "Author states in the PR description what changes for customers",
     "A person who owns billing reviews the changes",
     "Accept as is"
    ],
    "option_reasons": [
-    "one paragraph puts on record what customers will see",
+    "a short written account puts on record what customers will see",
     "they know the pricing rules this touches",
     "only if whoever owns pricing has already agreed to it"
    ],
@@ -41,7 +45,7 @@
      "path": "src/billing/p0.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 0 now charges one credit per reminder sent.",
+     "what": "Place 0 now adds a late fee to overdue invoices.",
      "kind": "credits",
      "behaviour": true,
      "risk": 1
@@ -50,7 +54,7 @@
      "path": "src/billing/p1.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 1 now charges one credit per reminder sent.",
+     "what": "Place 1 now adds a late fee to overdue invoices.",
      "kind": "plans",
      "behaviour": true,
      "risk": 2
@@ -59,7 +63,7 @@
      "path": "src/billing/p2.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 2 now charges one credit per reminder sent.",
+     "what": "Place 2 now adds a late fee to overdue invoices.",
      "kind": "credits",
      "behaviour": true,
      "risk": 3
@@ -68,7 +72,7 @@
      "path": "src/billing/p3.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 3 now charges one credit per reminder sent.",
+     "what": "Place 3 now adds a late fee to overdue invoices.",
      "kind": "plans",
      "behaviour": true,
      "risk": 4
@@ -77,7 +81,7 @@
      "path": "src/billing/p4.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 4 now charges one credit per reminder sent.",
+     "what": "Place 4 now adds a late fee to overdue invoices.",
      "kind": "credits",
      "behaviour": true,
      "risk": 5
@@ -86,7 +90,7 @@
      "path": "src/billing/p5.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 5 now charges one credit per reminder sent.",
+     "what": "Place 5 now adds a late fee to overdue invoices.",
      "kind": "plans",
      "behaviour": true,
      "risk": 1
@@ -95,7 +99,7 @@
      "path": "src/billing/p6.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 6 now charges one credit per reminder sent.",
+     "what": "Place 6 now adds a late fee to overdue invoices.",
      "kind": "credits",
      "behaviour": true,
      "risk": 2
@@ -104,7 +108,7 @@
      "path": "src/billing/p7.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 7 now charges one credit per reminder sent.",
+     "what": "Place 7 now adds a late fee to overdue invoices.",
      "kind": "plans",
      "behaviour": false,
      "risk": 3
@@ -113,7 +117,7 @@
      "path": "src/billing/p8.ts",
      "line_start": 10,
      "line_end": 20,
-     "what": "Place 8 now charges one credit per reminder sent.",
+     "what": "Place 8 now adds a late fee to overdue invoices.",
      "kind": "credits",
      "behaviour": false,
      "risk": 4

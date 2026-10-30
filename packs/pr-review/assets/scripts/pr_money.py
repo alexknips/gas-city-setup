@@ -2,7 +2,7 @@
 """The money lines (style guide R32): one neutral line per changed place in a not-checked area (billing,
 plans, credits or pricing) that says what the change does to charges, credits, plans or limits, with its
 kind, whether it changes behaviour and how risky it is; plus one sentence on what the whole change does
-and its default state, and the question on its concrete effect after merge. It describes and never
+and its default state, with the places that show it. It describes and never
 judges. It reads only those hunks, with no tools, so it holds even when the full review is held. Capture
 is off, and nothing it reads or writes is printed.
 """
@@ -12,14 +12,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pr_judge  # noqa: E402
 
-SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['overview', 'question', 'lines'], 'properties': {
+SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['overview', 'overview_places', 'lines'], 'properties': {
     'overview': {'type': 'string', 'maxLength': 240, 'description': (
         'One sentence of at most 30 words: what the change does to money overall, and its default state after '
-        'merge (on or off by default, for which accounts).')},
-    'question': {'type': 'string', 'maxLength': 240, 'description': (
-        'ONE question ending in "?", at most 30 words: the concrete effect after merge with the default '
-        'setting, then who confirms it, e.g. "After merge every clinic pays one SMS credit per reminder by '
-        'default; who confirms that before it ships?"')},
+        'merge (on or off by default, for which accounts). Only what the places below show.')},
+    'overview_places': {'type': 'array', 'items': {'type': 'integer', 'minimum': 1}, 'description': (
+        'The numbers of the places that show what the overview says. An effect no place shows does not go in '
+        'the overview.')},
     'lines': {'type': 'array', 'items': {
         'type': 'object', 'additionalProperties': False, 'required': ['n', 'kind', 'what', 'behaviour', 'risk'],
         'properties': {'n': {'type': 'integer', 'minimum': 1},
@@ -42,8 +41,8 @@ credits, plans, limits, or other), `what`, `behaviour` (false for a comment, a r
 and `risk` (1-5).
 
 Then `overview`: one sentence on what the whole change does to money and its default state after merge
-(is it on by default, for which accounts). And `question`: the one question on the concrete effect after
-merge with the default setting, and who confirms it.
+(is it on by default, for which accounts), saying only what the places show; and `overview_places`, the
+numbers of the places that show it.
 
 {places}"""
 
@@ -53,7 +52,7 @@ MAX_HUNK_CHARS = 6000
 def describe(cfg, idx, ranges, words):
     """`ranges` [{path, line_start, line_end, hunk}] (pr_format.money_ranges) -> the same with `what` (''
     where the model gave none), `kind`, `behaviour` and `risk`; and the call's meta (cost, overview,
-    question)."""
+    overview_places as indexes into `ranges`)."""
     if not ranges:
         return [], {'cost_usd': 0}
     places = []
@@ -65,7 +64,8 @@ def describe(cfg, idx, ranges, words):
     prompt = PROMPT.format(count=len(ranges), words=words, places='\n\n'.join(places))
     so, meta = pr_judge.ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
     got = {x['n']: x for x in (so or {}).get('lines', []) if isinstance(x.get('n'), int)}
-    meta.update(overview=((so or {}).get('overview') or '').strip(), question=((so or {}).get('question') or '').strip())
+    meta.update(overview=((so or {}).get('overview') or '').strip(),
+                overview_places=[n - 1 for n in (so or {}).get('overview_places') or [] if isinstance(n, int)])
     out = []
     for n, r in enumerate(ranges, 1):
         g = got.get(n) or {}

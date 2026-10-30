@@ -246,8 +246,6 @@ def who_acts(rv, name, author):
     if not d and not parts:
         return f'Nothing for {name} or {author}.'
     you = plural(len(d), 'decision', 'decisions') if d else 'nothing'
-    if rv.get('not_checked'):
-        you += f" ({rv['not_checked']} not checked)"
     return f"{name}: {you}. {author}: {', '.join(parts) or 'nothing'}."
 
 
@@ -314,12 +312,16 @@ def render(repo, pr, rv, name, author):
             money = d.get('area') == NOT_CHECKED_AREA
             opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
             lines += [f"{k}. **{d['question']}**{opener}"]
-            if d.get('opening' if money else 'why'):
-                lines.append(f"   {d['opening' if money else 'why']}")
+            if money:
+                lines.append('   ' + opening_text(repo, head, d))
+            elif d.get('why'):
+                lines.append(f"   {d['why']}")
             if rule_ref(repo, rv, d.get('rule')):
                 lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
+            others = []
             if d.get('where') and money:
-                lines += money_lines(repo, head, d['where'])
+                shown, others = money_lines(repo, head, d['where'])
+                lines += shown
             elif d.get('where'):
                 lines.append('   **Where:**')
                 for x in d['where']:
@@ -331,6 +333,8 @@ def render(repo, pr, rv, name, author):
             rec = d.get('recommended', 0)
             lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
                          f"{d['reason']}")
+            if others:  # R32: every place stays linked, out of the visible length (the mayor, 02:35Z)
+                lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
         lines.append('')
     if rv['items'] or rv['blockers']:
         lines.append(f'**For {author}:**')
@@ -360,9 +364,10 @@ def place_link(repo, head, x):
 
 
 def money_lines(repo, head, where):
-    """R32 (the mayor, 2026-10-30 02:24Z): the places that change behaviour first, by risk, at most
-    MONEY_SHOWN, each with its line, under one header per kind; the other behaviour places and the places
-    that change no behaviour in one linked line each. Every place stays linked; never a bare count."""
+    """R32: the places that change behaviour first, by risk, at most MONEY_SHOWN, each with its line, under
+    one header per kind (visible); then the other places for the collapsed "Other places": the lower-risk
+    ones with a few words each, the ones that change no behaviour as links. Every place stays linked;
+    never a bare count. Returns (visible lines, collapsed lines)."""
     moving = sorted((x for x in where if x.get('behaviour', True)), key=lambda x: -(x.get('risk') or 3))
     shown, more = moving[:MONEY_SHOWN], moving[MONEY_SHOWN:]
     quiet = [x for x in where if not x.get('behaviour', True)]
@@ -371,13 +376,23 @@ def money_lines(repo, head, where):
         out.append(f'   **{kind.capitalize()}:**')
         out += [f"   - {place_link(repo, head, x)}: {x.get('what') or NOT_SUMMARIZED}"
                 for x in shown if (x.get('kind') or 'other') == kind]
-    if more or quiet:
-        out.append('   **Other places:**')
-    if more:
-        out.append('   - Lower risk: ' + ', '.join(place_link(repo, head, x) for x in more))
+    other = [f"- {place_link(repo, head, x)}: {few_words(x.get('what') or NOT_SUMMARIZED)}" for x in more]
     if quiet:
-        out.append('   - No behaviour change: ' + ', '.join(place_link(repo, head, x) for x in quiet))
-    return out
+        other.append('- No behaviour change: ' + ', '.join(place_link(repo, head, x) for x in quiet))
+    return out, other
+
+
+def few_words(text, n=8):
+    w = text.split()
+    return text if len(w) <= n else ' '.join(w[:n]).rstrip('.,;:') + ' …'
+
+
+def opening_text(repo, head, d):
+    """R32: the money decision's first line: "not checked" said once, then what the change does and its
+    default state, followed by the places that back it (a claim without a marker is dropped upstream)."""
+    places = [d['where'][j] for j in d.get('opening_places') or [] if 0 <= j < len(d['where'])]
+    back = f" ({', '.join(place_link(repo, head, x) for x in places)})" if places and d.get('opening') else ''
+    return 'These changes are not checked by any agent.' + (f" {d['opening'].rstrip('.')}{back}." if back else '')
 
 
 def skip_text(repo, number, groups):
@@ -430,25 +445,23 @@ def money_ranges(idx, located):
     return out
 
 
-def one_question(q):
-    q = (q or '').strip()
-    return q if q.endswith('?') and q.count('?') == 1 and len(q.split()) >= 6 else ''
-
-
-def not_checked_decision(ranges, words, author, overview='', question=''):
+def not_checked_decision(ranges, words, author, overview='', overview_places=()):
     """R20, R32, R37: the PR touches an area no agent checks, so a person must confirm what it changes.
     `ranges`: [{path, line_start, line_end, what, kind, behaviour, risk}], each changed range with one
-    neutral line (money_ranges, then pr_money); `overview`: what the change does and its default state;
-    `question`: its concrete effect after merge (the mayor, 02:24Z), else a plain fallback. The options
-    never ask the reviewer to read code (R37); each has its reason, and the recommended one's task for the
-    author goes into line 2."""
+    neutral line (money_ranges, then pr_money). The question is the one the options answer (the mayor,
+    02:35Z). `overview` (what the change does and its default state) is shown only when the places it names
+    (`overview_places`, indexes into `ranges`) have their lines: a claim without a marker can be a model
+    invention. The options never ask the reviewer to read code (R37); each has its reason, and the
+    recommended one's task for the author goes into line 2."""
     first = ranges[0]
-    return {'question': one_question(question) or f'Who confirms what this PR changes in {words} before it merges?',
-            'opening': overview,
+    backing = [j for j in overview_places if 0 <= j < len(ranges)
+               and ranges[j].get('what') and ranges[j].get('what') != NOT_SUMMARIZED]
+    return {'question': f'What sign-off does this change to {words} need before it merges?',
+            'opening': overview if overview and backing else '', 'opening_places': backing if overview else [],
             'options': [f'{author} states in the PR description what changes for customers',
                         'A person who owns billing reviews the changes',
                         'Accept as is'],
-            'option_reasons': ['one paragraph puts on record what customers will see',
+            'option_reasons': ['a short written account puts on record what customers will see',
                                'they know the pricing rules this touches',
                                'only if whoever owns pricing has already agreed to it'],
             'recommended': 0,
@@ -574,6 +587,8 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         if any(REVIEW_CODE_RE.search(t or '') for t in list(d.get('options') or []) + list(d.get('option_reasons') or [])
                + [d.get('reason'), d.get('question')]):
             why.append(f'R37: {p} asks the reviewer to read or review code; decide at the level of rules and goals')
+        if d.get('opening') and not d.get('opening_places'):
+            why.append(f'R32: {p} opening names an effect no linked place backs')
         for j, x in enumerate(d.get('where') or [], 1):  # R32: every place, linked, with its line
             if not isinstance(x.get('line_start'), int) or not isinstance(x.get('line_end'), int):
                 why.append(f'R32: {p} location {j} is not linked to its changed range')
@@ -703,8 +718,6 @@ def gate_body(body, rv, comments=None):
     else:
         if int(m.group(3) or 0) != n_dec:
             why.append(f'R22: line 2 counts {m.group(3) or 0} decisions, the review has {n_dec}')
-        if bool(m.group(4)) != bool(rv.get('not_checked')):
-            why.append('R20: line 2 must say when the PR touches a not-checked area, and only then')
         tasks = [x for x in rv.get('decisions') or [] if x.get('author_task')]
         for x in tasks:
             if f"picks {LETTERS[x['recommended']]}, {x['author_task']}" not in m.group(7):
@@ -721,8 +734,10 @@ def gate_body(body, rv, comments=None):
             why.append('R36: an approval is line 1, line 2 and the collapsed "What was checked", nothing else')
         if not nothing:
             why.append('R36: line 2 of an approval is "Nothing for <reviewer> or <author>."')
-    elif '<details>' in body:
-        why.append('R23: a collapsed section in a review that is not an approval')
+    elif re.sub(r'<details><summary>Other places</summary>', '', body).count('<details>'):
+        why.append('R23: a collapsed section other than the money places in a review that is not an approval')
+    if re.search(r'^   \*\*Other places:\*\*', body, re.M):
+        why.append('R32: the other money places are not collapsed (they go in "Other places" after the recommendation)')
     if rv['outcome'] != 'low-risk' or n_clear:
         links = re.findall(r'\]\(https://github\.com/[^)]+/(?:pull/\d+/files#diff-[0-9a-f]{64}[RL]\d+(?:-[RL]\d+)?|'
                            r'blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?|pull/\d+(?:/checks|/conflicts)?)\)', body)

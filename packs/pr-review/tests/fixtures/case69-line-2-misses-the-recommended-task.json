@@ -13,15 +13,18 @@
  },
  "decisions": [
   {
-   "question": "Who confirms what this PR changes in billing, plans, credits or pricing before it merges?",
-   "opening": "",
+   "question": "What sign-off does this change to billing, plans, credits or pricing need before it merges?",
+   "opening": "Overdue invoices get a late fee after thirty days, on by default.",
+   "opening_places": [
+    0
+   ],
    "options": [
     "Author states in the PR description what changes for customers",
     "A person who owns billing reviews the changes",
     "Accept as is"
    ],
    "option_reasons": [
-    "one paragraph puts on record what customers will see",
+    "a short written account puts on record what customers will see",
     "they know the pricing rules this touches",
     "only if whoever owns pricing has already agreed to it"
    ],
@@ -34,7 +37,7 @@
      "path": "src/notify/send.ts",
      "line_start": 13,
      "line_end": 16,
-     "what": "Each reminder now takes one SMS credit from the clinic balance.",
+     "what": "Overdue invoices now get a late fee after thirty days.",
      "kind": null,
      "behaviour": null,
      "risk": null

@@ -50,6 +50,9 @@ import pr_state  # noqa: E402
 
 HERE = pr_state.HERE
 UPSTREAM = os.path.join(HERE, '..', 'upstream', 'security-review.md')
+# gc-sy1hm.2: the security-only upstream prompt says 'This is not a general code review'; the correctness
+# prompt looks for the defects a PR ships. PR_REVIEW_PROMPT picks one; the benchmark compares them.
+PROMPTS = {'security': UPSTREAM, 'correctness': os.path.join(HERE, '..', 'correctness-review.md')}
 STYLE = os.path.join(HERE, '..', 'style-guide.md')
 MAX_DIFF_CHARS = 350_000
 # The footer names the person (default: the login); PR_REVIEW_NAMES maps authors' logins to names.
@@ -167,9 +170,9 @@ in order:
    calls (Grep for the changed functions and types). Do not write an entry about code you have not opened;
    name what you opened in `verified`.
 2. Read the rest of the diff the same way, with the repository's rules at hand. Find where the PR goes
-   against a rule or a goal, the vulnerabilities, and every issue the custom scan instructions ask about.
-   Apply the FALSE POSITIVE FILTERING rules, give each candidate a confidence from 1 to 10, and drop
-   anything below 8.
+   against a rule or a goal, and every defect and issue the instructions above and the custom scan
+   instructions ask about. Apply their filtering rules, give each candidate a confidence from 1 to 10,
+   and drop anything below 8.
 3. Sort what is left into these lists:
    - `decisions`: only what {name} alone can decide, at the level of goals and rules, never of code. For
      example: "Rule D3 says X; this PR does Y. Accept it as an exception, ask {author} to change it, or
@@ -276,7 +279,7 @@ def cleanup(cfg, mirror, run_id):
 
 
 def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked, digest_block='', author='the author'):
-    text = open(UPSTREAM).read()
+    text = open(PROMPTS.get(cfg.get('prompt'), UPSTREAM)).read()
     text = re.sub(r'\A---\n.*?\n---\n', '', text, flags=re.S)  # the slash command's frontmatter
     status = (f"Pull request {pr['url']}, head {pr['headRefOid']}, forked from the base branch at {fork}. Open.\n"
               f"Title: {pr.get('title') or ''}\n\nDescription:\n{(pr.get('body') or '').strip() or '(empty)'}")
@@ -692,7 +695,7 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     if money:
         mi = money_info or {}
-        decisions = [pr_format.not_checked_decision(money, words, author, mi.get('overview', ''), mi.get('question', ''))] + \
+        decisions = [pr_format.not_checked_decision(money, words, author, mi.get('overview', ''), mi.get('overview_places', ()))] + \
             decisions[:pr_format.MAX_DECISIONS - 1]
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
@@ -736,7 +739,7 @@ def describe_money(cfg, idx, located, ruleset):
     for k in range(0, len(ranges), pr_money.MAX_PLACES):
         part, m = pr_money.describe(cfg, idx, ranges[k:k + pr_money.MAX_PLACES], words)
         out, cost = out + part, cost + (m.get('cost_usd') or 0)
-        info = info or {'overview': clean(m.get('overview') or ''), 'question': clean(m.get('question') or '')}
+        info = info or {'overview': clean(m.get('overview') or ''), 'overview_places': m.get('overview_places') or []}
     miss = [j for j, r in enumerate(out) if not r['what'].strip()]
     if miss:  # one more try for just the places that came back without a line (the mayor, 02:11Z)
         again, m = pr_money.describe(cfg, idx, [out[j] for j in miss], words)

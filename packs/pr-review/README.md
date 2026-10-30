@@ -51,6 +51,7 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_JUDGE` | `on` | The reader test (R26): a second model scores each review before delivery and holds it below markers 4 or useful 3; the feedback order scores delivered reviews that have no scores yet. |
 | `PR_REVIEW_JUDGE_MODEL` | `sonnet` | Model for the reader test (about $0.01-0.025 a review). Calibration 2026-10-29 on the 7 delivered v3 reviews (all poor by the first, Opus reader test) and 5 synthetic v4 reviews: Sonnet held 5 of the 7 and passed 3 of the 5 (the 2 it held are thin by construction: CI only, billing only); Haiku ($0.001) held all 12 with the plain rubric and 1 of 12 once told which parts the style guide requires, so it does not separate. One run each: scores vary between runs near the bar. |
 | `PR_REVIEW_JUDGE_MAX_USD` | `0.25` | Spend limit per reader test, and per money-lines call (R32, the same model). |
+| `PR_REVIEW_PROMPT` | `security` | The review prompt base: `security`, Claude Code's /security-review ("not a general code review": security only), or `correctness` (`assets/correctness-review.md`: logic, broken contracts, edge cases, error handling, data integrity, security). The benchmark compares them (gc-sy1hm.2); the default changes only on the reviewer's word. |
 | `PR_REVIEW_DIGEST_MODEL` | `sonnet` | Model for the repository's rules digest (R37): one pass per change of the repository's docs, cached by their blob SHAs. |
 | `PR_REVIEW_DIGEST_MAX_USD` | `1` | Spend limit per digest pass. |
 | `PR_REVIEW_JUDGE_PER_RUN` | `5` | Delivered reviews the feedback order scores per run. |
@@ -340,7 +341,9 @@ to fail; one passes with only the v5 format rules firing). Host-local cases 12-1
 bare note on a billing PR fails, R33; a questions review passes). Cases 45-46: the note with its floor
 passes, a note without its decision fails (R33). Case 69: line 2 that misses the recommended option's task
 (R22); case 70: a money review with its places collapsed (R32). Host-local case 14: the 29a3588 money review
-(19 places one by one) fails (R32).
+(19 places one by one) fails (R32). Case 71: a money opening
+without the places that back it (R32); host-local case 15: the dfc5ea2 money review (other places not
+collapsed) fails (R32).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a
@@ -350,6 +353,18 @@ with CI not green, on a changed head (all fail, R27), and a clean one (passes).
 
 The regression covers the gate and the renderer, not the model: it cannot show that a prompt change
 makes the model write better items. The feedback numbers measure that.
+
+## Benchmark
+
+`pr_bench.py` (gc-sy1hm.2) measures the reviewer on the repository's own history instead of claiming
+quality. `--mine REPO` finds escaped bugs at zero tokens: merged PRs whose added lines a later fix changed
+within 14 days (git blame in a separate full clone; the repositories squash-merge, so a blamed commit is
+a PR), and controls (merged PRs whose added lines nobody changed in that time). `--label REPO` has a
+capture-off reader judge whether each later PR fixes a defect of the earlier one. `--run REPO` reviews a
+sample of the defects and the controls at their heads with the shipped pipeline (nothing delivered,
+resumable, a spend cap) and `--score REPO` reports recall, recall on labelled defects, a precision proxy
+(entries on the fixed lines over all entries), controls with a change ask, and cost per PR, per
+version. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
 
 ## Calibration
 
