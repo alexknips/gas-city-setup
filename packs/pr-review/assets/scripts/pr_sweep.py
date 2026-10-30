@@ -263,9 +263,11 @@ def sweep(cfg, dry):
 
 
 # What a PR's entry keeps across new heads: the delivered review, for re-reviews, the feedback order and
-# the formal block (before 2026-10-30 a new head dropped them).
+# the formal block (before 2026-10-30 a new head dropped them); the client channel's posts per head, so a
+# head's line goes out once.
 CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block', 'rc_live', 'slack', 'slack_ts',
-         'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky')
+         'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky',
+         'client_posts', 'confidence', 'flagged_total', 'flagged_open')
 
 
 def lift_block(repo, pr, review_id):

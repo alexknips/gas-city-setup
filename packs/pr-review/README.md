@@ -67,11 +67,11 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_NAMES` | (none) | `login=Name …` for PR authors, as questions address them ("2 questions for the author"). |
 | `PR_REVIEW_PANEL` | `<state dir>/panel.json` | Where the feedback order writes this week's numbers as a Today card; point the quality pack's `QUALITY_PANELS` at it. |
 | `PR_REVIEW_KEEP_DAYS` | `30` | How long the whole reviews kept host-local (the held attempts, the benchmark's reviews) stay: older rows are dropped on the next write and by every sweep. |
-| `PR_REVIEW_CLIENT_SLACK` | `off` | `on` posts each new review's line (the word and its link) in the client's own Slack workspace, as the reviewer, through the runner in [The client's Slack](#the-clients-slack); `dry-run` prints the ids and the word instead. |
-| `PR_REVIEW_CLIENT_SLACK_CHANNEL` | (none) | The conversation id the lines go to. It must also be in the allowlist. |
+| `PR_REVIEW_CLIENT_SLACK` | `off` | `on` posts each new review's entry (two lines, see [The client's Slack](#the-clients-slack)) in the client's own Slack workspace, as the reviewer, through the runner there; `dry-run` prints the entry's enums and counts instead. |
+| `PR_REVIEW_CLIENT_SLACK_CHANNEL` | (none) | The conversation id the entries go to. It must also be in the allowlist. |
 | `PR_REVIEW_CLIENT_SLACK_CONVERSATIONS` | (none) | The allowlist: the only conversation ids the runner may post to, enforced in code around the call. |
 | `PR_REVIEW_CLIENT_SLACK_TOOL` | (none) | The connector's post tool, by its full name (`--check` lists the connector's tools). |
-| `PR_REVIEW_CLIENT_SLACK_REPOS` | (all) | The repositories whose reviews get a line there. |
+| `PR_REVIEW_CLIENT_SLACK_REPOS` | (all) | The repositories whose reviews get an entry there. |
 | `PR_REVIEW_CLIENT_SLACK_MODEL`, `_MAX_TURNS` | `haiku`, `3` | The runner's model and turn limit. |
 | `PR_REVIEW_CLIENT_SLACK_QUEUE_AT`, `_TZ` | `08:00`, `Europe/Berlin` | When the queue post is due: once a weekday from this local time (order `pr-review-client-queue`). |
 | `PR_REVIEW_SLACK_CHANNEL` | (none) | Channel id for outcome links. Empty: no Slack. |
@@ -107,10 +107,12 @@ through their claude.ai Slack connector, in exactly one place: `pr_client_slack.
 - The hook lets exactly one call through: the post tool, to the expected conversation (in
   `PR_REVIEW_CLIENT_SLACK_CONVERSATIONS`), with the exact text the script built and no other field (a
   thread, say). It refuses any other call and a second post. After the run, the transcript's calls are
-  checked against the same rule.
-- The text is the review's line-1 word in the reviewer's voice and the review's own link, never a word
-  meant for the reviewer only ("Needs you", "Review gap") and nothing the model wrote. Logs keep ids, the
-  word and counts.
+  checked against the same rule. A post counts as landed (`ok`) only when the send tool's result carries
+  the message's ts (or a permalink holding it); a successful call without one is `sent-unconfirmed`. The
+  run record keeps the ts and the permalink.
+- The text is the PR's entry (below): fixed words, counts and links built by the script, never a word
+  meant for the reviewer only ("Needs you", "Review gap"). Its 3-5 words on the PR are the only words a
+  model wrote. Logs keep ids, enums and counts, never those words.
 
 Before each post a probe lists what the runner's session loads, and the post run denies every other tool
 by name (tool-level denies hide them from the model), so it sees exactly the post tool; no post when the
@@ -120,18 +122,50 @@ denies; it passes when only the runner has the connector's tools and, with the d
 tool. A stronger fence than the user settings' deny: `ENABLE_CLAUDEAI_MCP_SERVERS=false` in the town
 sessions' environment turns every claude.ai connector off whatever settings a session loads (the runner
 sets it to `true` for itself); it also takes the other connectors from every session, so the town
-decides. `--post-review OWNER/NAME#N` posts the
-line of a delivered review by hand (with `PR_REVIEW_CLIENT_SLACK=dry-run`, the ids and the word only).
+decides. `--post-review OWNER/NAME#N` posts a PR's entry as it stands now by hand, for example the
+last reviews again in a new format (with `PR_REVIEW_CLIENT_SLACK=dry-run`, its enums and counts only).
 The first real post is a test with the town's owner.
+
+The entry, two lines per PR (the mayor, 2026-10-30 19:40Z and 19:41Z):
+
+    <PR link> · <3-5 words on what the PR does> · <high|medium|low> confidence · <status>
+    <readiness> · CI <...> · +<added>/-<removed> in <n> files · <tests> · <n> flagged, <m> open
+
+- **The words**: the review's summary when it is 3-5 plain words; else one narrow turn (the judge model,
+  2 turns at most) gets the summary and its word count and gives up to three versions, and the script
+  takes the first that passes; else the PR title's first plain words. A plain word is letters (or an
+  acronym, or a number of up to 4 digits), at most 19 characters, so no identifier, path, date, long
+  number or secret fits. The words are kept host-local (`client-slack/words.json` in the work dir, mode
+  600, `PR_REVIEW_KEEP_DAYS`) for the queue, which makes none (zero tokens).
+- **Confidence**, a fixed rule, never the model's say: high for a full review with CI green, nothing in
+  a not-checked area, no open question (an item, decision or blocker asking), every flagged hunk in the
+  review and no open gap in our method; medium for any other full review; low for a fallback (the note,
+  its floor, the money review) or a held run on the head. Left out when nothing of ours is on the head.
+- **Status**: our review's word when the latest run delivered a full review on the PR's current head
+  ("Approved", "Changes requested", "Changes suggested", "Questions", "Low risk"); else "Waiting for
+  review".
+- **Readiness**, the first that holds: Conflict, CI failing, Needs changes, Needs answers, Waiting for
+  review (no full review of ours on the head, or one without our approval), CI running (approved, checks
+  pending), Ready to merge. A PR posted by hand after it closed: Merged or Closed.
+- **CI**: failing, pending, skipped or none; green with whether the PR's first push passed the required
+  checks (the quality pack's first-pass rule: the branch's rulesets, else its protection; a re-run of a
+  red check is not a first pass), "green first push" or "green after N pushes".
+- **Tests**: "tests changed" (next to other changes), "tests only" or "no test changes", from the paths
+  (the rules' test paths and test or spec names); left out past 100 files.
+- **Flags**: the review's flagged hunks, and those still open (no cleared entry covers them); for a
+  delivered review only. Line 2 over 120 characters drops the files count first.
+
+A head's entry goes out once: the PR's state entry keeps the client posts per head (status and ts), so a
+same-head re-review sends no second one, whatever our own channel does.
 
 The queue post (order `pr-review-client-queue`, hourly; `pr_client_slack.py --queue [--now]`): once a
 weekday from `PR_REVIEW_CLIENT_SLACK_QUEUE_AT`, the open PRs (not drafts) that request the reviewer or
-carry a review of ours, one line each, "<word>: <PR link>". The word is our review's ("Approved",
-"Questions", "Changes requested", ...) when the PR's latest run delivered a full review on its current
-head; else "Waiting for review": no review yet, new commits since, or the latest run was held or a
-fallback, so the full review is still owed. Nothing from the PR's text. No post when the list is empty. A failed post is tried again on later runs of the day, 3 times at
-most. The same runner and hook carry it; its text goes to the model between two marker lines, and the
-hook compares it up to line endings.
+carry a review of ours, one entry each, a blank line between them. The status is our review's when the
+PR's latest run delivered a full review on its current head; else "Waiting for review": no review yet,
+new commits since, or the latest run was held or a fallback, so the full review is still owed. The
+words are those kept at delivery, else the title's. No post when the list is empty. A failed post is
+tried again on later runs of the day, 3 times at most. The same runner and hook carry it; its text goes
+to the model between two marker lines, and the hook compares it up to line endings and blank lines.
 
 ## What never leaves GitHub
 
@@ -142,7 +176,8 @@ pack keeps the repository's text on GitHub and in the work dir, and nowhere else
 - **The state file and the log** hold those, plus rule ids, tier, CI state, times and cost. Rule ids
   are this pack's own words.
 - **Slack** gets `<outcome word>: <PR link>`. The script builds the message from a fixed word and the
-  link; no model text reaches Slack.
+  link; no model text reaches Slack. The client's own Slack gets the PR's entry: the only model text in
+  it is 3-5 plain words on what their PR does, checked by the script.
 - **The review model** runs with `LOOMTRACER_INGEST_DISABLE=1` and `HIVEMIND_INGEST_DISABLE=1`,
   `disableAllHooks`, `--no-session-persistence` (no transcript on disk) and no `GC_*` variables, so no
   ingest hook ships its session anywhere.

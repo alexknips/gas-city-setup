@@ -603,12 +603,14 @@ def block_kind(rv):
     return 'content'
 
 
-def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), idx=None, rereview=False):
+def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), idx=None, rereview=False, summary=''):
     """R15, R18, R27, R0, R17, R21: re-check that the PR is open and on the reviewed head, and that this
     head was not reviewed yet (unless `rereview`); re-check the approval bar; post ONE review (APPROVE or
     COMMENT), delete it at once if GitHub made it pending, check its inline comments are anchored, and post
     '<word>: <review URL>' to Slack. A re-review updates the earlier review in place when it can (same
-    event, no inline comments), else replaces it with a pointer; its Slack message is updated in place."""
+    event, no inline comments), else replaces it with a pointer; its Slack message is updated in place.
+    The client's channel gets the PR's entry once per head; `summary`: the model's summary of the PR, for
+    the entry's 3-5 words."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
     event = pr_format.event_of(rv)
     # The gap kinds, host-local and counts only (decision-3aeec149); the feedback order asks once per kind.
@@ -675,8 +677,23 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     extra['slack'] = slack
     if new_ts:
         extra['slack_ts'] = new_ts
-    if cfg['client_slack'] != 'off' and not ts:  # decision-14bb1b55: a new review's line in the client's channel
-        extra['client_slack'] = pr_client_slack.deliver_line(cfg, repo, url, rv['outcome'], event == 'APPROVE', event)[0]
+    # The client's entry (decision-14bb1b55; the mayor, 2026-10-30 19:40Z and 19:41Z): the review in two lines. Its
+    # confidence and flag counts stay on the PR's entry for the queue. Once per head, by the client post's own
+    # record (the mayor, 19:12Z: our channel is off, so its ts says nothing about the client's).
+    review = pr_client_slack.review_of(rv, event, extra.get('ci') or pr_rules.ci_state(fresh),
+                                       extra.get('flagged_hunks', len(result.get('flagged') or [])),
+                                       extra.get('flags_cut', rv.get('flags_cut') or 0), extra.get('gaps_open') or ())
+    extra.update(confidence=review['confidence'], flagged_total=review['flagged'], flagged_open=review['open'])
+    if cfg['client_slack'] != 'off' and not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state'])):
+        try:
+            status, meta = pr_client_slack.deliver_entry(cfg, key, dict(entry, review_url=url), review, fresh, summary,
+                                                         lambda s: pr_client_slack.words_turn(cfg, s))
+        except Exception as e:  # noqa: BLE001 - the review is out: a failed entry never keeps the run from its record
+            status, meta = f'error:{type(e).__name__}', {}
+        extra.update(client_slack=status, **{k: meta[k] for k in ('words_from', 'words_cost_usd') if k in meta},
+                     **({'client_ts': meta['ts']} if meta.get('ts') else {}))
+        if status in pr_client_slack.POSTED:
+            extra['client_posts'] = pr_client_slack.record_post(entry, head, status, meta.get('ts'))
     finish(cfg, key, dict(entry, head=head), rv['outcome'], extra)
 
 
@@ -708,7 +725,8 @@ def redeliver(cfg, key):
     if reasons:
         finish(cfg, key, entry, 'held-gate', {'model': False, 'redeliver': True, 'gate': [r.split(':')[0] for r in reasons]})
         return
-    deliver(cfg, key, entry, pr, rv, body, comments, res, {'model': False, 'redeliver': True, 'gate': []})
+    deliver(cfg, key, entry, pr, rv, body, comments, res, {'model': False, 'redeliver': True, 'gate': []},
+            summary=res.get('summary') or '')
 
 
 def pr_diff(repo, number):
@@ -1268,7 +1286,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
         result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [],
                       rules=rv.get('rules') or {}, rules_sha=rv.get('rules_sha') or '')
-        deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged, idx, rereview)
+        deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged, idx, rereview, model.get('summary') or '')
     except (RuntimeError, OSError, subprocess.SubprocessError) as e:
         # Only our own RuntimeError texts are kept; an OSError can name a file of the repository.
         detail = str(e)[:120] if isinstance(e, RuntimeError) else getattr(e, 'errno', None)
@@ -1370,9 +1388,74 @@ def selftest():
         [r['pr'] for r in rows] == ['new', 'unstamped'] and rows[1].get('at') == pr_state.iso(t) and \
         os.stat(held).st_mode & 0o777 == 0o600
     checks['retention: nothing to drop leaves the file as it is'] = pr_state.prune_jsonl(held, 30, t) == 0
+    checks.update(selftest_client_once(cfg, tmp))
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
+
+
+def selftest_client_once(cfg, tmp):
+    """deliver() with GitHub, our Slack and the client runner stubbed (the mayor, 2026-10-30 19:12Z): with our
+    channel empty, a same-head re-review sends no second client line and makes no Slack call; a new head
+    sends its line once; the entry keeps the head's post, its ts and the review's confidence for the queue;
+    a failed client entry never keeps the delivered review from being recorded."""
+    import contextlib
+    import io
+    url, head = 'https://github.com/o/r/pull/1', 'c' * 40
+    fresh = {'number': 1, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'commits': {'nodes': []}}
+    ids, sent, slack = iter(range(5, 99)), [], []
+    g = globals()
+    saved = {k: g[k] for k in ('post_review', 'update_review', 'dismiss_stale', 'repoint', 'ours_on_head')}
+    mods = [(pr_rules, 'get_pr'), (pr_state, 'slack_token'), (pr_state, 'slack_call'), (pr_client_slack, 'deliver_entry')]
+    kept = [getattr(m, n) for m, n in mods]
+
+    def posted(*a, **k):
+        n = next(ids)
+        return 'ok', f'{url}#pullrequestreview-{n}', 'COMMENTED', n
+    g.update(post_review=posted, update_review=lambda repo, n, rid, body: ('ok', f'{url}#pullrequestreview-{rid}', 'COMMENTED', rid),
+             dismiss_stale=lambda *a: (0, 0), repoint=lambda *a: (0, 0), ours_on_head=lambda *a: 1)
+    pr_rules.get_pr = lambda repo, n: fresh
+    pr_state.slack_token = lambda *a: slack.append('token')
+    pr_state.slack_call = lambda *a: slack.append('call') or {}
+    pr_client_slack.deliver_entry = lambda c, key, e, review, pr=None, summary='', turn=None: \
+        sent.append((e['review_url'], review['confidence'])) or ('ok', {'ts': '1793385205.766639', 'words_from': 'summary'})
+    dcfg = dict(cfg, state=tmp, city=tmp, beads=False, mode='live', slack_channel='', slack_env=[], client_slack='on',
+                reviewer='rev', request_changes=False)
+    rv = {'outcome': 'questions', 'approve': False, 'request_changes': False, 'decisions': [], 'blockers': [], 'gaps': [],
+          'cleared': [], 'items': [{'kind': 'question'}]}
+    entry = {'repo': 'o/r', 'number': 1, 'url': url, 'rig': 'r'}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            deliver(dcfg, 'o/r#1', entry, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'}, summary='Adds a thing')
+            with pr_state.locked(tmp) as st:
+                e1 = dict(st['prs']['o/r#1'])
+            deliver(dcfg, 'o/r#1', e1, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'}, rereview=True)
+            with pr_state.locked(tmp) as st:
+                e2 = dict(st['prs']['o/r#1'])
+            fresh['headRefOid'] = 'd' * 40
+            deliver(dcfg, 'o/r#1', e2, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(tmp) as st:
+                e3 = dict(st['prs']['o/r#1'])
+            pr_client_slack.deliver_entry = lambda *a, **k: (_ for _ in ()).throw(RuntimeError('x'))
+            fresh['headRefOid'] = 'e' * 40
+            deliver(dcfg, 'o/r#1', e3, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(tmp) as st:
+                e4 = dict(st['prs']['o/r#1'])
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    return {
+        'our Slack empty + a same-head re-review: no second client line, no Slack call; a new head posts once':
+            [s[1] for s in sent] == ['medium', 'medium'] and sent[0][0] != sent[1][0] and not slack and
+            e2.get('review_url') == e1.get('review_url'),
+        'the entry keeps the client post per head, its ts and the confidence for the queue':
+            e1.get('client_posts') == {head: {'status': 'ok', 'ts': '1793385205.766639'}} and
+            e1.get('client_ts') == '1793385205.766639' and e1.get('confidence') == 'medium' and
+            list(e3.get('client_posts') or {}) == [head, 'd' * 40],
+        'a failed client entry still records the delivered review':
+            'e' * 40 in (e4.get('review_heads') or []) and e4.get('client_slack') == 'error:RuntimeError',
+    }
 
 
 def main():

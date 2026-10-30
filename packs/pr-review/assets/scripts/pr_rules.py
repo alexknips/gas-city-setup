@@ -7,11 +7,13 @@ count, a PR number or a link: never a title, a path, a line or a check name, bec
 repository's own text and the sweep's records and messages must not carry it (README, "What never
 leaves GitHub").
 """
+import datetime as dt
 import json
 import os
 import re
 import subprocess
 import tomllib
+import urllib.parse
 
 CODE_EXT = re.compile(r'\.(py|ts|tsx|js|jsx|mjs|cjs|go|rb|java|kt|swift|rs|php|cs|scala|ex|exs|vue|svelte|sql)$', re.I)
 TEST_PATH = re.compile(r'(?i)(^|/)(tests?|__tests__|spec|e2e|cypress|playwright)/|\.(test|spec)\.|_test\.|(^|/)test_[^/]*$')
@@ -195,6 +197,68 @@ def ci_state(pr):
     if not any(c == 'SUCCESS' for c in concl):
         return 'skipped'
     return 'green'
+
+
+# First-pass CI, the quality pack's rule (quality.py, GitHub.required_checks and GitHub.verdict), here so the
+# client's line and the quality page agree without one pack depending on the other.
+CI_OK = ('success', 'neutral', 'skipped')
+_required = {}
+
+
+def required_checks(repo, branch):
+    """The checks the branch requires: its rulesets', else its branch protection's, else None (every check
+    on the head counts). Cached per process."""
+    if (repo, branch) not in _required:
+        ctx = None
+        try:
+            rules = json.loads(gh(['api', f'repos/{repo}/rules/branches/{branch}']) or '[]')
+            ctx = sorted({c['context'] for r in rules if r.get('type') == 'required_status_checks'
+                          for c in (r.get('parameters') or {}).get('required_status_checks') or []}) or None
+        except (GhError, ValueError, KeyError):
+            pass
+        if not ctx:
+            try:
+                prot = json.loads(gh(['api', f'repos/{repo}/branches/{branch}/protection/required_status_checks']))
+                ctx = sorted(set(prot.get('contexts') or []) | {c['context'] for c in prot.get('checks') or []}) or None
+            except (GhError, ValueError, KeyError):
+                pass
+        _required[(repo, branch)] = ctx
+    return _required[(repo, branch)]
+
+
+def first_pass(repo, sha, required):
+    """Whether a commit passed the required checks on their first run (a re-run of a red check is not a
+    first pass); None when it has no checks."""
+    runs = json.loads(gh(['api', f'repos/{repo}/commits/{sha}/check-runs?per_page=100']))['check_runs']
+    first = {}
+    for c in sorted(runs, key=lambda c: c['id']):
+        first.setdefault(c['name'], c.get('conclusion') or c.get('status'))
+    names = required or sorted(first)
+    if required and any(n not in first for n in names):  # required contexts can be commit statuses
+        for s in json.loads(gh(['api', f'repos/{repo}/commits/{sha}/status'])).get('statuses') or []:
+            first.setdefault(s['context'], s['state'])
+    return all(first.get(n) in CI_OK for n in names) if names else None
+
+
+def pushes(repo, pr, branch):
+    """The PR's heads in push order, as the quality pack finds a PR's first head: the head commits of its
+    pull_request workflow runs from its opening on, the current head last when no run reported it yet."""
+    opened = dt.datetime.fromisoformat(pr['createdAt'].replace('Z', '+00:00')) - dt.timedelta(minutes=10)
+    out = gh(['api', '--paginate', f'repos/{repo}/actions/runs?event=pull_request&branch={urllib.parse.quote(branch)}'
+              f'&created=>={opened:%Y-%m-%d}&per_page=100', '--jq', '.workflow_runs[] | [.head_sha, .created_at] | @tsv'])
+    runs = sorted((at, sha) for sha, at in (x.split('\t') for x in out.splitlines() if x.count('\t') == 1)
+                  if dt.datetime.fromisoformat(at.replace('Z', '+00:00')) >= opened)
+    heads = list(dict.fromkeys(sha for _, sha in runs))
+    return heads if pr['headRefOid'] in heads else heads + [pr['headRefOid']]
+
+
+def ci_history(repo, pr, branch):
+    """(whether the PR's first push passed the required checks or None, the current head's push number)."""
+    try:
+        heads = pushes(repo, pr, branch)
+        return first_pass(repo, heads[0], required_checks(repo, pr['baseRefName'])), heads.index(pr['headRefOid']) + 1
+    except (GhError, ValueError, KeyError):
+        return None, 0
 
 
 def requested(pr, reviewer):
