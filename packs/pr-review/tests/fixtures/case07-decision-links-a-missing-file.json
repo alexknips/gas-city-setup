@@ -13,8 +13,12 @@
   {
    "question": "May the reminder SMS name the patient and show the date of birth?",
    "options": [
-    "Allow it, with the SMS vendor under a BAA",
-    "Send only the clinic name and time"
+    "Reviewer allows it, with the SMS vendor under a BAA",
+    "Author sends only the clinic name and time"
+   ],
+   "actors": [
+    "reviewer",
+    "author"
    ],
    "recommended": 1,
    "reason": "Nothing in the ticket needs the patient name.",

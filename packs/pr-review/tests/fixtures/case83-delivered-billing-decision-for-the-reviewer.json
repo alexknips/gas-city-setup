@@ -1,0 +1,15 @@
+{
+ "expect": "fail",
+ "expect_reasons": [
+  "R22"
+ ],
+ "only_reasons": [
+  "R22"
+ ],
+ "outcome": "escalate",
+ "n_decisions": 1,
+ "not_checked": "billing, plans, credits or pricing",
+ "facts": "CI passed \u00b7 no merge conflict \u00b7 open",
+ "model": false,
+ "body": "**Needs you** \u00b7 automated, Reviewer hasn't read this PR\nReviewer: 1 decision. Author: if Reviewer picks A, state in the PR description what changes for customers.\n\n**For Reviewer:**\n1. These changes are not checked by any agent. Overdue invoices get a late fee after thirty days, on by default ([`send.ts` L13-L16](https://github.com/example/repo/blob/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/notify/send.ts#L13-L16)).\n   **What sign-off does this change to billing, plans, credits or pricing need before it merges?**\n   A. Author states in the PR description what changes for customers: a short written account puts on record what customers will see\n   B. A person who owns billing reviews the changes: they know the pricing rules this touches\n   C. Whoever owns pricing has already agreed to it, so merge: when the sign-off happened outside this PR\n   **Recommended: A.** One paragraph from Author puts on record what customers will see, and nobody has to read code."
+}

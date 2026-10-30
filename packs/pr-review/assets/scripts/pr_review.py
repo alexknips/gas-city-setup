@@ -70,11 +70,16 @@ SCHEMA = {
             'Only decisions the reviewer alone can make: a product, risk or compliance trade-off, never a code '
             'fix the author can make. Empty when there is none.'), 'items': {
             'type': 'object', 'additionalProperties': False,
-            'required': ['question', 'options', 'recommended', 'reason', 'why', 'area', 'rule', 'link', 'verified',
-                         'confidence'],
+            'required': ['question', 'options', 'actors', 'recommended', 'reason', 'why', 'area', 'rule', 'link',
+                         'verified', 'confidence'],
             'properties': {
                 'question': {'type': 'string', 'maxLength': 280, 'description': 'One question ending in "?", at most 280 characters.'},
-                'options': {'type': 'array', 'minItems': 2, 'maxItems': 4, 'items': _TEXT},
+                'options': {'type': 'array', 'minItems': 2, 'maxItems': 4, 'items': _TEXT,
+                            'description': 'Each one sentence that starts with the name of who carries it out.'},
+                'actors': {'type': 'array', 'minItems': 2, 'maxItems': 4,
+                           'items': {'type': 'string', 'enum': list(pr_format.ACTORS)},
+                           'description': 'For each option, in order, who carries it out: reviewer, author, or '
+                                          'picked (someone the author picks: a teammate, the owner of billing).'},
                 'recommended': {'type': 'integer', 'minimum': 0, 'maximum': 3,
                                 'description': 'The index of the option you recommend (0 = the first).'},
                 'reason': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence: why that option.'},
@@ -184,7 +189,12 @@ in order:
      sentence on why), `why` (why only {name} can decide it), `rule`, and a link to where it lives: lines
      of a file at the head ("code"), the PR description ("description"), or a ticket URL that appears in
      the description ("ticket"). Never ask {name} to read, review or check code. A code fix the author can
-     make is never a decision.
+     make is never a decision. Each option is one sentence that starts with who carries it out, and
+     `actors` says who that is, in order: "reviewer" ({name}), "author" ({author}) or "picked" (someone
+     {author} picks: a teammate, the owner of billing). For example "{name} accepts it as an exception to
+     the rule" (reviewer), "{author} changes it to follow the rule" (author), "A teammate who owns
+     billing confirms it" (picked). A decision none of whose options {name} carries out is a question for
+     {author}: the review gives it to them.
    - `items` for {author}: a "change" they must make or a "question" they must answer, each anchored to
      lines inside one hunk of the diff (`side` "new" for the PR head, "old" for removed lines). `change`
      is 3-6 plain words on what the PR changed there; `why` is the one fact that makes it matter and `ask`
@@ -207,12 +217,12 @@ in order:
    plain words about the line, never an identifier (no function, variable or type names).
 
 Your answer is the JSON object of the schema you were given; it replaces the markdown output format
-described above. You do not pick the outcome: the script derives it (a decision means {name} is needed;
-a change means changes are requested; only questions means questions for {author}; nothing means low
-risk). Follow the STYLE GUIDE above to the letter: plain words, no filler, no rule codes or flag ids in
-any text (cite a repository rule only through `rule`), no praise, and no link to any site but github.com
-(write the sentence without it). Never copy secrets, tokens or personal data into your answer; point at
-them by path and line instead.
+described above. You do not pick the outcome: the script derives it (a decision with an option {name}
+carries out means {name} is needed; a change means changes are requested; only questions means
+questions for {author}; nothing means low risk). Follow the STYLE GUIDE above to the letter: plain
+words, no filler, no rule codes or flag ids in any text (cite a repository rule only through `rule`),
+no praise, and no link to any site but github.com (write the sentence without it). Never copy secrets,
+tokens or personal data into your answer; point at them by path and line instead.
 """
 
 
@@ -747,7 +757,7 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)),
           'not_checked': words if money else '', 'model': model, 'flags_cut': flags_cut, 'approve': False,
           'request_changes': cfg['request_changes'], 'rules': (digest or {}).get('rules') or {},
-          'rules_sha': (digest or {}).get('sha') or ''}
+          'rules_sha': (digest or {}).get('sha') or '', 'names': [NAME, author]}
     rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
     if rv['outcome'] == 'low-risk' and cfg['approve']:
         if not pr_format.ci_strict(pr):
@@ -832,7 +842,7 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words):
     rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why)], 'items': [],
           'cleared': [], 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'summary': '', 'skip': [],
           'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
-          'request_changes': False, 'rules': {}, 'rules_sha': ''}
+          'request_changes': False, 'rules': {}, 'rules_sha': '', 'names': [NAME, author]}
     return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
@@ -1007,7 +1017,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             extra['r31_questions'] = len(asked)
         # Enum values, counts and rule ids only, so the log can say why reviews end where they do.
-        extra.update(decisions=len(rv['decisions']), items=len(rv['items']), cleared=len(rv['cleared']),
+        extra.update(decisions=len(rv['decisions']), author_decisions=len(pr_format.split(rv['decisions'])[1]),
+                     items=len(rv['items']), cleared=len(rv['cleared']),
                      blockers=len(rv['blockers']), not_checked=bool(rv['not_checked']), approve=rv['approve'],
                      dropped=len(model['items']) + len(model['decisions']) - len(items) - len(decisions),
                      kinds=sorted(i['kind'] for i in items), severity=sorted(i['severity'] for i in items),
@@ -1026,12 +1037,12 @@ def model_review(cfg, key, entry, dry, rereview=False):
             held == 'held-gate')
         if fallback == 'not-checked-minimal':
             # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
-            # deliver only line 2, the money decision and the facts line, with no model findings (R33).
+            # deliver only line 2, the money question and the facts line, with no model findings (R33).
             rv, body, comments = minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author, money_info)
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
                                      pr.get('body') or '', [], comments)
-            extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,
-                         cleared=0, held_gate=extra['gate'], gate=sorted({r.split(':')[0] for r in reasons}))
+            extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1,
+                         author_decisions=1, items=0, cleared=0, held_gate=extra['gate'], gate=sorted({r.split(':')[0] for r in reasons}))
             if cfg['judge'] and not reasons:  # for the log only: the money review is never held by the reader
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
@@ -1044,7 +1055,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                                               ruleset.get('not_checked') or 'billing, plans, credits or pricing')
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0].get('where') or []]),
                                      pr.get('body') or '', [], comments)
-            extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, items=0, cleared=0,
+            extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, author_decisions=1, items=0, cleared=0,
                          blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}))
             if cfg['judge'] and not reasons:  # the reader test, for the log: the floor is never held by it
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)

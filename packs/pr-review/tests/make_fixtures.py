@@ -59,11 +59,13 @@ SINCE = {'old': 'b' * 40, 'new': 'a' * 40, 'review_id': 1000, 'fixed': 2, 'again
 
 DECISION = {
     'question': 'May the reminder SMS name the patient and show the date of birth?',
-    'options': ['Allow it, with the SMS vendor under a BAA', 'Send only the clinic name and time'],
-    'recommended': 1, 'reason': 'Nothing in the ticket needs the patient name.', 'rule': '',
+    'options': ['Reviewer allows it, with the SMS vendor under a BAA', 'Author sends only the clinic name and time'],
+    'actors': ['reviewer', 'author'], 'recommended': 1, 'reason': 'Nothing in the ticket needs the patient name.', 'rule': '',
     'why': 'Which patient data may go to a third party is a compliance call, not a code fix the author can make.',
     'area': 'compliance', 'link': {'kind': 'code', 'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 14},
     'verified': 'read remind() and the smsClient wrapper', 'confidence': 9}
+AUTHORS_CALL = dict(DECISION, options=['Author sends only the clinic name and time',
+                                       'Author asks the SMS vendor for a BAA first'], actors=['author', 'author'])
 TREE = {'src/notify/send.ts': 40, 'test/notify.test.ts': 4}
 REVIEW = 'https://github.com/example/repo/pull/1#pullrequestreview-1001'
 PAGE = 'http://dash.example/pr-review/repo-1-aaaaaaa.html'
@@ -79,6 +81,9 @@ MONEY = pr_format.not_checked_decision(
     [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 16,
       'what': 'Overdue invoices now get a late fee after thirty days.'}], NOT_CHECKED, 'Author',
     'Overdue invoices get a late fee after thirty days, on by default.', [0])
+# The money decision as v5.4 delivered it: no actors, the recommended task in line 2, under "For Reviewer".
+MONEY_V54 = dict({k: v for k, v in MONEY.items() if k != 'actors'},
+                 author_task='state in the PR description what changes for customers')
 # What the PR does and the rest of the diff, linked (R7, R30).
 SKIP = {'summary': 'Reminders now name the patient and log the message text.',
         'skip': [{'group': 'tests', 'paths': ['test/notify.test.ts']}]}
@@ -150,7 +155,8 @@ CASES = {
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED', 'post_slack': True, 'head': 'a' * 40,
                      'slack_heads': ['a' * 40]}},
     'case06-needs-you-with-a-linked-decision': {
-        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
+        'expect': 'pass', 'outcome': 'escalate', 'derived': True, 'line2': 'Reviewer: 1 decision. Author: 1 change.',
+        'diff': DIFF, 'decisions': [DECISION], 'tree_lines': TREE,
         'items': [GOOD_ITEM], **SKIP,
         'delivery': {'pr_state': 'OPEN', 'review_url': REVIEW, 'review_state': 'COMMENTED'}},
     'case07-decision-links-a-missing-file': {
@@ -198,8 +204,11 @@ CASES = {
         'expect': 'fail', 'expect_reasons': ['R19'], **dict(LOW, cleared=[dict(CLEARED, line_start=30, line_end=31)])},
     'case21-billing-called-low-risk': {
         'expect': 'fail', 'expect_reasons': ['R20'], **dict(LOW, not_checked=NOT_CHECKED)},
-    'case22-billing-is-a-decision-for-the-reviewer': {
-        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'decisions': [MONEY], 'tree_lines': TREE,
+    # 2026-10-30 05:31Z (decision-554d2e7b, the reviewer on a billing review: "I don't think that needs me. you wrote
+    # a review and the author just needs to answer not me"): the sign-off is a question for the author.
+    'case22-billing-is-a-question-for-the-author': {
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'line2': 'Reviewer: nothing. Author: 1 question.',
+        'diff': DIFF, 'items': [], 'decisions': [MONEY], 'tree_lines': TREE,
         'flagged': [FLAG], 'cleared': [CLEARED], 'not_checked': NOT_CHECKED, **SKIP},
     'case23-finding-said-twice': {
         'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'changes', 'diff': DIFF, **SKIP,
@@ -237,7 +246,7 @@ CASES = {
     # 2026-10-29 21:57Z (the mayor, R20 vs R26): a billing PR whose review the reader test held twice gets
     # the minimal review: line 2, the money decision, the facts line, nothing the model wrote. R33.
     'case37-billing-minimal-after-reader-holds': {
-        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
         'decisions': [MONEY], 'not_checked': NOT_CHECKED},
     # 2026-10-29 21:01Z (the reviewer: "actually approve low risk PRs not just say you do"): the approval bar, R27.
     'case33-approve-with-an-uncleared-flag': {
@@ -272,13 +281,13 @@ CASES = {
         'expect': 'pass', 'outcome': 'questions', 'diff': DIFF, 'flagged': [FLAG], 'cleared': [],
         'items': [pr_review.question_from(CLEARED)], **SKIP},
     'case55-money-place-without-its-line': {
-        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'questions', 'diff': DIFF, 'items': [], 'model': False,
         'tree_lines': TREE, 'not_checked': NOT_CHECKED,
         'decisions': [dict(MONEY, where=[dict(MONEY['where'][0], what='')])]},
     'case56-not-checked-said-twice': {
-        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'n_decisions': 1, 'not_checked': NOT_CHECKED,
-        'facts': pr_format.GREEN_FACTS,
-        'body': body(outcome='escalate', decisions=[MONEY], not_checked=NOT_CHECKED, model=False)
+        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'questions', 'n_author_decisions': 1,
+        'not_checked': NOT_CHECKED, 'facts': pr_format.GREEN_FACTS,
+        'body': body(outcome='questions', decisions=[MONEY], not_checked=NOT_CHECKED, model=False)
         + '\n\n<sub>Not checked: billing, plans, credits or pricing.</sub>'},
     'case57-approval-with-more-than-what-was-checked': {
         'expect': 'fail', 'expect_reasons': ['R36'], 'outcome': 'low-risk', 'approve': True, 'facts': pr_format.GREEN_FACTS,
@@ -308,23 +317,24 @@ CASES = {
         'blockers': pr_format.blockers('example/repo', {'number': 1, 'mergeable': 'CONFLICTING'}, 'green', (),
                                        ['src/notify/send.ts'])},
     # 2026-10-30 02:24Z (the mayor on the 29a3588 money review: one point short on length; line 2 said
-    # "Author: nothing" though the recommended option gave the author a task): R32, R22.
+    # "Author: nothing" though the recommended option gave the author a task): R32, R22. Since v5.5 the
+    # money sign-off is the author's question, so a decision for the reviewer carries the task.
     'case69-line-2-misses-the-recommended-task': {
         'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
-        'tree_lines': TREE, 'decisions': [MONEY], 'not_checked': NOT_CHECKED,
-        'body_edit': ['Author: if Reviewer picks A, state in the PR description what changes for customers.', 'Author: nothing.']},
+        'tree_lines': TREE, 'decisions': [dict(DECISION, author_task='send only the clinic name and time')],
+        'body_edit': ['Author: if Reviewer picks B, send only the clinic name and time.', 'Author: nothing.']},
     # 2026-10-30 03:05Z (the mayor: 28 links for 20 places): each code place is linked once. R21.
     'case72-code-place-linked-twice': {
-        'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'expect': 'fail', 'expect_reasons': ['R21'], 'outcome': 'questions', 'diff': DIFF, 'items': [], 'model': False,
         'tree_lines': TREE, 'decisions': [MONEY], 'not_checked': NOT_CHECKED,
         'body_edit': ['   **Recommended: A.**', '   Also: [`send.ts` L13-L16](' + pr_format.code_link(
             'example/repo', 'a' * 40, 'src/notify/send.ts', 13, 16) + ')\n   **Recommended: A.**']},
     # 2026-10-30 02:35Z (the mayor: the question named an effect no linked place backs).
     'case71-money-opening-without-its-places': {
-        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'expect': 'fail', 'expect_reasons': ['R32'], 'outcome': 'questions', 'diff': DIFF, 'items': [], 'model': False,
         'tree_lines': TREE, 'decisions': [dict(MONEY, opening_places=[])], 'not_checked': NOT_CHECKED},
     'case70-money-places-collapsed': {
-        'expect': 'pass', 'outcome': 'escalate', 'diff': DIFF, 'items': [], 'model': False,
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'items': [], 'model': False,
         'tree_lines': {**TREE, **{f'src/billing/p{k}.ts': 40 for k in range(9)}},
         'not_checked': NOT_CHECKED, 'decisions': [pr_format.not_checked_decision(
             [{'path': f'src/billing/p{k}.ts', 'line_start': 10, 'line_end': 20, 'kind': ['credits', 'plans'][k % 2],
@@ -373,7 +383,7 @@ CASES = {
         'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-checked-minimal',
         'args': {'requested': False, 'not_checked': True, 'gate_held': True}},
     'case45-not-reviewed-note': {
-        'expect': 'pass', 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
+        'expect': 'pass', 'outcome': 'not-reviewed', 'line2': 'Reviewer: nothing. Author: 1 question, get CI running.', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
         'decisions': [FLOOR], 'blockers': NO_CI, 'facts': 'No CI ran · no merge conflict · open'},
     # 2026-10-30 02:11Z (the mayor: a bare note "still forces the reviewer to read the PR"): the note keeps its floor.
     'case46-note-without-its-decision': {
@@ -415,6 +425,29 @@ CASES = {
         'since': dict(SINCE, again=0, open=0, resolve=[['src/notify/send.ts', 14, 'fixed']])},
     'case80-low-risk-with-an-earlier-ask-still-open': {
         'expect': 'fail', 'expect_reasons': ['R2'], 'only_reasons': ['R2'], **LOW, 'since': dict(SINCE, again=0)},
+    # 2026-10-30 05:31Z (decision-554d2e7b): "Needs you" only with an option the reviewer carries out; a
+    # decision whose options are all the author's is a question for the author. Each option starts with
+    # who carries it out, checked against the names (R16, R22).
+    'case81-all-author-options-are-not-needs-you': {
+        'expect': 'fail', 'expect_reasons': ['R16', 'R22'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
+        'items': [], 'decisions': [AUTHORS_CALL], **SKIP},
+    'case82-all-author-options-are-a-question-for-the-author': {
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'line2': 'Reviewer: nothing. Author: 1 question.',
+        'diff': DIFF, 'tree_lines': TREE, 'items': [], 'decisions': [AUTHORS_CALL], **SKIP},
+    'case83-delivered-billing-decision-for-the-reviewer': {
+        'expect': 'fail', 'expect_reasons': ['R22'], 'only_reasons': ['R22'], 'outcome': 'escalate', 'n_decisions': 1,
+        'not_checked': NOT_CHECKED, 'facts': pr_format.GREEN_FACTS, 'model': False,
+        'body': body(outcome='escalate', decisions=[MONEY_V54], not_checked=NOT_CHECKED, model=False)},
+    'case84-question-for-the-author-with-a-reviewer-option': {
+        'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'questions', 'diff': DIFF, 'tree_lines': TREE,
+        'items': [], 'decisions': [dict(DECISION, actors=['author', 'author'])], **SKIP},
+    'case85-reviewer-option-without-the-reviewer-name': {
+        'expect': 'fail', 'expect_reasons': ['R22'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
+        'items': [], 'decisions': [dict(DECISION, options=['Allow it, with the SMS vendor under a BAA',
+                                                            'Author sends only the clinic name and time'])], **SKIP},
+    'case86-decision-without-actors': {
+        'expect': 'fail', 'expect_reasons': ['R16'], 'outcome': 'escalate', 'diff': DIFF, 'tree_lines': TREE,
+        'items': [], 'decisions': [{k: v for k, v in DECISION.items() if k != 'actors'}], **SKIP},
 }
 
 if __name__ == '__main__':

@@ -26,6 +26,10 @@
     "You review the changed lines yourself",
     "Send only the clinic name and time"
    ],
+   "actors": [
+    "reviewer",
+    "author"
+   ],
    "recommended": 1,
    "reason": "Nothing in the ticket needs the patient name.",
    "rule": "",

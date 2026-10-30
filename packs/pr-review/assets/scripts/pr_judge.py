@@ -78,8 +78,8 @@ with the note that it is automated and {name} hasn't read the PR; line 2, who ac
 exact lines; the "What it does" sentence; the "Safe to skip" line, the rest of the
 diff by group with each file linked; the status line (CI, merge conflict, state), shown only when
 something did not pass; an approval's short form, two lines and a collapsed list of what was checked;
-and, when the PR touches billing, plans, credits or pricing, the decision on who confirms it, with one
-line per changed place saying what it changes (not checked by the agent).
+and, when the PR touches billing, plans, credits or pricing, the question for {author} on who confirms
+it, with one line per changed place saying what it changes (not checked by the agent).
 
 Never quote or paraphrase the review's content, file names, code or the PR's subject. Refer only to its
 structure: "line 1", "item 2", "the footer", "the inline comment on the second file".

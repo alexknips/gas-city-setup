@@ -254,9 +254,9 @@ no import. Built in 1-27 s per PR. `pr_context.py --selftest` checks it on a sma
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
 charges, credits, plans or limits; clipped at 30 words), its kind, whether it changes behaviour and its
 risk, plus one sentence on what the whole change does and its default state, and the question on its
-concrete effect after merge; in calls of 20 places. The money decision shows its block first (risk, question,
+concrete effect after merge; in calls of 20 places. The money question (the author's, R20) shows its block first (risk, question,
 options, recommendation), then the evidence; each place is linked once. A place
-that comes back without a line gets one more try, then keeps its link with "(not summarized)". It runs apart from the review, so the money decision
+that comes back without a line gets one more try, then keeps its link with "(not summarized)". It runs apart from the review, so the money question
 keeps its lines even when the full review is held.
 
 `assets/checklist-health.md` is the default checklist for health-care code: HIPAA Security Rule
@@ -284,10 +284,10 @@ every review is the outcome word with the automated note (R28); line 2 says who 
 
 | Outcome | When | Line 2 | Event | Slack |
 | --- | --- | --- | --- | --- |
-| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each one question with lettered options, a recommendation with its reason and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20, R32) | `**Needs you** · automated, Reviewer hasn't read this PR` / `Reviewer: N decisions. Author: …` | COMMENT | "Needs you" |
+| `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each with an option the reviewer carries out, one question with lettered options (each starting with who carries it out), a recommendation with its reason and a link to the code at the head or the PR text | `**Needs you** · automated, Reviewer hasn't read this PR` / `Reviewer: N decisions. Author: …` | COMMENT | "Needs you" |
 | `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Reviewer: nothing. Author: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
-| `questions` | only questions for the author, or CI that did not run, was skipped or is still running | `**Questions** · …` / `Reviewer: nothing. Author: 2 questions.` | COMMENT | "Questions for the author" |
-| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Reviewer: 1 decision. Author: …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" with lettered options | COMMENT | "Not reviewed" |
+| `questions` | only questions for the author: a decision whose options are all the author's (R16), the sign-off on a not-checked area (R20, R32), or CI that did not run, was skipped or is still running | `**Questions** · …` / `Reviewer: nothing. Author: 2 questions.` | COMMENT | "Questions for the author" |
+| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Reviewer: nothing. Author: 1 question, …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" for the author with lettered options | COMMENT | "Not reviewed" |
 | `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | `**Approved as low risk** · …` / `Nothing for Reviewer or Author.` and "What was checked" collapsed (R36) (or `**Low risk**` with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
 
 Rule flags alone never route a PR to the reviewer: they tell the model where to look first, and the
@@ -319,8 +319,9 @@ opened, his thumbs on the Slack link. Not review volume.
 
 1. **Style guide** (`assets/style-guide.md`, versioned, v5). Rules R0 to R37 (no R12), each with the
    complaint it came from: never a pending review (R0); the verdict first with the automated note, then
-   who acts (R28, R22); "needs you" only for decisions only the reviewer can make, at the level of goals
-   and rules, each linked (R16, R37); at most 5 items for the author, each linked to the exact diff
+   who acts (R28, R22); "needs you" only for decisions only the reviewer can make, with an option they
+   carry out, at the level of goals and rules, each linked (R16, R37); a decision whose options are all
+   the author's is a question for the author; at most 5 items for the author, each linked to the exact diff
    lines, leading with what changed in plain words, said once (R21, R29); every flagged hunk cleared
    with a link or acted on (R19), a risky "cleared" turned into a question (R31); a not-checked area
    handed to a person with one line per changed place (R20, R32); what the PR does and a linked skip
@@ -393,7 +394,12 @@ passes, a note without its decision fails (R33). Case 69: line 2 that misses the
 (19 places one by one) fails (R32). Case 71: a money opening
 without the places that back it (R32); host-local case 15: the dfc5ea2 money review (other places not
 collapsed) fails (R32). Case 72:
-a code place linked twice (R21). `pr-review-regress.sh` also runs `pr_hygiene.py`: no public file of the pack names a
+a code place linked twice (R21). Cases 81-86 (decision-554d2e7b, the reviewer on 2026-10-30 05:31Z: "you
+wrote a review and [the author] just needs to answer not me"): a decision whose options are all the
+author's passes as a question for the author and fails as "Needs you" (R16, R22); a billing decision for
+the reviewer as v5.4 delivered it fails (R22); options that do not start with who carries them out fail
+(R22); a decision without actors fails (R16). A rendered case can pin its line 2 (`line2`) and require that
+its parts give its outcome (`derived`). `pr-review-regress.sh` also runs `pr_hygiene.py`: no public file of the pack names a
 person or repository from the town's overrides (host-local; skipped without them).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR

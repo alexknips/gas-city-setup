@@ -10,7 +10,8 @@
   gate_approve(...)                  the reasons a low-risk review may not be an APPROVE (R27)
 
 A review `rv` is a dict: outcome, approve (bool), decisions, items, blockers, cleared, summary, skip, facts,
-not_checked (the words for a not-checked area the PR touches, or ''), model (whether a model read the PR).
+not_checked (the words for a not-checked area the PR touches, or ''), model (whether a model read the PR),
+names ([reviewer, author], for the check that each option starts with who carries it out).
 
 `pr_format.py --regress DIR...` runs the gate over regression fixtures (README.md, "Quality loop").
 """
@@ -26,6 +27,10 @@ AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'beha
          'product', 'compliance', 'other']
 NOT_CHECKED_AREA = 'not checked'  # the area of the decision R20 adds; the model never uses it
 KINDS = {'question': 'Ask {author}', 'change': 'Change'}
+# Who carries out a decision's option (decision-554d2e7b, the reviewer 2026-10-30: "you wrote a review and the author
+# just needs to answer, not me"): the reviewer, the author, or someone the author picks (a teammate, the
+# owner of billing). A decision none of whose options is the reviewer's is a question for the author.
+ACTORS = ('reviewer', 'author', 'picked')
 # R28: line 1 is the verdict, then the honesty note as a suffix (the review is posted under the reviewer's
 # login, so the author must see it is automated): "**Approved as low risk** · automated, <reviewer> hasn't read this PR".
 SUFFIX = " · automated, {name} hasn't read this PR"
@@ -213,13 +218,28 @@ def blockers(repo, pr, ci, ci_bad=(), conflicts=()):
     return out
 
 
+def for_reviewer(d):
+    """Whether the reviewer carries out one of the decision's options (decision-554d2e7b); None for a
+    decision without actors (one delivered before v5.5)."""
+    a = d.get('actors')
+    return None if a is None else 'reviewer' in a
+
+
+def split(decisions):
+    """(the reviewer's decisions, the author's): a decision none of whose options is the reviewer's is a
+    question for the author (decision-554d2e7b)."""
+    return [d for d in decisions if for_reviewer(d) is not False], [d for d in decisions if for_reviewer(d) is False]
+
+
 def decide(decisions, items, blockers_=()):
-    """R16: Needs you only with a decision only the reviewer can make. Otherwise changes (a medium or high
-    change item, or any change), questions (only questions), or low risk (nothing at all: no item, no
-    blocker; a blocker means CI did not pass or the branch conflicts)."""
-    if decisions:
+    """R16: Needs you only with a decision the reviewer carries out an option of. Otherwise changes (a medium
+    or high change item, or any change), questions (only questions, a decision whose options are all the
+    author's among them), or low risk (nothing at all: no item, no blocker; a blocker means CI did not pass
+    or the branch conflicts)."""
+    mine, theirs = split(decisions)
+    if mine:
         return 'escalate'
-    asks = list(items) + list(blockers_)
+    asks = list(items) + list(blockers_) + [{'kind': 'question'} for _ in theirs]
     if not asks:
         return 'low-risk'
     return 'questions' if all(a['kind'] == 'question' for a in asks) else 'changes'
@@ -239,9 +259,9 @@ def facts_line(pr, ci, ci_bad):
 
 def who_acts(rv, name, author):
     """R22: line 2, who must do what; "Nothing for <reviewer> or <author>." when nobody acts."""
-    d = rv['decisions']
+    d, theirs = split(rv['decisions'])
     n_change = sum(1 for i in rv['items'] if i['kind'] == 'change')
-    n_q = sum(1 for i in rv['items'] if i['kind'] == 'question')
+    n_q = sum(1 for i in rv['items'] if i['kind'] == 'question') + len(theirs)
     parts = ([plural(n_change, 'change', 'changes')] if n_change else []) + \
             ([plural(n_q, 'question', 'questions')] if n_q else []) + [b['short'] for b in rv['blockers']] + \
             [f"if {name} picks {LETTERS[x['recommended']]}, {x['author_task']}" for x in d if x.get('author_task')]
@@ -294,10 +314,10 @@ def render(repo, pr, rv, name, author):
     """The review body (markdown). Line 1, the verdict and the automated note (R28); line 2, who acts (R22).
     An approval stops there, with what was checked collapsed (R36). Otherwise: the decisions for the
     reviewer, each with its options on lettered lines and the recommendation's reason (R16, R32, R37);
-    the asks for the author with links to their lines (each item is also an inline comment) and the
-    blockers; what was checked and cleared (R19, R29); safe to skip with the files view (R30); and the
+    for the author, the decisions whose options are all theirs (decision-554d2e7b), the asks with links
+    to their lines (each item is also an inline comment) and the blockers; what was checked and cleared (R19, R29); safe to skip with the files view (R30); and the
     status line only when something did not pass (R30)."""
-    n, head = pr['number'], pr['headRefOid']
+    n = pr['number']
     lines = [headline(rv, name), who_acts(rv, name, author)]
     since = pr_incremental.text(repo, rv['since']) if rv.get('since') else ''  # gc-sy1hm.2 c
     if rv.get('approve'):
@@ -311,43 +331,19 @@ def render(repo, pr, rv, name, author):
         lines += [f"**What it does:** {rv['summary']}", '']
     if since:
         lines += [since, '']
-    if rv['decisions']:
+    mine, theirs = split(rv['decisions'])
+    if mine:
         lines.append(f'**For {name}:**')
-        for k, d in enumerate(rv['decisions'], 1):
-            money = d.get('area') == NOT_CHECKED_AREA
-            # The decision block first (the mayor, 2026-10-30 03:05Z): for money, the plain risk sentence,
-            # then the question, the options and the recommendation; the evidence after them.
-            if money:
-                lines += [f'{k}. ' + opening_text(repo, head, d), f"   **{d['question']}**"]
-            else:
-                opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
-                lines.append(f"{k}. **{d['question']}**{opener}")
-                if d.get('why'):
-                    lines.append(f"   {d['why']}")
-            if rule_ref(repo, rv, d.get('rule')):
-                lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
-            why_opt = d.get('option_reasons') or []
-            lines += [f'   {LETTERS[j]}. {o}' + (f': {why_opt[j]}' if j < len(why_opt) and why_opt[j] else '')
-                      for j, o in enumerate(d['options'][:len(LETTERS)])]
-            rec = d.get('recommended', 0)
-            lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
-                         f"{d['reason']}")
-            others = []
-            if d.get('where') and money:
-                backed = {j for j in d.get('opening_places') or []} if d.get('opening') else set()
-                shown, others = money_lines(repo, head, [x for j, x in enumerate(d['where']) if j not in backed])
-                lines += shown
-            elif d.get('where'):
-                lines.append('   **Where:**')
-                for x in d['where']:
-                    lines.append(f"   - {place_link(repo, head, x)}: {x.get('what') or ''}")
-            if others:  # R32: every place stays linked, once, out of the visible length
-                lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
+        for k, d in enumerate(mine, 1):
+            lines += decision_lines(repo, pr, rv, k, d)
         lines.append('')
-    if rv['items'] or rv['blockers']:
+    if theirs or rv['items'] or rv['blockers']:
+        # A decision whose options are all the author's is their question, first (decision-554d2e7b).
         lines.append(f'**For {author}:**')
-        k = 0
-        for k, it in enumerate(rv['items'], 1):
+        for k, d in enumerate(theirs, 1):
+            lines += decision_lines(repo, pr, rv, k, d)
+        k = len(theirs)
+        for k, it in enumerate(rv['items'], k + 1):
             old = ' (removed lines)' if it.get('side') == 'old' else ''
             url = diff_link(repo, n, it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
             label = KINDS[it['kind']].format(author=author)
@@ -365,6 +361,42 @@ def render(repo, pr, rv, name, author):
     if rv['facts'] != GREEN_FACTS:
         lines.append(rv['facts'])
     return '\n'.join(lines).rstrip()
+
+
+def decision_lines(repo, pr, rv, k, d):
+    """One decision's block (R16, R32, R37), the decision block first (the mayor, 2026-10-30 03:05Z): for
+    money, the plain risk sentence, then the question, the options on lettered lines (each starts with who
+    carries it out) and the recommendation; the evidence after them."""
+    head, lines = pr['headRefOid'], []
+    money = d.get('area') == NOT_CHECKED_AREA
+    if money:
+        lines += [f'{k}. ' + opening_text(repo, head, d), f"   **{d['question']}**"]
+    else:
+        opener = '' if d.get('where') else f" · [{link_text(d)}]({decision_link(repo, pr, d)})"
+        lines.append(f"{k}. **{d['question']}**{opener}")
+        # A model's `why` says why only the reviewer can decide: not shown once the question is the author's.
+        if d.get('why') and (d.get('auto') or for_reviewer(d) is not False):
+            lines.append(f"   {d['why']}")
+    if rule_ref(repo, rv, d.get('rule')):
+        lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
+    why_opt = d.get('option_reasons') or []
+    lines += [f'   {LETTERS[j]}. {o}' + (f': {why_opt[j]}' if j < len(why_opt) and why_opt[j] else '')
+              for j, o in enumerate(d['options'][:len(LETTERS)])]
+    rec = d.get('recommended', 0)
+    lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
+                 f"{d['reason']}")
+    others = []
+    if d.get('where') and money:
+        backed = {j for j in d.get('opening_places') or []} if d.get('opening') else set()
+        shown, others = money_lines(repo, head, [x for j, x in enumerate(d['where']) if j not in backed])
+        lines += shown
+    elif d.get('where'):
+        lines.append('   **Where:**')
+        for x in d['where']:
+            lines.append(f"   - {place_link(repo, head, x)}: {x.get('what') or ''}")
+    if others:  # R32: every place stays linked, once, out of the visible length
+        lines += ['', '<details><summary>Other places</summary>', ''] + others + ['', '</details>', '']
+    return lines
 
 
 def place_link(repo, head, x):
@@ -505,11 +537,13 @@ def not_checked_decision(ranges, words, author, overview='', overview_places=())
     neutral line (money_ranges, then pr_money). The question is the one the options answer (the mayor,
     02:35Z). `overview` (what the change does and its default state) is shown only when the places it names
     (`overview_places`, indexes into `ranges`) have their lines: a claim without a marker can be a model
-    invention. The options never ask the reviewer to read code (R37); each has its reason, and the
-    recommended one's task for the author goes into line 2."""
+    invention. The options never ask the reviewer to read code (R37) and each has its reason; all are
+    the author's or someone's they pick, so it is a question for the author (decision-554d2e7b)."""
     first = ranges[0]
     backing = [j for j in overview_places if 0 <= j < len(ranges)
                and ranges[j].get('what') and ranges[j].get('what') != NOT_SUMMARIZED]
+    # Every option is the author's or someone's they pick, so this is a question for the author, not the
+    # reviewer's decision (decision-554d2e7b replaces "billing is a decision for the reviewer").
     return {'question': f'What sign-off does this change to {words} need before it merges?',
             'opening': overview if overview and backing else '', 'opening_places': backing if overview else [],
             'options': [f'{author} states in the PR description what changes for customers',
@@ -518,9 +552,9 @@ def not_checked_decision(ranges, words, author, overview='', overview_places=())
             'option_reasons': ['a short written account puts on record what customers will see',
                                'they know the pricing rules this touches',
                                'when the sign-off happened outside this PR'],
+            'actors': ['author', 'picked', 'picked'],
             'recommended': 0,
             'reason': f'One paragraph from {author} puts on record what customers will see, and nobody has to read code.',
-            'author_task': 'state in the PR description what changes for customers',
             'why': 'No agent checks money logic, so a person has to confirm what it changes.',
             'where': [{k: x.get(k) for k in ('path', 'line_start', 'line_end', 'what', 'kind', 'behaviour', 'risk')}
                       for x in ranges],
@@ -533,16 +567,17 @@ def floor_decision(places, author, why):
     """R33 (the mayor, 2026-10-30 02:11Z: "a hand-off with no options still forces the reviewer to read the PR"):
     the note's decision. `places`: [{path, line_start, line_end, what}] the zero-token rules know (the
     flagged hunks and the money places), each linked; `why`: the structural reason the review was held.
-    Rule-level options; none asks the reviewer to read code (R37)."""
+    Rule-level options, all the author's, so the note asks the author (decision-554d2e7b); none asks the
+    reviewer to read code (R37)."""
     d = {'question': 'Who reviews this PR before it merges?',
          'options': [f'{author} asks a teammate who knows this code to review it',
-                     f'{author} states in the PR description what it changes and why that is safe, and you then decide',
-                     'Merge it as is'],
+                     f'{author} states in the PR description what it changes and why that is safe',
+                     f'{author} merges it as is'],
          'option_reasons': ['a person who knows the code checks in one pass what our review could not',
-                            'the author knows the change; a written account lets you decide without reading code',
+                            'the author knows the change best, and the account stays on record',
                             'when a wrong change here would be cheap to undo'],
+         'actors': ['author', 'author', 'author'],
          'recommended': 0, 'reason': 'A person who knows the code checks in one pass what our review could not.',
-         'author_task': 'ask a teammate who knows this code to review it',
          'why': why, 'area': 'other', 'rule': '', 'verified': 'zero-token rules', 'confidence': 10, 'auto': True}
     if places:
         first = places[0]
@@ -551,6 +586,26 @@ def floor_decision(places, author, why):
     else:
         d['link'] = {'kind': 'description'}
     return d
+
+
+def actor_reasons(p, options, actors, names):
+    """R22: each option starts with who carries it out, checked against the names (`names`: [reviewer,
+    author]; skipped without them): the reviewer's name, the author's, or for someone the author picks
+    neither (a teammate, the owner of billing). The body then shows who acts (gate_body reads it)."""
+    if not names:
+        return []
+    reviewer, author = names
+    why = []
+    for j, (o, a) in enumerate(zip(options, actors)):
+        o = (o or '').strip()
+        said = reviewer if o.startswith(f'{reviewer} ') else author if o.startswith(f'{author} ') else None
+        want = {'reviewer': reviewer, 'author': author, 'picked': None}[a]
+        if said != want and want:
+            why.append(f'R22: {p} option {LETTERS[j]} is one {want} carries out, so it starts with "{want}"')
+        elif said != want:
+            why.append(f'R22: {p} option {LETTERS[j]} is carried out by someone {author} picks, so it starts with who '
+                       f'that is (a teammate, the owner of billing), not with {said}')
+    return why
 
 
 def field_reasons(p, f, v):
@@ -627,6 +682,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
                    f'again as an item on its lines, or say why it is fixed')
     if outcome == 'escalate' and not decisions:
         why.append('R16: needs you without a decision for the reviewer')
+    elif outcome == 'escalate' and not any(for_reviewer(d) for d in decisions):
+        why.append('R16: needs you, but the reviewer carries out none of the options; a decision whose options are '
+                   "all the author's is a question for the author")
     if rv.get('approve') and outcome != 'low-risk':
         why.append(f'R27: an approval for a {outcome} review')
     for k, d in enumerate(decisions, 1):
@@ -636,6 +694,11 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R16: {p} is not one question ending in "?"')
         if len(d.get('options') or []) < 2:
             why.append(f'R16: {p} has fewer than 2 options')
+        acts = d.get('actors')
+        if not isinstance(acts, list) or len(acts) != len(d.get('options') or []) or any(a not in ACTORS for a in acts):
+            why.append(f"R16: {p} does not say who carries out each option ({', '.join(ACTORS)})")
+        else:
+            why += actor_reasons(p, d['options'], acts, rv.get('names'))
         for f in ('question', 'why', 'reason'):
             why += field_reasons(p, f, d.get(f))
         rec = d.get('recommended')
@@ -669,10 +732,13 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
             why.append(f'R16: {p} has no link to code or text')
         if d.get('area') not in AREAS + [NOT_CHECKED_AREA]:
             why.append(f'R16: {p} area is not one of {AREAS}')
-    # R20: a not-checked area is said on line 1 and is a decision for the reviewer; never otherwise.
+    # R20: a not-checked area gets the sign-off question, the author's (decision-554d2e7b); never otherwise.
     nc = [d for d in decisions if d.get('area') == NOT_CHECKED_AREA]
-    if rv.get('not_checked') and (outcome != 'escalate' or not nc):
-        why.append(f"R20: the PR touches {rv['not_checked']}, which is not checked, so it is a decision for the reviewer")
+    if rv.get('not_checked') and not nc:
+        why.append(f"R20: the PR touches {rv['not_checked']}, which is not checked, so it gets the sign-off question")
+    if any(for_reviewer(d) is not False for d in nc):
+        why.append(f'R20: the sign-off on {NOT_CHECKED_AREA} code is a question for the author, not a decision for '
+                   f'the reviewer')
     if nc and not rv.get('not_checked'):
         why.append('R20: a not-checked decision on a PR that does not touch that area')
     seen = []
@@ -756,7 +822,8 @@ def gate_body(body, rv, comments=None):
     needs only outcome, the counts and not_checked; `facts` None = not known). With `comments`, each item
     has its inline comment (R4)."""
     why = []
-    n_dec, n_items = len(rv.get('decisions') or []), len(rv.get('items') or [])
+    mine, theirs = split(rv.get('decisions') or [])
+    n_dec, n_theirs, n_items = len(mine), len(theirs), len(rv.get('items') or [])
     n_block, n_clear = len(rv.get('blockers') or []), len(rv.get('cleared') or [])
     lines = body.splitlines()
     word = word_of(rv)
@@ -768,7 +835,7 @@ def gate_body(body, rv, comments=None):
         why.append(f'{rule}: line 1 says "{m1.group(1)}" for {rv["outcome"]} ({event_of(rv)} review)')
     l2 = lines[1] if len(lines) > 1 else ''
     m, nothing = WHO_RE.match(l2), NOTHING_RE.match(l2)
-    asks = n_items + n_block
+    asks = n_items + n_block + n_theirs
     if nothing:
         if n_dec or asks or rv.get('not_checked'):
             why.append('R22: line 2 says nothing for anyone, but the review has decisions or asks')
@@ -777,15 +844,18 @@ def gate_body(body, rv, comments=None):
     else:
         if int(m.group(3) or 0) != n_dec:
             why.append(f'R22: line 2 counts {m.group(3) or 0} decisions, the review has {n_dec}')
-        tasks = [x for x in rv.get('decisions') or [] if x.get('author_task')]
+        tasks = [x for x in mine if x.get('author_task')]
         for x in tasks:
             if f"picks {LETTERS[x['recommended']]}, {x['author_task']}" not in m.group(7):
                 why.append("R22: line 2 does not name the task the recommended option gives the author")
         asks += len(tasks)
+        if mine and not any(x.get('question') for x in mine):  # a body delivered earlier: its decisions are counts
+            asks += len(re.findall(rf'\bif {re.escape(m.group(1))} picks [A-D], ', m.group(7)))
         if (m.group(7) == 'nothing') != (asks == 0):
             why.append(f'R22: line 2 says the author has {m.group(7)!r}, the review has {asks} asks')
         if not n_dec and not asks:
             why.append('R22: line 2 is "Nothing for <reviewer> or <author>." when nobody acts')
+        why += reviewer_option_reasons(body, rv, m.group(1), int(m.group(3) or 0), m.group(6))
     rest = [l for l in lines[2:] if l.strip()]
     if rv.get('approve'):
         if rest and not (rest[0] == '<details><summary>What was checked</summary>' and rest[-1] == '</details>'
@@ -800,13 +870,14 @@ def gate_body(body, rv, comments=None):
     if rv['outcome'] != 'low-risk' or n_clear:
         links = re.findall(r'\]\(https://github\.com/[^)]+/(?:pull/\d+/files#diff-[0-9a-f]{64}[RL]\d+(?:-[RL]\d+)?|'
                            r'blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?|pull/\d+(?:/checks|/conflicts)?)\)', body)
-        if not links or len(links) < n_items + n_dec + n_block + n_clear:
-            why.append(f'R3: {len(links)} links to lines or text for {n_items + n_dec + n_block + n_clear} entries')
+        n_entries = n_items + n_dec + n_theirs + n_block + n_clear
+        if not links or len(links) < n_entries:
+            why.append(f'R3: {len(links)} links to lines or text for {n_entries} entries')
     summary = re.search(r'^\*\*What it does:\*\* (.*)$', body, re.M)
     if rv.get('model') and not rv.get('approve') and not (summary and summary.group(1).strip()):
         why.append('R7: no "What it does" line')
-    if rv['outcome'] == 'not-reviewed' and n_dec != 1:
-        why.append('R33: the note does not carry its one decision for the reviewer (who reviews it, with options)')
+    if rv['outcome'] == 'not-reviewed' and n_dec + n_theirs != 1:
+        why.append('R33: the note does not carry its one question for the author (who reviews it, with options)')
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', body, re.M)
     if skip:
         groups = [g for g in skip.group(1).split('; ') if g.strip()]
@@ -855,6 +926,39 @@ def gate_body(body, rv, comments=None):
     shown = len(re.sub(r'\]\([^)]*\)', ']', body))  # what a reader reads: link targets do not count
     if shown > MAX_BODY:
         why.append(f'R14: the text is {shown} characters, at most {MAX_BODY}')
+    return why
+
+
+def option_lines(body, who):
+    """The lettered option lines of each numbered entry under "**For <who>:**": [[option text, ...], ...]."""
+    out, inside = [], False
+    for line in body.splitlines():
+        if line.startswith('**For '):
+            inside = line == f'**For {who}:**'
+        elif inside and re.match(r'^\d+\. ', line):
+            out.append([])
+        elif inside and out and re.match(r'^   [A-D]\. ', line):
+            out[-1].append(line[6:])
+        elif line.startswith('**'):
+            inside = False
+    return out
+
+
+def reviewer_option_reasons(body, rv, reviewer, counted, author):
+    """R22 (decision-554d2e7b): "Needs you", or line 2's "<reviewer>: N decisions", only when the reviewer
+    carries out an option of each: read from the text, so it holds for a body delivered earlier too. Each
+    decision under "**For <reviewer>:**" has an option line that starts with the reviewer's name; no option
+    of a question for the author does."""
+    why = []
+    if rv['outcome'] == 'escalate' and not counted:
+        why.append(f'R22: needs you, but line 2 gives {reviewer} nothing')
+    if counted:
+        for k, opts in enumerate(option_lines(body, reviewer) or [[]], 1):
+            if not any(o.startswith(f'{reviewer} ') for o in opts):
+                why.append(f"R22: decision {k} for {reviewer} has no option {reviewer} carries out; a decision whose "
+                           f"options are all the author's is a question for the author")
+    if author != reviewer and any(o.startswith(f'{reviewer} ') for opts in option_lines(body, author) for o in opts):
+        why.append(f'R22: a question for {author} has an option {reviewer} carries out, so it is a decision for {reviewer}')
     return why
 
 
@@ -942,7 +1046,7 @@ def review_of(fx):
             'facts': fx.get('facts', 'CI passed · no merge conflict · open'),
             'not_checked': fx.get('not_checked', ''), 'model': fx.get('model', True),
             'request_changes': fx.get('request_changes', False), 'rules': fx.get('rules', {}),
-            'rules_sha': 'c' * 40, 'since': fx.get('since')}
+            'rules_sha': 'c' * 40, 'since': fx.get('since'), 'names': ['Reviewer', 'Author']}
 
 
 def route(fx):
@@ -956,8 +1060,9 @@ def route(fx):
 def regress(dirs):
     """Run the gate over every fixture (*.json) in dirs. A fixture holds `expect` ("pass" or "fail"),
     optionally `expect_reasons` (rule ids that must be among the reasons), and either `body` (+ outcome,
-    n_items, n_decisions) for a delivered body, or the review's parts (outcome, decisions, items, blockers,
-    cleared, flagged, diff, ...) to render and gate; `delivery` ({pr_state, review_url, review_state, ...})
+    n_items, n_decisions, n_author_decisions) for a delivered body, or the review's parts (outcome,
+    decisions, items, blockers, cleared, flagged, diff, ...) to render and gate (`line2`: the rendered line 2;
+    `derived`: the parts must give the outcome); `delivery` ({pr_state, review_url, review_state, ...})
     adds the delivery checks and `approve_check` ({fresh: {state, head, checks}, head}) the approval bar.
     Returns the number of mismatches."""
     bad = total = 0
@@ -972,7 +1077,8 @@ def regress(dirs):
             if 'route' in fx:
                 reasons = route(fx)
             elif 'body' in fx:
-                rv = {'outcome': fx['outcome'], 'decisions': [{}] * fx.get('n_decisions', 0),
+                rv = {'outcome': fx['outcome'], 'decisions': [{}] * fx.get('n_decisions', 0)
+                      + [{'actors': ['author']}] * fx.get('n_author_decisions', 0),
                       'items': [{}] * fx.get('n_items', 0), 'not_checked': fx.get('not_checked', ''),
                       'approve': fx.get('approve', False), 'model': fx.get('model', True),
                       'request_changes': fx.get('request_changes', False), 'facts': fx.get('facts')}
@@ -985,8 +1091,15 @@ def regress(dirs):
                 body = render('example/repo', pr, rv, 'Reviewer', 'Author')
                 if fx.get('body_edit'):  # a rendered body broken on purpose
                     body = body.replace(*fx['body_edit'])
-                reasons = gate(rv, idx, body, fx.get('tree_lines'), fx.get('pr_text', ''), fx.get('flagged', []),
-                               inline_comments(rv['items'], 'Author'))
+                if 'line2' in fx and body.splitlines()[1] != fx['line2']:
+                    reasons_l2 = ["R22: line 2 is not the fixture's line2"]
+                else:
+                    reasons_l2 = []
+                if fx.get('derived') and decide(rv['decisions'], rv['items'], rv['blockers']) != rv['outcome']:
+                    reasons_l2.append(f"R1: the parts give {decide(rv['decisions'], rv['items'], rv['blockers'])}, "
+                                      f"not {rv['outcome']}")
+                reasons = reasons_l2 + gate(rv, idx, body, fx.get('tree_lines'), fx.get('pr_text', ''),
+                                            fx.get('flagged', []), inline_comments(rv['items'], 'Author'))
                 if 'approve_check' in fx:
                     ac = fx['approve_check']
                     f = ac['fresh']
