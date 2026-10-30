@@ -1,4 +1,4 @@
-# Review style guide, v5
+# Review style guide, v5.1
 
 What a delivered review must look like. The review model gets this file with its instructions. The
 gate in `pr_format.py` checks every rule marked **[gate]** before anything is delivered. A review that
@@ -33,6 +33,10 @@ names the complaint it came from. A new complaint becomes a new rule and a regre
   fundamentally I think myself as the harness engineer without any knowledge right now of the codebase
   -> Nils reviewed these changes. but we should check for consistency with the goals and high level
   rules of the repo."
+- v5.1, 2026-10-30 02:11Z: the fallback ladder never ends below a floor the reviewer can act on. A real
+  billing PR's money review was held over 2 of 22 places without a line and fell to a bare note ("a
+  hand-off with no options still forces Alex to read the PR"). R32 and R33 changed; body items became one
+  line each (their text is in the inline comment); R31's question comes from the reader.
 
 ## Who reads it
 
@@ -63,8 +67,7 @@ Alex: 1 decision (billing, plans, credits or pricing not checked). Nils: 1 chang
    **Recommended: A.** One paragraph from Nils puts on record what customers will see, and nobody has to read code.
 
 **For Nils:**
-1. **Reminder text names the patient** · [`src/notify/send.ts` L13-L15](…/files#diff-…R13-R15) · rule: [`AGENTS.md` L3](…/blob/<base>/AGENTS.md#L3)
-   Patient data goes to the SMS vendor and into the logs. **Change:** log the visit id instead of the text.
+1. **Reminder text names the patient** · Change · [`src/notify/send.ts` L13-L15](…/files#diff-…R13-R15) · rule: [`AGENTS.md` L3](…/blob/<base>/AGENTS.md#L3)
 2. [Get CI running](…/pull/N/checks): no check ran on this commit, so nothing has tested it.
 
 **Checked and cleared:**
@@ -97,7 +100,7 @@ Nothing for Alex or Nils.
 | R2 | At most 5 items for the author, worst first; low risk has none. | [gate] | v1 |
 | R3 | Each item links to the exact changed lines in the PR's Files view (path and line range as link text), and the range is inside one hunk of the diff on the side it names. | [gate] | v1: "no markers" |
 | R4 | Each item is also an inline comment on its exact lines, so the markers show in "Files changed". | [gate] | v1: "no markers" |
-| R5 | Each item says what changed (R29), why it matters, and the exact change, or the exact question or evidence to ask the author for. | [gate] | v1 |
+| R5 | Each item says what changed (R29), why it matters, and the exact change, or the exact question or evidence to ask the author for. Its body line (what changed, change or question, the link) points at its inline comment, which carries the text (R21). | [gate] | v1; the mayor, 02:11Z |
 | R6 | No filler: no praise, no "make sure", "consider", "please review", "best practices", "potential issues". | [gate] (deny-list) | v1: "fluff" |
 | R7 | Whenever a model read the PR (and it is not an approval): one `What it does:` sentence. The rest of the diff goes in `Safe to skip:` (R30). | [gate] | v1; the mayor, 01:40Z: summary and skip list mixed |
 | R8 | The status line (CI passed / red: names / none ran, merge conflict yes or no, open) appears when something did not pass (R30). | [gate] | — |
@@ -112,7 +115,7 @@ Nothing for Alex or Nils.
 | R18 | One review and one Slack message per (PR, head commit): the same head is never reviewed twice; a new head gets a new review. A deliberate re-review of the same head (a rule change) updates the earlier review in place, or cuts it to a pointer to the new one, and updates its Slack message in place. | [gate] (delivery) | v2: two runs of the same head both posted |
 | R19 | Never "nothing to check" when a content rule fired. Each flagged hunk is cleared in the review (`Checked and cleared:`, R29), or becomes an item or a decision on its lines. | [gate] | v4: "nothing to check" hid fired rules |
 | R20 | A PR that touches a NOT-CHECKED area (billing, plans, credits, pricing) says so in line 2 and gets a decision on who confirms what it changes (R32). Never low risk, never an approval. Found by a zero-token rule and by the lines the model reports. | [gate] | v4: billing-touching PRs called low risk, despite the honesty rule |
-| R21 | Each finding is said once: the item states it in full and its inline comment carries it on the exact line, anchored (GitHub reports a line for it). No suggested reply, no two items on the same lines. | [gate] (+ delivery) | v4: one review said its finding three times |
+| R21 | Each finding is said once: its inline comment states it in full on the exact lines, anchored (GitHub reports a line for it), and the body has one line pointing at it. No suggested reply, no two items on the same lines. | [gate] (+ delivery) | v4: one review said its finding three times; the mayor, 02:11Z |
 | R22 | Line 2 says who acts: `<reviewer>: N decisions` or `nothing`, then `<author>:` the changes, questions and blockers, e.g. "Alex: nothing. Nils: 1 change, resolve the merge conflict, get CI running."; "Nothing for <reviewer> or <author>." when nobody acts. A blocker in the status line (CI red, missing, skipped or running, a merge conflict) is a linked ask for the author; a merge conflict names and links the conflicting files. | [gate] | v4; the mayor, 01:40Z |
 | R23 | No rule-codes section; a collapsed section only in an approval (R36). "Not checked" appears only when the PR touches that area. | [gate] | v4 |
 | R24 | ONE review of ours per PR head: an approval carries the whole review in its body, with no separate comment. | [gate] (delivery) | v4: a comment plus an approval on one head |
@@ -122,9 +125,9 @@ Nothing for Alex or Nils.
 | R28 | The verdict first. Line 1 is the outcome word in bold with the honesty note as a suffix: "**Approved as low risk** · automated, Alex hasn't read this PR". No disclaimer line above it. | [gate] | the mayor, 22:03Z |
 | R29 | Each cleared entry and each item leads with 3-6 plain words on what this PR changed there (never a category label, never a raw identifier), then the ONE fact that makes it safe, or the one ask, in at most 25 words. | [gate] | the mayor, 22:03Z and 01:40Z |
 | R30 | No identical boilerplate across reviews. The status line shows only when something did not pass. `Safe to skip:` links every file it names, by group ("tests: [`a.test.ts`](…), …"). A change in product behaviour is never in it (R37). | [gate] | the mayor, 22:03Z and 01:40Z |
-| R31 | A cleared entry that describes a behaviour that could be a risk without saying why it is acceptable or intended is not cleared: the reader test names it, the review is regenerated, and what the reader still names becomes a question for the author, so there is no approval. | [gate] (model) | the mayor, 22:03Z: a risky "cleared" entry inside an approval |
-| R32 | The money decision (R20) saves the reviewer time: one neutral line per changed place saying what the change does to charges, credits, plans or limits (it describes, never judges), from a zero-tool reading of the hunk, so it holds even when the full review is held; EVERY place linked to its changed range at the head, grouped by kind, the short file name as the link text, never a bare count; the options on lettered lines and the recommendation with a reason; "not checked" said ONCE, in line 2. | [gate] | the mayor, 22:08Z and 01:40Z: "go look yourself" |
-| R33 | Never silent on a PR that requests the reviewer. When the gate or the reader test holds its review twice, it gets the short note: "**Not reviewed automatically.** Our review of this PR didn't reach the quality bar, so it has no automated review; <name> decides who reviews it." and the status line, nothing else; Slack "Not reviewed: <review URL>". A PR that touches a not-checked area whose review the reader test held twice gets the minimal review first: line 1, line 2, the money decision (R32) and the status line, nothing the review model wrote. The reader's reasons for each held attempt are kept host-local. | [gate] | the mayor, 21:57Z and 22:30Z: 6 of 17 requested PRs held and silent |
+| R31 | A cleared entry that describes a behaviour that could be a risk without saying why it is acceptable or intended is not cleared: the reader test names it, the review is regenerated, and what the reader still names becomes a question for the author, so there is no approval. The question is the reader's one concrete check on those lines, never a stock prompt. | [gate] (model) | the mayor, 22:03Z: a risky "cleared" entry inside an approval; 02:11Z |
+| R32 | The money decision (R20) saves the reviewer time: one neutral line per changed place saying what the change does to charges, credits, plans or limits (it describes, never judges), from a zero-tool reading of the hunk, so it holds even when the full review is held (a place without a line gets one more try, then keeps its link with "(not summarized)": a missing line never holds the money review); EVERY place linked to its changed range at the head, grouped by kind, the short file name as the link text, never a bare count; the options on lettered lines and the recommendation with a reason; "not checked" said ONCE, in line 2. | [gate] | the mayor, 22:08Z and 01:40Z: "go look yourself" |
+| R33 | Never silent on a PR that requests the reviewer, and never below a floor the reviewer can act on: the fallback ladder is monotone. When the gate or the reader test holds a review twice, a PR that touches a not-checked area gets the money review (line 1, line 2, the money decision of R32, the status line; nothing the review model wrote). Otherwise, or if that is held too, a PR that requests the reviewer gets the note: "**Not reviewed automatically**" as its verdict, why it was held in plain words (for example "it touches billing in 22 places, which no agent checks"), the places the zero-token rules know, each linked, and one rule-level decision, "Who reviews this PR before it merges?", with lettered options and a recommended letter with its reason (none asks the reviewer to read code, R37). Slack "Not reviewed: <review URL>". The reader test scores the fallbacks for the log; it never holds them. The reader's reasons for each held attempt are kept host-local. | [gate] | the mayor, 21:57Z, 22:30Z and 02:11Z: requested PRs held and silent, then a bare note |
 | R34 | Missing, skipped or red CI never skips the model on a PR that requests the reviewer: the model reviews it, and the CI blocker is one linked ask for the author (R22). | [gate] (routing) | the mayor, 22:30Z: a PR without CI got "Questions" with no question |
 | R35 | The outcome word matches the event. "Changes requested" only on a REQUEST_CHANGES review (with `PR_REVIEW_REQUEST_CHANGES=on`, the reviewer's word); a COMMENT review says "Changes suggested". Questions and escalations stay COMMENT. Our newest review is our only live verdict: it dismisses our earlier REQUEST_CHANGES and APPROVE reviews on the PR (never one the reviewer wrote). A block that rested only on a merge conflict or CI is lifted by the sweep once both are fixed on a new head; a block on content gets a review of the new head. | [gate] (+ sweep) | the mayor, 22:30Z and 01:40Z; the reviewer, 23:09Z |
 | R36 | Approvals stay short: line 1, "Nothing for <reviewer> or <author>.", and the cleared entries in ONE collapsed "What was checked", one plain line each, no duplicates, each link on the code that makes it safe (not a comment line). | [gate] | the mayor, 22:30Z |

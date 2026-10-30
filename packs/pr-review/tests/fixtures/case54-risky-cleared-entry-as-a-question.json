@@ -23,7 +23,7 @@
    "area": "other",
    "change": "Reminder now sent by SMS",
    "why": "The send call is the existing reminder path; only the text changes and it carries no new recipient.",
-   "ask": "Is this intended, and what keeps it safe?",
+   "ask": "What makes the reminder now sent by SMS safe on these lines?",
    "rule": "",
    "verified": "",
    "confidence": 8

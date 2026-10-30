@@ -28,13 +28,14 @@ KINDS = {'question': 'Ask {author}', 'change': 'Change'}
 # login, so the author must see it is automated): "**Approved as low risk** · automated, Alex hasn't read this PR".
 SUFFIX = " · automated, {name} hasn't read this PR"
 # R33: what a requested PR gets when its review was held: never silence.
-NOT_REVIEWED = '**Not reviewed automatically.**'
-NOTE = NOT_REVIEWED + " Our review of this PR didn't reach the quality bar, so it has no automated review; {name} decides who reviews it."
+NOT_REVIEWED = '**Not reviewed automatically.**'  # how the notes of v4.2-v5 began
+NOT_SUMMARIZED = '(not summarized)'  # R32: a money place the line reader gave no line, still linked
 # How our reviews begin: earlier bodies with a marker, v5 bodies with the verdict and the suffix.
 MARKERS = ('Automated review', 'Automated approval', NOT_REVIEWED)
 OURS_RE = r'^\*\*[A-Z][A-Za-z ]+\*\* · automated, '
 LETTERS = 'ABCD'
-WORDS = {'escalate': 'Needs you', 'changes': 'Changes requested', 'questions': 'Questions', 'low-risk': 'Low risk'}
+WORDS = {'escalate': 'Needs you', 'changes': 'Changes requested', 'questions': 'Questions', 'low-risk': 'Low risk',
+         'not-reviewed': 'Not reviewed automatically'}
 APPROVED = 'Approved as low risk'
 # R35: the word matches the event. Changes are "requested" only on a REQUEST_CHANGES review.
 SUGGESTED = 'Changes suggested'
@@ -57,7 +58,8 @@ CODES_RE = re.compile(r'\b(A[1-7]|B[1-4]|R\d{1,2}|F\d{1,2}|ci-(red|none|skipped)
 # R25: what clean() leaves where it cut a link or an image out of the model's text.
 CUT_RE = re.compile(r'\[(link|image) removed\]')
 # R28, R1: line 1, the verdict and the automated note.
-LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk)\*\*'
+LINE1_RE = re.compile(r'^\*\*(Needs you|Changes requested|Changes suggested|Questions|Low risk|Approved as low risk|'
+                      r'Not reviewed automatically)\*\*'
                       r" · automated, (.+) hasn't read this PR$")
 # R22: line 2, who acts: "Alex: 1 decision. Nils: 1 change, get CI running." or "Nothing for Alex or Nils."
 WHO_RE = re.compile(r'^(.+?): (nothing|(\d+) decisions?)( \((.+)\))?\. (.+?): (.+)\.$')
@@ -271,19 +273,6 @@ def headline(rv, name):
     return f'**{word_of(rv)}**' + SUFFIX.format(name=name)
 
 
-def note(name, facts):
-    """R33: the short honest comment for a PR that requests the reviewer when its review was held."""
-    return f'{NOTE.format(name=name)}\n\n{facts}'
-
-
-def gate_note(body):
-    """R33: the note says it was not reviewed, then the facts line, and nothing else."""
-    lines = [l for l in body.splitlines() if l.strip()]
-    if len(lines) != 2 or not lines[0].startswith(NOT_REVIEWED) or not FACTS_RE.match(lines[1]):
-        return ['R33: the note is not "Not reviewed automatically" and the facts line']
-    return []
-
-
 def rule_ref(repo, rv, rid):
     """R37: ' · rule: <the doc lines>' for an entry that cites a rule of the repo's digest."""
     r = (rv.get('rules') or {}).get(rid) if rid else None
@@ -325,12 +314,13 @@ def render(repo, pr, rv, name, author):
             if rule_ref(repo, rv, d.get('rule')):
                 lines.append(f"   Rule{rule_ref(repo, rv, d.get('rule'))[len(' · rule'):]}")
             if d.get('where'):
-                lines.append('   **What changes:**')
+                money = d.get('area') == NOT_CHECKED_AREA
+                lines.append('   **What changes:**' if money else '   **Where:**')
                 order = {k: j for j, k in enumerate(MONEY_KINDS)}
-                for x in sorted(d['where'], key=lambda x: order.get(x.get('kind') or 'other', len(order))):
+                for x in sorted(d['where'], key=lambda x: order.get(x.get('kind') or 'other', len(order))) if money else d['where']:
                     url = code_link(repo, head, x['path'], x['line_start'], x['line_end'])
-                    kind = (x.get('kind') or 'other').capitalize()
-                    lines.append(f"   - {kind} · [`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
+                    kind = f"{(x.get('kind') or 'other').capitalize()} · " if money else ''
+                    lines.append(f"   - {kind}[`{short_name(x['path'])}` {rng_text(x)}]({url}): {x.get('what') or ''}")
             lines += [f'   {LETTERS[j]}. {o}' for j, o in enumerate(d['options'][:len(LETTERS)])]
             rec = d.get('recommended', 0)
             lines.append(f"   **Recommended: {LETTERS[rec] if isinstance(rec, int) and 0 <= rec < len(LETTERS) else '?'}.** "
@@ -343,8 +333,8 @@ def render(repo, pr, rv, name, author):
             old = ' (removed lines)' if it.get('side') == 'old' else ''
             url = diff_link(repo, n, it['path'], it.get('side', 'new'), it['line_start'], it['line_end'])
             label = KINDS[it['kind']].format(author=author)
-            lines += [f"{k}. **{it['change']}** · [`{it['path']}` {rng_text(it)}{old}]({url}){rule_ref(repo, rv, it.get('rule'))}",
-                      f"   {it['why']} **{label}:** {it['ask']}"]
+            lines.append(f"{k}. **{it['change']}** · {label} · [`{it['path']}` {rng_text(it)}{old}]({url})"
+                         f"{rule_ref(repo, rv, it.get('rule'))}")
         for j, b in enumerate(rv['blockers'], k + 1):
             lines.append(f"{j}. [{b['label']}]({b['url']}): {b['detail']}")
         lines.append('')
@@ -425,6 +415,26 @@ def not_checked_decision(ranges, words, author):
             'area': NOT_CHECKED_AREA, 'rule': '',
             'link': {'kind': 'code', 'path': first['path'], 'line_start': first['line_start'], 'line_end': first['line_end']},
             'verified': 'zero-token rule', 'confidence': 10, 'auto': True}
+
+
+def floor_decision(places, author, why):
+    """R33 (the mayor, 2026-10-30 02:11Z: "a hand-off with no options still forces Alex to read the PR"):
+    the note's decision. `places`: [{path, line_start, line_end, what}] the zero-token rules know (the
+    flagged hunks and the money places), each linked; `why`: the structural reason the review was held.
+    Rule-level options; none asks the reviewer to read code (R37)."""
+    d = {'question': 'Who reviews this PR before it merges?',
+         'options': [f'{author} asks a teammate who knows this code to review it',
+                     f'{author} states in the PR description what it changes and why that is safe, and you then decide',
+                     'Accept it as is'],
+         'recommended': 0, 'reason': 'A person who knows the code checks in one pass what our review could not.',
+         'why': why, 'area': 'other', 'rule': '', 'verified': 'zero-token rules', 'confidence': 10, 'auto': True}
+    if places:
+        first = places[0]
+        d['where'] = [{k: x.get(k) for k in ('path', 'line_start', 'line_end', 'what', 'kind')} for x in places]
+        d['link'] = {'kind': 'code', 'path': first['path'], 'line_start': first['line_start'], 'line_end': first['line_end']}
+    else:
+        d['link'] = {'kind': 'description'}
+    return d
 
 
 def field_reasons(p, f, v):
@@ -517,7 +527,9 @@ def gate_entries(rv, idx, tree_lines, pr_text, flagged=()):
         for j, x in enumerate(d.get('where') or [], 1):  # R32: every place, linked, with its line
             if not isinstance(x.get('line_start'), int) or not isinstance(x.get('line_end'), int):
                 why.append(f'R32: {p} location {j} is not linked to its changed range')
-            if len((x.get('what') or '').split()) < 4:
+            if d.get('area') != NOT_CHECKED_AREA or x.get('what') == NOT_SUMMARIZED:
+                continue
+            if len((x.get('what') or '').split()) < 3:
                 why.append(f'R32: {p} location {j} does not say in one line what it changes')
             why += [r.replace('R29', 'R32') for r in words_reasons(f'{p} location {j}', 'line', x.get('what'), MONEY_WORDS)]
         ln = d.get('link') or {}
@@ -661,8 +673,11 @@ def gate_body(body, rv, comments=None):
                            r'blob/[0-9a-f]{40}/[^)#]+#L\d+(?:-L\d+)?|pull/\d+(?:/checks|/conflicts)?)\)', body)
         if not links or len(links) < n_items + n_dec + n_block + n_clear:
             why.append(f'R3: {len(links)} links to lines or text for {n_items + n_dec + n_block + n_clear} entries')
-    if rv.get('model') and not rv.get('approve') and not re.search(r'^\*\*What it does:\*\* \S', body, re.M):
+    summary = re.search(r'^\*\*What it does:\*\* (.*)$', body, re.M)
+    if rv.get('model') and not rv.get('approve') and not (summary and summary.group(1).strip()):
         why.append('R7: no "What it does" line')
+    if rv['outcome'] == 'not-reviewed' and n_dec != 1:
+        why.append('R33: the note does not carry its one decision for the reviewer (who reviews it, with options)')
     skip = re.search(r'^\*\*Safe to skip:\*\* (.*)$', body, re.M)
     if skip:
         groups = [g for g in skip.group(1).split('; ') if g.strip()]
@@ -817,8 +832,6 @@ def regress(dirs):
             total += 1
             if 'route' in fx:
                 reasons = route(fx)
-            elif 'note' in fx:
-                reasons = gate_note(fx['note'])
             elif 'body' in fx:
                 rv = {'outcome': fx['outcome'], 'decisions': [{}] * fx.get('n_decisions', 0),
                       'items': [{}] * fx.get('n_items', 0), 'not_checked': fx.get('not_checked', ''),

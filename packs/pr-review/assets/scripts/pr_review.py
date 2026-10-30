@@ -128,8 +128,9 @@ SCHEMA = {
             'review). Empty when there are none.'), 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['path', 'line'],
             'properties': {'path': _TEXT, 'line': {'type': 'integer', 'minimum': 1}}}},
-        'summary': {'type': 'string', 'maxLength': 200, 'description': (
-            'One plain sentence, at most 200 characters: what this PR does, for someone who does not know the code.')},
+        'summary': {'type': 'string', 'maxLength': 140, 'description': (
+            'One short, concrete sentence of at most 15 words: what this PR does, for someone who does not know '
+            'the code.')},
         'skip': {'type': 'array', 'maxItems': 6, 'description': (
             'The rest of the diff that needs no look, by group. Never a change in product behaviour: that is a '
             'cleared entry (intended, default safe) or a decision.'), 'items': {
@@ -726,11 +727,22 @@ def minimal_not_checked(cfg, repo, pr, ci, money, ruleset, author):
 
 def describe_money(cfg, idx, located, ruleset):
     """R32: the not-checked places as changed ranges, each with one neutral line and its kind from pr_money
-    (every place is linked; the mayor, 2026-10-30 01:40Z: never a bare count). Returns (ranges, meta)."""
+    (every place is linked; the mayor, 2026-10-30 01:40Z: never a bare count; 02:11Z: a missing line gets
+    one retry, then "(not summarized)"). Returns (ranges, meta)."""
     ranges = pr_format.money_ranges(idx, located)
-    shown, meta = pr_money.describe(cfg, idx, ranges[:pr_money.MAX_PLACES],
-                                    ruleset.get('not_checked') or 'billing, plans, credits or pricing')
-    return [dict(r, what=clip(clean(r['what']), pr_format.MONEY_WORDS)) for r in shown] + ranges[pr_money.MAX_PLACES:], meta
+    words, out, cost = ruleset.get('not_checked') or 'billing, plans, credits or pricing', [], 0
+    for k in range(0, len(ranges), pr_money.MAX_PLACES):
+        part, m = pr_money.describe(cfg, idx, ranges[k:k + pr_money.MAX_PLACES], words)
+        out, cost = out + part, cost + (m.get('cost_usd') or 0)
+    miss = [j for j, r in enumerate(out) if not r['what'].strip()]
+    if miss:  # one more try for just the places that came back without a line (the mayor, 02:11Z)
+        again, m = pr_money.describe(cfg, idx, [out[j] for j in miss], words)
+        cost += m.get('cost_usd') or 0
+        for j, r in zip(miss, again):
+            out[j].update(what=r['what'], kind=r.get('kind') or out[j].get('kind'))
+    # A place still without a line keeps its link and says so: it never holds the money review.
+    return [dict(r, what=clip(clean(r['what']), pr_format.MONEY_WORDS) or pr_format.NOT_SUMMARIZED) for r in out], \
+        {'cost_usd': cost}
 
 
 def clip(text, words):
@@ -739,20 +751,42 @@ def clip(text, words):
     return text if len(w) <= words else ' '.join(w[:words - 1]) + ' …'
 
 
-def question_from(c):
-    """R31: a cleared entry the reader still finds risky without a reason becomes a question for the author."""
+def question_from(c, question=''):
+    """R31: a cleared entry the reader still finds risky without a reason becomes a question for the author:
+    the reader's one concrete check on those lines (the mayor, 02:11Z: never a stock prompt)."""
+    q = (question or '').strip() or f"What makes the {c['change'][0].lower() + c['change'][1:]} safe on these lines?"
     return {'path': c['path'], 'side': 'new', 'line_start': c['line_start'], 'line_end': c['line_end'],
             'kind': 'question', 'severity': 'low', 'area': 'other', 'change': c['change'], 'why': c['why'],
-            'ask': 'Is this intended, and what keeps it safe?', 'rule': c.get('rule') or '', 'verified': '',
+            'ask': q if q.endswith('?') else q.rstrip('.') + '?', 'rule': c.get('rule') or '', 'verified': '',
             'confidence': 8}
 
 
-def not_reviewed(pr, ci):
-    """R33 (the mayor, 2026-10-29 22:30Z): a PR that requests the reviewer is never silent. When its review
-    was held, it gets the short honest note and the facts line instead."""
-    rv = {'outcome': 'not-reviewed', 'decisions': [], 'items': [], 'cleared': [], 'blockers': [], 'summary': '', 'skip': [],
-          'not_checked': '', 'approve': False}
-    return rv, pr_format.note(NAME, pr_format.facts_line(pr, ci, ci_detail(pr))), []
+def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words):
+    """R33: a PR that requests the reviewer is never silent, and the note keeps a floor the reviewer can act
+    on (the mayor, 2026-10-30 02:11Z): why the review was held, in plain words; the places the zero-token
+    rules know, each linked (the money places with their lines, the flagged hunks with what the rule saw);
+    and one rule-level decision with lettered options and a recommendation."""
+    places, seen = [], set()
+    for x in list(money) + [dict(pr_format.changed_range(idx, f['path'], f['line']), what=f['label']) for f in flagged]:
+        k = (x['path'], x.get('hunk') if x.get('hunk') is not None else x['line_start'])
+        if k not in seen:
+            seen.add(k)
+            places.append(x)
+    parts = []
+    if money:
+        parts.append(f"it touches {words} in {pr_format.plural(len(money), 'place', 'places')}, which no agent checks")
+    if held == 'held-secret':
+        parts.append('its text matched the shape of a secret, so it was withheld')
+    elif 'R26' in codes or 'R31' in codes:
+        parts.append('a second reader found our review too hard to act on')
+    elif codes:
+        parts.append('our review broke the review format twice')
+    why = "Our review of this PR didn't reach the quality bar: " + '; '.join(parts or ['it was held']) + '.'
+    rv = {'outcome': 'not-reviewed', 'decisions': [pr_format.floor_decision(places, author, why)], 'items': [],
+          'cleared': [], 'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr)), 'summary': '', 'skip': [],
+          'facts': pr_format.facts_line(pr, ci, ci_detail(pr)), 'not_checked': '', 'approve': False, 'model': False,
+          'request_changes': False, 'rules': {}, 'rules_sha': ''}
+    return rv, pr_format.render(repo, pr, rv, NAME, author), []
 
 
 def keep_reader(cfg, entry, head, attempt, scores, problems):
@@ -808,7 +842,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
     ruleset = pr_rules.load_rules(cfg['rules'])
     area_of = pr_rules.areas(ruleset)
     pr = pr_rules.get_pr(repo, entry['number'])
-    if pr['state'] != 'OPEN':
+    if pr['state'] != 'OPEN' and not cfg.get('bench'):  # the benchmark reviews merged PRs at their head, offline
         finish(cfg, key, entry, 'closed', {'model': False})
         return
     files_gh = pr_rules.pr_files(repo, pr['number'])
@@ -835,7 +869,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
                  'digest_cost_usd': dmeta.get('cost_usd', 0)}
-        reasons, problems, model, risky, money_memo = [], [], None, [], {}
+        reasons, problems, model, risky, risky_q, money_memo = [], [], None, [], {}, {}
         for attempt in (1, 2):
             p = prompt if attempt == 1 else (
                 prompt + '\n\nYOUR PREVIOUS ANSWER FAILED THE STYLE GUIDE GATE. Fix every reason and answer again:\n'
@@ -871,6 +905,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra['judge_cost_usd'] += jm.get('cost_usd') or 0
                 extra['judge'] = scores
                 risky = [j for j in jm.get('risky_cleared') or [] if j <= len(rv['cleared'])]
+                risky_q = jm.get('risky_questions') or {}
                 extra['risky_cleared'] = len(risky)
                 reasons = pr_judge.below_bar(scores) + ([
                     f'R31: cleared entries {risky} describe a possible risk without saying why it is acceptable or '
@@ -891,7 +926,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             # R31: what the reader still finds risky after the second answer is not cleared; it becomes a
             # question for the author. A behaviour change the reader still finds in the skip list means no
             # approval (R37). Either way the PR is not approved.
-            asked = [question_from(c) for j, c in enumerate(rv['cleared'], 1) if j in risky]
+            asked = [question_from(c, risky_q.get(j)) for j, c in enumerate(rv['cleared'], 1) if j in risky]
             rv = assemble(cfg, repo, pr, ci, decisions, (items + asked)[:pr_format.MAX_ITEMS],
                           [c for j, c in enumerate(model['cleared'], 1) if j not in risky], model,
                           flagged, flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest,
@@ -911,6 +946,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      checks=model['checks'], flagged_hunks=len(flagged), flags_cut=flags_cut, ci=ci,
                      money_places=len(money), money_unlined=sum(1 for x in money if not x.get('what')),
                      gate=sorted({r.split(':')[0] for r in reasons}))
+        if cfg.get('collect') is not None:  # the benchmark (pr_bench.py): the review as it stands, nothing delivered
+            cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra)})
+            return
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         fallback = held and pr_rules.held_fallback(
             'requested' in hits, bool(rv['not_checked']),
@@ -922,18 +960,24 @@ def model_review(cfg, key, entry, dry, rereview=False):
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0]['where']]),
                                      pr.get('body') or '', [], comments)
             extra.update(fallback=fallback, held=held, reader_held=extra.get('judge'), decisions=1, items=0,
-                         cleared=0, gate=sorted({r.split(':')[0] for r in reasons}))
+                         cleared=0, held_gate=extra['gate'], gate=sorted({r.split(':')[0] for r in reasons}))
             if cfg['judge'] and not reasons:  # for the log only: the money review is never held by the reader
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
             fallback = held and pr_rules.held_fallback('requested' in hits, False, False)
         if fallback == 'not-reviewed':
-            # A PR that requests the reviewer is never silent: the short note and the facts line (R33).
-            extra.update(fallback=fallback, held=held, held_gate=extra['gate'], decisions=0, items=0, cleared=0, blockers=0)
-            rv, body, comments = not_reviewed(pr, ci)
-            reasons = pr_format.gate_note(body)
-            extra['gate'] = sorted({r.split(':')[0] for r in reasons})
+            # A PR that requests the reviewer is never silent: the note, with its floor (R33).
+            codes = extra.get('held_gate') or extra['gate']
+            rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes,
+                                              ruleset.get('not_checked') or 'billing, plans, credits or pricing')
+            reasons = pr_format.gate(rv, idx, body, tree_lines(tree, [w['path'] for w in rv['decisions'][0].get('where') or []]),
+                                     pr.get('body') or '', [], comments)
+            extra.update(fallback=fallback, held=held, held_gate=codes, decisions=1, items=0, cleared=0,
+                         blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}))
+            if cfg['judge'] and not reasons:  # the reader test, for the log: the floor is never held by it
+                fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
+                extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
         if held:
             finish(cfg, key, dict(entry, head=pr['headRefOid']), held, extra)

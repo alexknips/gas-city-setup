@@ -70,6 +70,10 @@ MONEY = pr_format.not_checked_decision(
 # What the PR does and the rest of the diff, linked (R7, R30).
 SKIP = {'summary': 'Reminders now name the patient and log the message text.',
         'skip': [{'group': 'tests', 'paths': ['test/notify.test.ts']}]}
+# The note's floor (R33): why it was held, where, and who reviews it.
+FLOOR = pr_format.floor_decision(
+    [{'path': 'src/notify/send.ts', 'line_start': 13, 'line_end': 15, 'what': 'a message sent to people (SMS, email, push)'}],
+    'Author', "Our review of this PR didn't reach the quality bar: a second reader found our review too hard to act on.")
 # R37: a repository rule the digest found (synthetic).
 RULES = {'D1': {'rule': 'Never write patient data to logs or third-party messages.', 'area': 'patient data',
                 'path': 'AGENTS.md', 'line_start': 3, 'line_end': 3}}
@@ -334,9 +338,12 @@ CASES = {
         'expect': 'pass', 'rule': 'R33', 'route': 'held_fallback', 'want': 'not-checked-minimal',
         'args': {'requested': False, 'not_checked': True, 'gate_held': True}},
     'case45-not-reviewed-note': {
-        'expect': 'pass', 'note': pr_format.note('Reviewer', 'No CI ran · no merge conflict · open')},
-    'case46-not-reviewed-note-without-the-facts-line': {
-        'expect': 'fail', 'expect_reasons': ['R33'], 'note': pr_format.NOTE.format(name='Reviewer')},
+        'expect': 'pass', 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False, 'tree_lines': TREE,
+        'decisions': [FLOOR], 'blockers': NO_CI, 'facts': 'No CI ran · no merge conflict · open'},
+    # 2026-10-30 02:11Z (the mayor: a bare note "still forces Alex to read the PR"): the note keeps its floor.
+    'case46-note-without-its-decision': {
+        'expect': 'fail', 'expect_reasons': ['R33'], 'outcome': 'not-reviewed', 'diff': DIFF, 'items': [], 'model': False,
+        'decisions': [], 'blockers': NO_CI, 'facts': 'No CI ran · no merge conflict · open'},
     # 22:30Z (a COMMENT review said "Changes requested": the author sees a review that claims to block and
     # does not) and 23:09Z (the reviewer: "yes, we should use the formal github request changes"): the
     # word matches the event. R35.

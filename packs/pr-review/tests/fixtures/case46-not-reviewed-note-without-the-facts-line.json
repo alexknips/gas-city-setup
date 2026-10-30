@@ -1,7 +1,0 @@
-{
- "expect": "fail",
- "expect_reasons": [
-  "R33"
- ],
- "note": "**Not reviewed automatically.** Our review of this PR didn't reach the quality bar, so it has no automated review; Reviewer decides who reviews it."
-}

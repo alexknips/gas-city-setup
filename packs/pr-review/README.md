@@ -203,7 +203,8 @@ to its doc lines at that commit. `pr_digest.py --build REPO` builds it ahead of 
 
 **The money lines** (`pr_money.py`, R32). For a PR that touches billing, plans, credits or pricing, one
 call with no tools reads only those hunks and writes one neutral line per changed place (what it does to
-charges, credits, plans or limits; clipped at 30 words) and its kind. It runs apart from the review, so the money decision
+charges, credits, plans or limits; clipped at 30 words) and its kind, in calls of 20 places. A place
+that comes back without a line gets one more try, then keeps its link with "(not summarized)". It runs apart from the review, so the money decision
 keeps its lines even when the full review is held.
 
 `assets/checklist-health.md` is the default checklist for health-care code: HIPAA Security Rule
@@ -234,7 +235,7 @@ every review is the outcome word with the automated note (R28); line 2 says who 
 | `escalate` | one or more decisions only the reviewer can make (R16): at the level of goals and rules (R37), or a product, risk or compliance trade-off, each one question with lettered options, a recommendation with its reason and a link to the code at the head or the PR text; or the PR touches a not-checked area (R20, R32) | `**Needs you** · automated, Alex hasn't read this PR` / `Alex: N decisions. Nils: …` | COMMENT | "Needs you" |
 | `changes` | a change for the author, a merge conflict or failing checks | `**Changes requested** · …` / `Alex: nothing. Nils: 1 change, …` (`Changes suggested` with `PR_REVIEW_REQUEST_CHANGES=off`) | REQUEST_CHANGES with `PR_REVIEW_REQUEST_CHANGES=on` (R35), else COMMENT | "Changes requested" / "Changes suggested" |
 | `questions` | only questions for the author, or CI that did not run, was skipped or is still running | `**Questions** · …` / `Alex: nothing. Nils: 2 questions.` | COMMENT | "Questions for the author" |
-| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically.** Our review of this PR didn't reach the quality bar, so it has no automated review; Alex decides who reviews it.` (then the status line, nothing else) | COMMENT | "Not reviewed" |
+| `not-reviewed` | the PR requests the reviewer and its review was held twice (R33) | `**Not reviewed automatically** · …` / `Alex: 1 decision. Nils: …`, then why it was held, the linked places the rules know, and "Who reviews this PR before it merges?" with lettered options | COMMENT | "Not reviewed" |
 | `low-risk` | nothing for anyone: every flagged hunk cleared, CI passed, no conflict | `**Approved as low risk** · …` / `Nothing for Alex or Nils.` and "What was checked" collapsed (R36) (or `**Low risk**` with `PR_REVIEW_APPROVE=off` or short of the bar) | APPROVE under the bar (R27), else COMMENT | "Approved as low risk" / "Low risk" |
 
 Rule flags alone never route a PR to the reviewer: they tell the model where to look first, and the
@@ -333,11 +334,13 @@ one that cites it (R37). Case 67: a cleared entry that names a raw identifier (R
 conflict blocker that names and links its files (R22). Cases 63-66: the sweep lifts a block that rested on a conflict once it is
 fixed, keeps it while CI is red, sends a block on content to a review of the new head, and never loops
 on a held head (R35). Host-local cases 09-11: the mayor's 9a62c85 runs on three real PRs (two expected
-to fail; one passes with only the v5 format rules firing).
+to fail; one passes with only the v5 format rules firing). Host-local cases 12-13: the db9026d reruns (the
+bare note on a billing PR fails, R33; a questions review passes). Cases 45-46: the note with its floor
+passes, a note without its decision fails (R33).
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a
-held billing PR the minimal review, the note itself and a note without the facts line (R33); a COMMENT
+held billing PR the minimal review, the note with its floor and a note without its decision (R33); a COMMENT
 review that says "Changes requested" (fails) and a formal REQUEST_CHANGES review (passes) (R35). Cases 33-36: an approval with an uncleared flag,
 with CI not green, on a changed head (all fail, R27), and a clean one (passes).
 

@@ -34,9 +34,14 @@ SCHEMA = {
         'behaviour_in_skip': {'type': 'boolean', 'description': (
             'True when the "Safe to skip" line holds a change in product behaviour (what users, patients or '
             'staff see or get), which needs its own line or a decision.')},
-        'risky_cleared': {'type': 'array', 'maxItems': 12, 'items': {'type': 'integer', 'minimum': 1}, 'description': (
-            'The numbers (1 = the first) of the entries under "Checked and cleared" or "What was checked" that '
-            'describe a behaviour that could be a risk without saying why it is acceptable or intended.')},
+        'risky_cleared': {'type': 'array', 'maxItems': 12, 'description': (
+            'The entries under "Checked and cleared" or "What was checked" that describe a behaviour that could be '
+            'a risk without saying why it is acceptable or intended.'), 'items': {
+            'type': 'object', 'additionalProperties': False, 'required': ['n', 'question'], 'properties': {
+                'n': {'type': 'integer', 'minimum': 1, 'description': 'The entry number, 1 = the first.'},
+                'question': {'type': 'string', 'maxLength': 200, 'description': (
+                    'The one concrete check the author can answer about those lines, ending in "?", at most 25 '
+                    'words; never a stock question.')}}}},
         'decisions': {'type': 'integer', 'minimum': 0, 'maximum': 5, 'description': '0 = no decision for the reviewer (n/a)'},
         'problems': {'type': 'array', 'maxItems': 3, 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['what', 'fix'],
@@ -63,13 +68,14 @@ Score 1-5 (5 = best):
 6. useful: would this save {name} time compared with reading the PR himself, or is it empty or obvious?
 Then give at most 3 problems, each with a concrete fix. Last, list the cleared entries (numbered from 1,
 under "Checked and cleared" or "What was checked") that describe a behaviour that could be a risk
-without saying why it is acceptable or intended, and say whether the "Safe to skip" line holds a change
+without saying why it is acceptable or intended, each with the one concrete question its author should
+answer about those lines, and say whether the "Safe to skip" line holds a change
 in product behaviour (what users, patients or staff see or get).
 
 Required by the style guide, so never a problem and never counted against a score: line 1, the verdict
 with the note that it is automated and {name} hasn't read the PR; line 2, who acts; each item for
-{author} stated in the body AND as an inline comment on its exact line (the inline comment is its marker
-in GitHub's Files view, not a repetition); the "What it does" sentence; the "Safe to skip" line, the rest of the
+{author} as one line in the body that points at its inline comment, which carries the full text on the
+exact lines; the "What it does" sentence; the "Safe to skip" line, the rest of the
 diff by group with each file linked; the status line (CI, merge conflict, state), shown only when
 something did not pass; an approval's short form, two lines and a collapsed list of what was checked;
 and, when the PR touches billing, plans, credits or pricing, the decision on who confirms it, with one
@@ -122,7 +128,9 @@ def judge(cfg, body, comments, name, author):
     so, meta = ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_usd'])
     if so is None:
         return None, [], meta
-    meta['risky_cleared'] = sorted({int(x) for x in so.get('risky_cleared') or [] if isinstance(x, int)})
+    risky = {int(x['n']): (x.get('question') or '').strip() for x in so.get('risky_cleared') or []
+             if isinstance(x, dict) and isinstance(x.get('n'), int)}
+    meta['risky_cleared'], meta['risky_questions'] = sorted(risky), risky
     meta['behaviour_in_skip'] = bool(so.get('behaviour_in_skip'))
     return {d: so[d] for d in DIMS}, so.get('problems') or [], meta
 

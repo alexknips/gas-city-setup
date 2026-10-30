@@ -16,7 +16,7 @@ SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['lines']
         'properties': {'n': {'type': 'integer', 'minimum': 1},
                        'kind': {'type': 'string', 'enum': ['charges', 'credits', 'plans', 'limits', 'other']},
                        'what': {'type': 'string', 'maxLength': 200}}}}}}
-MAX_PLACES = 20  # places described (and linked one by one); a PR with more is rare
+MAX_PLACES = 20  # places per call; a PR with more gets more calls (every place gets its line)
 
 PROMPT = """Below are {count} changed places in a pull request that touch {words}. For each place, write
 ONE neutral sentence of at most 20 words saying what the change does to charges, credits, plans or
