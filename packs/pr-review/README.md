@@ -632,9 +632,20 @@ opened, his thumbs on the Slack link. Not review volume.
    page server keeps no log the pack reads). The text (replies, notes, what was delivered) stays in
    `PR_REVIEW_WORK_DIR/feedback` (mode 700); the state file holds counts. The week's numbers (delivered,
    thumbs, median minutes to the reviewer's own review, PRs merged before they looked, false alarms, gate
-   holds, approvals, and the reader test's median useful and markers over the delivered reviews) go to
-   `PR_REVIEW_PANEL`, a card on the quality pack's Today page. The same run gives the reader test to up
-   to `PR_REVIEW_JUDGE_PER_RUN` delivered reviews without scores (each is read once; about $0.02 each).
+   holds, approvals, and the reader test of what was posted) go to `PR_REVIEW_PANEL`, a card on the
+   quality pack's Today page. The same run gives the reader test to up to `PR_REVIEW_JUDGE_PER_RUN`
+   delivered reviews without scores (each is read once; about $0.02 each).
+   The reader row scores the body each review posted, matched by its review id to the last run that
+   posted or updated it: the audit's scores when the audit read it after that run, else that run's own
+   reader test (a fallback's log-only `fallback_judge`, a full review's `judge`). Full reviews and
+   fallbacks are counted apart (a full review passes the reader bar before it goes out, so its "below the
+   bar" is 0 unless the reader did not run). The PR's state entry is not a source: each run's fields merge
+   into it, so after a fallback its `judge` is the held attempt's and after a run that skipped the reader
+   an earlier run's (in week 44 that put 12 of 31 delivered reviews on the wrong scores, and all of the
+   card's "below the bar"). Blind spots, shown as "posted unscored": a fallback whose run already read a
+   repaired review (one extra reader call per run at most), a run that posted without the reader, and a
+   review no run row names. The audit does not read those whose entry still carries an older score.
+   `pr_feedback.py --summary` prints the weeks' numbers and the card, writing nothing.
 4. **Regression set**. Every thumbs-down or reply drops a candidate case (the delivered text and the
    feedback) into `PR_REVIEW_WORK_DIR/regression/inbox`. The weekly quality review triages each one: a
    new or sharper style-guide rule if the gate could have caught it, then the case moves to
