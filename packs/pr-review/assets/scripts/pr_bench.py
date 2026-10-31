@@ -5,7 +5,9 @@ on the repository's own history instead of claimed.
   pr_bench.py --mine REPO [--days 60] [--within 14]   cases and controls from git history, zero tokens
   pr_bench.py --run REPO [--cases 5] [--controls 5]   review a sample at their heads (nothing delivered), then score
   pr_bench.py --label REPO                            whether each case's later PR fixes a defect (capture off)
-  pr_bench.py --score REPO                            recall, a precision proxy, false alarms, cost per PR
+  pr_bench.py --score REPO [--ver V]                  recall, a precision proxy, false alarms, cost per PR
+  pr_bench.py --version-files                         the version and the files it hashes
+  pr_bench.py --selftest                              an edit to each file or setting that shapes a review changes it
 
 A CASE is a merged PR P whose added lines a later PR Q changed within `--within` days, where Q reads as a
 fix (its title says fix, bug, hotfix, revert, regression, ...; or it names P or P's ticket). Its labels
@@ -18,6 +20,7 @@ the review dict, its body, the gate's reasons, the flags and the diff), so `pr_f
 a run again with later code at zero tokens.
 """
 import argparse
+import ast
 import collections
 import datetime as dt
 import hashlib
@@ -264,20 +267,118 @@ def label(cfg, repo, limit=None):
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VERSIONED = ['pr_review.py', 'pr_format.py', 'pr_judge.py', 'pr_money.py', 'pr_digest.py', 'pr_context.py',
-             'pr_incremental.py',
-             '../style-guide.md']
+# The settings (pr_state.config keys) and environment that change what a review says. The files are found,
+# not listed (the mayor, 2026-10-31: a hand list missed the checklist, rules.toml and pr_rules.py).
+SHAPING = ('prompt', 'model', 'effort', 'max_turns', 'context', 'suggestions', 'incremental', 'voice', 'approve',
+           'request_changes', 'judge', 'judge_model', 'judge_max_turns', 'digest_model', 'digest_max_turns', 'reviewer')
+SHAPING_ENV = ('PR_REVIEW_REVIEWER_NAME', 'PR_REVIEW_NAMES')
 TOLERANCE = 3  # lines: an entry this close to a fixed line counts as pointing at it
 
 
-def version(cfg):
-    """The reviewer's version for the report: a hash of the files that shape a review, and the prompt it uses."""
-    flags = ('+context' if cfg.get('context') else '') + ('+suggestions' if cfg.get('suggestions') else '') + \
-        ('+incremental' if cfg.get('incremental') else '')
-    h = hashlib.sha256(((cfg.get('prompt') or 'security') + flags).encode())
-    for f in VERSIONED + ['../correctness-review.md', '../upstream/security-review.md']:
-        h.update(open(os.path.join(HERE, f), 'rb').read())
+def modules(root=HERE, start='pr_review'):
+    """The pack's modules a review loads: pr_review.py and what it imports from the scripts, transitively."""
+    seen, todo = set(), [start]
+    while todo:
+        m = todo.pop()
+        p = os.path.join(root, f'{m}.py')
+        if m in seen or not os.path.exists(p):
+            continue
+        seen.add(m)
+        for node in ast.walk(ast.parse(open(p).read())):
+            if isinstance(node, ast.Import):
+                todo += [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                todo.append(node.module)
+    return sorted(seen)
+
+
+def shaping_files(cfg, root=HERE):
+    """Every file that shapes a review, as {label: path}: the modules it loads, every file of the assets
+    outside the scripts (prompts, style guide, checklist, rules: inlined or consulted), and the configured
+    checklist and rules wherever they live."""
+    assets = os.path.dirname(root)
+    out = {f'scripts/{m}.py': os.path.join(root, f'{m}.py') for m in modules(root)}
+    for d, dirs, names in os.walk(assets):
+        dirs[:] = sorted(x for x in dirs if os.path.join(d, x) != root)
+        out.update({os.path.relpath(os.path.join(d, n), assets): os.path.join(d, n) for n in names})
+    inside = {os.path.realpath(p) for p in out.values()}
+    for k in ('checklist', 'rules'):
+        if cfg.get(k) and os.path.realpath(cfg[k]) not in inside:
+            out[f'config:{k}'] = cfg[k]
+    return out
+
+
+def version(cfg, root=HERE):
+    """The reviewer's version for the report: a hash of the settings and the files that shape a review."""
+    settings = {k: cfg.get(k) for k in SHAPING} | {k: os.environ.get(k) for k in SHAPING_ENV}
+    settings['prompt'] = settings['prompt'] or 'security'
+    h = hashlib.sha256(json.dumps(settings, sort_keys=True, default=str).encode())
+    for label, path in sorted(shaping_files(cfg, root).items()):
+        data = open(path, 'rb').read()
+        h.update(f'\0{label}\0{len(data)}\0'.encode() + data)
     return h.hexdigest()[:10]
+
+
+def selftest():
+    """An edit to each file or setting that shapes a review changes the version; other scripts don't."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix='pr-bench-selftest-')
+    names = os.environ.get('PR_REVIEW_NAMES')
+    try:
+        assets = os.path.join(tmp, 'assets')
+        shutil.copytree(os.path.dirname(HERE), assets, ignore=shutil.ignore_patterns('__pycache__'))
+        root = os.path.join(assets, 'scripts')
+        cfg = dict(pr_state.config(), checklist=os.path.join(assets, 'checklist-health.md'),
+                   rules=os.path.join(assets, 'rules.toml'))
+        base = version(cfg, root)
+        files = shaping_files(cfg, root)
+        must = ['checklist-health.md', 'rules.toml', 'style-guide.md', 'correctness-review.md',
+                'upstream/security-review.md', 'scripts/pr_review.py', 'scripts/pr_rules.py', 'scripts/pr_followup.py',
+                'scripts/pr_fallback.py', 'scripts/pr_format.py', 'scripts/pr_state.py', 'scripts/pr_judge.py']
+        checks = {'the files include ' + ', '.join(must): all(m in files for m in must),
+                  'the version is stable': version(cfg, root) == base}
+        moved = []
+        for label, path in sorted(files.items()):
+            data = open(path, 'rb').read()
+            with open(path, 'ab') as f:
+                f.write(b'\n')
+            if version(cfg, root) == base:
+                moved.append(label)
+            with open(path, 'wb') as f:
+                f.write(data)
+        checks[f'an edit to each of the {len(files)} files changes the version'] = not moved and version(cfg, root) == base
+        for name in ('pr_bench.py', 'pr_sweep.py', 'pr_hygiene.py'):
+            with open(os.path.join(root, name), 'a') as f:
+                f.write('\n')
+        checks['an edit to a script no review loads (bench, sweep, hygiene) keeps it'] = version(cfg, root) == base
+        same = [k for k in SHAPING if version(dict(cfg, **{k: _other(cfg.get(k))}), root) == base]
+        checks[f'a change to each of the {len(SHAPING)} settings changes it'] = not same
+        os.environ['PR_REVIEW_NAMES'] = os.environ.get('PR_REVIEW_NAMES', '') + ' selftest=Selftest'
+        checks['so does the names mapping'] = version(cfg, root) != base
+        own = os.path.join(tmp, 'own-checklist.md')
+        shutil.copy(cfg['checklist'], own)
+        cfg2 = dict(cfg, checklist=own)
+        v2 = version(cfg2, root)
+        with open(own, 'a') as f:
+            f.write('\n')
+        checks['a checklist configured outside the pack counts too'] = 'config:checklist' in shaping_files(cfg2, root) \
+            and version(cfg2, root) != v2
+        for k, v in checks.items():
+            print('ok  ' if v else 'FAIL', k)
+        if moved or same:
+            print('unchanged by an edit:', ', '.join(moved + same))
+        return all(checks.values())
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if names is None:
+            os.environ.pop('PR_REVIEW_NAMES', None)
+        else:
+            os.environ['PR_REVIEW_NAMES'] = names
+
+
+def _other(v):
+    return (not v) if isinstance(v, bool) else v + 1 if isinstance(v, int) else f'{v or ""}-other'
 
 
 def paths(cfg, repo, ver=None):
@@ -502,16 +603,24 @@ def main():
     ap.add_argument('--cases', type=int, default=5)
     ap.add_argument('--controls', type=int, default=5)
     ap.add_argument('--limit', type=int, help='--label: an even sample of this many cases')
+    ap.add_argument('--ver', help="--score: an earlier version's results (the version names its results file)")
+    ap.add_argument('--version-files', action='store_true', help="the version and the files it hashes")
+    ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
+    if a.selftest:
+        sys.exit(0 if selftest() else 1)
     cfg = pr_state.config()
-    if a.mine:
+    if a.version_files:
+        print(version(cfg))
+        print('\n'.join(sorted(shaping_files(cfg))))
+    elif a.mine:
         mine(cfg, a.mine, a.days, a.within)
     elif a.run:
         run(cfg, a.run, a.cases, a.controls)
     elif a.label:
         label(cfg, a.label, a.limit)
     elif a.score:
-        score(cfg, a.score, version(cfg))
+        score(cfg, a.score, a.ver or version(cfg))
     else:
         print(__doc__)
 

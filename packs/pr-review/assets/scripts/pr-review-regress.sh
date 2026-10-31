@@ -16,6 +16,8 @@ python3 "$here/pr_review.py" --selftest > /dev/null || { echo 'pr_review selftes
 python3 "$here/pr_fallback.py" --selftest > /dev/null || { echo 'pr_fallback selftest: FAIL'; rc=1; }
 python3 "$here/pr_followup.py" --selftest > /dev/null || { echo 'pr_followup selftest: FAIL'; rc=1; }
 python3 "$here/pr_incremental.py" --selftest > /dev/null || { echo 'pr_incremental selftest: FAIL'; rc=1; }
+# The benchmark's version changes with every file and setting that shapes a review (the mayor, 2026-10-31).
+python3 "$here/pr_bench.py" --selftest > /dev/null || { echo 'pr_bench selftest: FAIL'; rc=1; }
 # Host-local: no public file names a town person or repository (skipped without the town overrides).
 python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
 exit $rc

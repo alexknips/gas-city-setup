@@ -677,8 +677,15 @@ sample of the defects and the controls at their heads with the shipped pipeline 
 resumable, a spend cap) and `--score REPO` reports recall, recall on labelled defects, a precision proxy
 (entries on the fixed lines over all entries), controls with a change ask, and cost per PR, per
 version. The run also keeps the model's own entries with their confidence, so `by_confidence` scores the
-same run at the bars 8 (what the script posts), 9 and 10. The version hashes the files that shape a review
-and the settings `PR_REVIEW_PROMPT`, `PR_REVIEW_CONTEXT`, `PR_REVIEW_SUGGESTIONS` and `PR_REVIEW_INCREMENTAL`. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
+same run at the bars 8 (what the script posts), 9 and 10. The version hashes every file that shapes a
+review, found rather than listed: `pr_review.py` and every script it imports, transitively; every file of
+`assets/` outside the scripts (prompts, style guide, checklist, rules); and the configured
+`PR_REVIEW_CHECKLIST` and `PR_REVIEW_RULES` wherever they live. It also hashes the settings that change
+what a review says (prompt, models, effort, turns, context, suggestions, incremental, voice, approve,
+request changes, the reader, the reviewer and the names). It errs on the safe side: the client channel's
+script is imported, so an edit there makes a new version too. `--version-files` prints the version and
+its files; `--selftest` checks that an edit to each file and setting changes it and an edit to the bench,
+sweep or hygiene script does not. `--score REPO --ver V` scores an earlier version's results. Everything it reads and writes is the repository's text: `PR_REVIEW_WORK_DIR/bench`, mode 700.
 Each review a run makes is kept whole next to its results (`<repo>-reviews-<version>.jsonl`, the same rows
 as `feedback/held.jsonl`), so `pr_format.py --regate` gates a run again with later code at zero tokens.
 
