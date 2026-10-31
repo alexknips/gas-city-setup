@@ -651,6 +651,9 @@ def self_answered(items, ns, flagged=(), idx=None):
 # any other reason (coverage, plain words, a comment link, the reader test) still falls back.
 REPAIRABLE = {
     'R13': re.compile(r'^R13: item (\d+) is a question but its ask does not end with a question mark$'),
+    # A cleared entry that names no flag at all clears no flagged hunk: the second answer adds them after a
+    # reader hold (2026-10-30, 3 of 3 such holds); dropped, never one that names a wrong flag.
+    'R19': re.compile(r"^R19: cleared entry (\d+) names flag (?:''|None), which is not one of the flagged hunks$"),
     'R36': re.compile(r'^R36: cleared entry (\d+) repeats cleared entry \d+$'),
     'R37': re.compile(r"^R37: (decision|item|cleared entry) (\d+) cites rule .+, which is not in the repository's digest$"),
 }
@@ -664,19 +667,20 @@ def format_only(reasons):
 
 def repair(rv, reasons):
     """The review with what format_only() reasons name made right from its own parts: a question's ask ends
-    in "?" (R13), a cleared entry that repeats an earlier one is dropped (R36), the citation of a rule the
-    digest does not hold is dropped (R37). The caller gates the result again. Returns (rv, rule ids)."""
+    in "?" (R13), a cleared entry that names no flag (R19) or repeats an earlier one (R36) is dropped, the
+    citation of a rule the digest does not hold is dropped (R37). The caller gates the result again.
+    Returns (rv, rule ids)."""
     rv = dict(rv, **{g: [dict(x) for x in rv.get(g) or []] for g in REPAIR_GROUP.values()})
     drop, fixed = set(), set()
     for r in reasons:
-        m13, m36, m37 = (REPAIRABLE[k].match(r) for k in ('R13', 'R36', 'R37'))
+        m13, m19, m36, m37 = (REPAIRABLE[k].match(r) for k in ('R13', 'R19', 'R36', 'R37'))
         if m13:
             it = rv['items'][int(m13.group(1)) - 1]
             it['ask'] = (it.get('ask') or '').rstrip().rstrip('.!:;') + '?'
             fixed.add('R13')
-        elif m36:
-            drop.add(int(m36.group(1)) - 1)
-            fixed.add('R36')
+        elif m19 or m36:
+            drop.add(int((m19 or m36).group(1)) - 1)
+            fixed.add('R19' if m19 else 'R36')
         elif m37:
             rv[REPAIR_GROUP[m37.group(1)]][int(m37.group(2)) - 1]['rule'] = ''
             fixed.add('R37')

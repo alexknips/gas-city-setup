@@ -538,7 +538,9 @@ field's budget with its count now ("3 to 6 words, it has 7") and the entries' ow
 fields are taken from its answer. It gives up to three versions of each field, best first, and the script
 takes the first that passes the field's own checks: the model does not count words reliably (v5.8.3: the
 first live turns came back at 7 words for a 3-6 word field and 21 and 27 words for a 20-word ask). Then the script makes right what
-it can from the parts: a question's ask without its question mark (R13), a cleared entry that repeats an
+it can from the parts: a question's ask without its question mark (R13), a cleared entry that names no flag
+at all (R19: the second answer after a reader hold added them on a PR with no flagged hunk, 3 of 3 such holds
+on 2026-10-30; one naming a flag the PR does not have still holds), a cleared entry that repeats an
 earlier one (R36), the citation of a rule the digest does not hold (R37). The log has `rewritten`,
 `repaired` and `repair_held` (what still held it). A content reason (R19 coverage, the reader test) still
 falls back, and a held run logs `held_by: format` or `content` (the Today card's fallback split, with the

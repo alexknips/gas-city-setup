@@ -778,6 +778,17 @@ CASES = {
         'body_re': [r"^\*\*Not reviewed automatically\*\* · automated, Reviewer hasn't read this PR$",
                     r'^Reviewer: nothing\. Author: 3 questions\.$', r"^Our review of this PR didn't reach the quality bar"],
         'body_not_re': [r'nothing needed from me']},
+    # The second answer after a reader hold adds cleared entries that name no flag on a PR with no flagged hunk
+    # (2026-10-30: 3 of 3 such holds, all held by R19 alone): dropped by the repair, then gated again. A cleared
+    # entry naming a flag that is not one of the PR's is still a content reason.
+    'case131-repair-cleared-entries-naming-no-flag': {
+        'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [], 'items': [QUESTION],
+        'cleared': [dict(CLEARED, flag=''), dict(CLEARED, flag='', line_start=16, line_end=16,
+                                                 change='Reminder returns before queueing')],
+        'repair': ['R19'], **SKIP},
+    'case132-cleared-entry-naming-a-wrong-flag-stays-held': {
+        'expect': 'fail', 'expect_reasons': ['R19'], 'only_reasons': ['R19'], 'outcome': 'questions', 'derived': True,
+        'diff': DIFF, 'flagged': [], 'items': [QUESTION], 'cleared': [dict(CLEARED, flag='F9')], 'repair': [], **SKIP},
     'case103-restamp-v3': {
         'expect': 'fail', 'expect_reasons': ['R3'], 'only_reasons': ['R3', 'R7', 'R10', 'R22', 'R1', 'R8', 'R23', 'R30'],
         'voice': 'reviewer', 'outcome': 'questions', 'n_items': 0,
