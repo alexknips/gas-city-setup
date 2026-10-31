@@ -5,6 +5,9 @@
 # then the Today page from it: what waits on the human, who clears the rest, health, trend, cost.
 # orders/quality-review.toml writes the week's facts and, when QUALITY_REVIEW_AGENT is set, slings
 # formulas/mol-quality-review.toml: one agent proposes one config change by mail and applies nothing.
+# orders/quality-patrol-gate.toml (off by default) wakes a patrol seat only when there is something to
+# find: a witness for a census stop it clears or a heartbeat, Enter on gc's own stuck prompt, the deacon
+# for dialogs and the disk (no agents, no tokens; assets/scripts/patrols.py measures what patrols cost).
 # Reads beads, GitHub (gh), the city event log and the agents' transcripts; no core changes.
 [pack]
 name = "quality"
