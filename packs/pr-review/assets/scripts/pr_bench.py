@@ -32,6 +32,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pr_format  # noqa: E402
 import pr_judge  # noqa: E402
 import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
@@ -405,18 +406,7 @@ def anchors(rv):
     return out
 
 
-def raw_anchors(model):
-    """The model's own entries before the script's confidence bar, with their confidence, so one run scores
-    precision at stricter bars too: (path, start, end, kind, confidence)."""
-    if not model:
-        return None
-    out = [(i['path'], i['line_start'], i['line_end'], i['kind'], i['confidence'])
-           for i in model.get('items') or [] if i.get('side', 'new') == 'new']
-    for d in model.get('decisions') or []:
-        ln = d.get('link') or {}
-        if ln.get('kind') == 'code' and ln.get('path') and ln.get('line_start'):
-            out.append((ln['path'], ln['line_start'], ln.get('line_end') or ln['line_start'], 'decision', d['confidence']))
-    return out
+raw_anchors = pr_format.raw_anchors  # shared with the eval rows (pr_review.py, gcs-71c)
 
 
 def run(cfg, repo, n_cases, n_controls):

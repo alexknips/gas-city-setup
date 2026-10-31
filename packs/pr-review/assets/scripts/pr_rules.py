@@ -38,7 +38,7 @@ BUILTIN = {
 }
 
 PR_FIELDS = """
-  number url title state isDraft createdAt updatedAt mergedAt closedAt
+  number url title state isDraft createdAt updatedAt mergedAt closedAt headRefName
   author { login }
   additions deletions changedFiles body
   headRefOid baseRefName baseRefOid mergeable
@@ -318,7 +318,55 @@ def followup_push(old, head):
     return old.get('head') != head
 
 
-ACTIVITY_Q = """query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
+# Eval PRs (gcs-71c; the mayor, 2026-10-30 23:53Z): test PRs a red team opens as drafts, titled
+# '[review-test] DO NOT MERGE: <title>' on branches 'review-test/<case>'. They are reviewed by hand only, and
+# the review never sees the test marker.
+EVAL_BRANCH = os.environ.get('PR_REVIEW_EVAL_BRANCH', 'review-test/')
+EVAL_TITLE = re.compile(os.environ.get('PR_REVIEW_EVAL_TITLE', r'(?i)^\s*\[review-test\]\s*(do not merge\s*:?\s*)?'))
+EVAL_LINE = re.compile(os.environ.get('PR_REVIEW_EVAL_LINE', r'(?i)\breview[- _]?test\b|\bdo not merge\b'))
+
+
+def eval_case(pr):
+    """An eval PR's case id: its branch after the prefix ('?' when only the title carries the marker); else None."""
+    branch = (pr or {}).get('headRefName') or ''
+    if EVAL_BRANCH and branch.startswith(EVAL_BRANCH):
+        return branch[len(EVAL_BRANCH):] or '?'
+    return '?' if EVAL_TITLE.pattern and EVAL_TITLE.match((pr or {}).get('title') or '') else None
+
+
+def unmarked(pr):
+    """The PR as the review sees it: an eval PR without its test marker (the title's prefix and every line of the
+    description that names the test, with the separator left above it) and with `eval` = its case id. Any
+    other PR is returned as it is, so its prompt is unchanged."""
+    case = eval_case(pr)
+    if not case:
+        return pr
+    lines = [ln for ln in (pr.get('body') or '').splitlines() if not EVAL_LINE.search(ln)]
+    while lines and lines[-1].strip() in ('', '---', '***', '___'):
+        lines.pop()
+    return dict(pr, title=EVAL_TITLE.sub('', pr.get('title') or '', count=1), body='\n'.join(lines), eval=case)
+
+
+def unmarked_commits(commits):
+    """The commit list (`<sha> <subject>` lines) without the test marker: the title prefix goes, a subject that
+    still names the test goes whole."""
+    out = []
+    for ln in commits.splitlines():
+        sha, _, subject = ln.partition(' ')
+        subject = EVAL_TITLE.sub('', subject, count=1)
+        if not EVAL_LINE.search(subject):
+            out.append(f'{sha} {subject}')
+    return '\n'.join(out) + ('\n' if commits.endswith('\n') and out else '')
+
+
+def marked(texts):
+    """Whether any text carries the test marker (the branch prefix's word): an eval review must never mention
+    it. The review's own words "do not merge" are no marker: the model never saw the title."""
+    token = EVAL_BRANCH.strip('/').lower()
+    return bool(token) and any(token in (t or '').lower() for t in texts)
+
+
+ACTIVITY_Q ="""query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
   author { login }
   reviews(last: 50) { nodes { databaseId author { login } submittedAt } }
   comments(last: 50) { nodes { databaseId author { login } createdAt } }

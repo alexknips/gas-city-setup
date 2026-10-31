@@ -35,6 +35,7 @@ OUTCOMES = {
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_WORK = '/var/tmp/gc-pr-review'
 
 
 def config():
@@ -48,7 +49,14 @@ def config():
     mode = e('PR_REVIEW_MODE', 'shadow')
     if mode not in ('shadow', 'live'):
         raise SystemExit(f'PR_REVIEW_MODE must be shadow or live, not {mode!r}')
+    work = e('PR_REVIEW_WORK_DIR') or DEFAULT_WORK
     return {
+        # gcs-71c: eval PRs, reviewed by hand in their own work dir and state; 'none' delivers nothing (the
+        # mayor, 2026-10-31 00:18Z: until the reviewer picks), 'comment' one COMMENT on the draft.
+        'eval_deliver': 'comment' if e('PR_REVIEW_EVAL_DELIVER', 'none') == 'comment' else 'none',
+        'eval_work': e('PR_REVIEW_EVAL_WORK_DIR') or os.path.join(work, 'eval'),
+        'eval_out': e('PR_REVIEW_EVAL_OUT_DIR') or os.path.join(work, 'redteam', 'eval'),
+        'eval_run': e('PR_REVIEW_EVAL_RUN', ''),
         'city': city,
         'on': e('PR_REVIEW', 'off') == 'on',
         'mode': mode,
@@ -63,7 +71,7 @@ def config():
         'lookback_h': float(e('PR_REVIEW_LOOKBACK_H', '2')),
         'ci_wait_h': float(e('PR_REVIEW_CI_WAIT_H', '3')),
         'state': e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'),
-        'work': e('PR_REVIEW_WORK_DIR') or '/var/tmp/gc-pr-review',
+        'work': work,
         'keep_days': int(e('PR_REVIEW_KEEP_DAYS', '30')),  # whole reviews kept host-local (held, bench)
         'max_load': float(e('PR_REVIEW_MAX_LOAD', '15')),
         'beads': e('PR_REVIEW_BEADS', 'on') == 'on',

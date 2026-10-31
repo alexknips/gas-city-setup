@@ -215,6 +215,9 @@ def sweep(cfg, dry):
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
             continue
+        if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, even out of draft
+            counts['eval'] += 1
+            continue
         block = pr_rules.formal_block(old, pr['headRefOid'], pr.get('mergeable'), pr_rules.ci_state(pr))
         again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer'])) or \
             block == 'review'  # our block rested on content: the new head gets a review
@@ -471,7 +474,7 @@ def selftest():
     fails += selftest_followups()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {12 - len(fails)} of 12')
+    print(f'pr_sweep selftest: {13 - len(fails)} of 13')
     return 1 if fails else 0
 
 
@@ -483,13 +486,15 @@ def selftest_followups():
     a40, b40, t = 'a' * 40, 'b' * 40, pr_state.now()
     now = pr_state.iso(t)
     prs = {1: {'head': b40, 'ci': 'pending'}, 2: {'head': a40, 'ci': 'green'}, 3: {'head': a40, 'ci': 'green'},
-           4: {'head': a40, 'ci': 'green', 'requested': True}}
+           4: {'head': a40, 'ci': 'green', 'requested': True},
+           5: {'head': a40, 'ci': 'green', 'requested': True, 'branch': 'review-test/c1'},  # gcs-71c: out of draft
+           6: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True}}
 
     def fake(n):
         p = prs[n]
-        return {'number': n, 'url': f'https://github.com/o/r/pull/{n}', 'state': 'OPEN', 'isDraft': False,
+        return {'number': n, 'url': f'https://github.com/o/r/pull/{n}', 'state': 'OPEN', 'isDraft': bool(p.get('draft')),
                 'headRefOid': p['head'], 'updatedAt': now, 'mergeable': 'MERGEABLE', 'createdAt': now, 'mergedAt': None,
-                'baseRefName': 'main'}
+                'baseRefName': 'main', 'headRefName': p.get('branch') or f'topic-{n}'}
 
     def fake_record(cfg, repo, pr, files, ruleset, area_of, heads):
         p = prs[pr['number']]
@@ -549,6 +554,8 @@ def selftest_followups():
         fails.append('a PR that requests the reviewer enters the queue')
     if second['o/r#2'].get('followup') != 'answer' or second['o/r#2'].get('status') != 'queued':
         fails.append('a queued follow-up is not queued twice or lost by the next sweep')
+    if 'o/r#5' in second or 'o/r#6' in second:
+        fails.append('a draft, and an eval PR out of draft, stay out of the queue and get no bead (gcs-71c)')
     return fails
 
 

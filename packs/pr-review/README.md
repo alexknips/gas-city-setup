@@ -94,6 +94,13 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW_WORK_DIR` | `/var/tmp/gc-pr-review` | Bare blob-less mirrors and per-review worktrees: the repositories' code. Mode 700, outside the town runtime, and not under `/home`, `/data` or `/tmp`, which the review model may not read. |
 | `PR_REVIEW_BEADS` | `on` | `off` skips the beads (tests). |
 | `PR_REVIEW_MAX_LOAD` | `15` | Above this 1-minute load average a run skips and logs. |
+| `PR_REVIEW_EVAL_BRANCH` | `review-test/` | A PR whose head branch starts with this is an eval PR ([Eval PRs](#eval-prs)); the rest of the branch is its case id. |
+| `PR_REVIEW_EVAL_TITLE` | `(?i)^\s*\[review-test\]\s*(do not merge\s*:?\s*)?` | The title prefix of an eval PR (a regex), cut before the review sees the title. A title that matches it marks an eval PR too (case `?`). |
+| `PR_REVIEW_EVAL_LINE` | `(?i)\breview[- _]?test\b\|\bdo not merge\b` | The lines of an eval PR's description (and its commit subjects) that name the test; they are cut before the review sees them. |
+| `PR_REVIEW_EVAL_DELIVER` | `none` | What an eval run delivers: `none` posts nothing and keeps no state; `comment` posts one COMMENT on the draft and keeps the eval state, so the follow-ups work. |
+| `PR_REVIEW_EVAL_WORK_DIR` | `<work dir>/eval` | An eval run's own work dir: mirrors, runs, kept reviews and its state (`state/`). The live state and stores never see a test PR. |
+| `PR_REVIEW_EVAL_OUT_DIR` | `<work dir>/redteam/eval` | Where the eval rows go: `<run>.jsonl`, mode 600, one row per run on a head. |
+| `PR_REVIEW_EVAL_RUN` | the pack's commit | The default `<run>` (`--eval-run NAME` per call). |
 
 ## The client's Slack
 
@@ -433,6 +440,52 @@ half answered, all answered and approved, an answered money fallback; a client l
 the queue knob) and the `case-fu-*` fixtures: a push after each outcome kind, a held head, a force-push, an answer in
 a thread, as a PR comment, a resolved thread, our own reply ignored, a second round, the same batch once, the round
 cap and after it, the queue knob, and the never-silent note.
+
+## Eval PRs
+
+A red team tests the review with draft PRs titled `[review-test] DO NOT MERGE: <title>` on branches
+`review-test/<case>`, opened under the reviewer's own login (gcs-71c; the mayor, 2026-10-30 23:53Z and
+2026-10-31 00:18Z). They are reviewed by hand with the pinned pack, never through the queue or the sweep:
+
+    pr_review.py --eval REPO#N [--eval-run NAME]   the shipped review; again after a push: the push follow-up
+    pr_review.py --followup REPO#N                 on an eval PR: the follow-up on the author's answers
+
+`--pr`, `--rereview`, `--no-deliver --pr` and `--followup` on an eval PR take the same path (`--no-deliver`:
+delivery `none`). A PR without the marker is refused. Zero tokens beyond the review itself.
+
+- **Its own instance.** An eval run uses `PR_REVIEW_EVAL_WORK_DIR` for its mirrors, runs, kept reviews and
+  state, so the live queue, `prs.json`, the run log and the stores never see a test PR. No Slack link, no client
+  entry, no bead. The sweep skips drafts, and skips an eval PR even out of draft; a test PR that reaches the
+  live run anyway is finished as `eval-skipped` without a review.
+- **Delivery** (`PR_REVIEW_EVAL_DELIVER`, until the reviewer picks): `none` posts nothing and keeps no state;
+  `comment` posts one COMMENT on the draft and keeps the eval state, so a push or an answer gets its follow-up
+  as on any other PR.
+- **One COMMENT, the intended event kept.** GitHub refuses APPROVE and REQUEST_CHANGES on your own PR, so on a
+  PR whose author is `PR_REVIEW_REVIEWER`, and on every eval PR, the review goes out as COMMENT. Line 1 stays
+  as rendered (an approval still says so and still has to pass the bar); `intended_event` keeps the event.
+  This holds for any PR the reviewer opened, eval or not.
+- **As a requested PR.** An eval PR is reviewed as one that requests the reviewer (R34), as every PR the live
+  run reviews under `PR_REVIEW_QUEUE=requested` is: the model reviews it even with red CI and no rule.
+- **Blind to the test.** Before the prompt, the rules and the gate, the title loses its prefix, the
+  description loses every line that names the test (and a separator left above it), and the commit list
+  loses the prefix and any subject that still names it. The reader test reads only our review. A review of
+  an eval PR that still names the test is held (`held-marker`). Any other PR passes through as it is, so its
+  prompt is byte-identical. The model has no git tool and the mirrors are denied (below), so commit message
+  bodies stay out too.
+- **The rows** (`PR_REVIEW_EVAL_OUT_DIR/<run>.jsonl`, mode 600, `PR_REVIEW_KEEP_DAYS`): one per run on a head,
+  with the benchmark's kept-review fields (`pr`, `head`, `rv`, `body`, `reasons`, `flagged`, `pr_text`,
+  `diff`), `case`, `deliver`, `outcome`, `extra` (the run log's fields, the model's checks included), `raw`
+  (the model's own entries with their confidence, as the benchmark scores them) and `pack_sha` with
+  `pack_dirty`. A held review's row has the held answer and the reasons that held it.
+- **Follow-ups.** On the reviewer's own PR every post has the same login, so our follow-up replies and lines
+  are told from the author's answers by their recorded ids (`our_posts`) and our reviews by their marker.
+
+Every review, eval or not, may read nothing of the work dirs but its own run: every other store (mirrors, kept
+reviews, the benchmark, the red team's files, the eval instance, other runs; the default
+`/var/tmp/gc-pr-review` included) is in its deny rules (`store_denies`), next to `DENY_ROOTS`.
+
+Checked by `pr_review.py --selftest` (cases (1)-(5) with GitHub, Slack, the client runner and the model
+stubbed) and `pr_sweep.py --selftest` (a draft and an eval PR out of draft stay out of the queue).
 
 ## Outcomes
 

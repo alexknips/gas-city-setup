@@ -82,7 +82,17 @@ def login(n):
     return (((n or {}).get('author') or {}).get('login') or '').lower()
 
 
-def threads_of(pr, us, asks, our_reviews=()):
+def who(c, us, author, our_posts=()):
+    """Who wrote a comment: 'we', 'author' or 'someone'. On a PR whose author is the reviewer (gcs-71c), ours
+    are the posts we recorded (`our_posts`) and every other post of that login is the author's."""
+    if c.get('databaseId') in our_posts:
+        return 'we'
+    if login(c) == author:
+        return 'author'
+    return 'we' if login(c) == us else 'someone'
+
+
+def threads_of(pr, us, asks, our_reviews=(), our_posts=()):
     """{ask id: {'comment': our first comment's id, 'replies': [(who, text)], 'resolved': bool}}: the thread
     our review opened on each item's lines (the inline comment sits on its last line)."""
     us, out = (us or '').lower(), {}
@@ -98,18 +108,20 @@ def threads_of(pr, us, asks, our_reviews=()):
             if a['kind'] == 'item' and a['id'] not in out and cs[0].get('path') == it.get('path') and \
                     cs[0].get('originalLine') == it.get('line_end'):
                 out[a['id']] = {'comment': cs[0].get('databaseId'), 'resolved': bool(t.get('isResolved')),
-                                'replies': [('we' if login(c) == us else 'author' if login(c) == login(pr) else 'someone',
-                                             (c.get('body') or '')[:MAX_TEXT]) for c in cs[1:]]}
+                                'replies': [(who(c, us, login(pr), our_posts), (c.get('body') or '')[:MAX_TEXT])
+                                            for c in cs[1:]]}
     return out
 
 
-def others_of(pr, us, since):
-    """The author's PR comments and review bodies after `since`, oldest first (texts, host-local)."""
+def others_of(pr, us, since, our_posts=()):
+    """The author's PR comments and review bodies after `since`, oldest first (texts, host-local). On the
+    reviewer's own PR (gcs-71c) our recorded posts and our reviews are left out, the rest is the author's."""
     author, out = login(pr), []
     for kind, when in (('comments', 'createdAt'), ('reviews', 'submittedAt')):
         for c in (pr.get(kind) or {}).get('nodes') or []:
             t = c.get(when) or ''
-            if login(c) == author and author != (us or '').lower() and (not since or t > since) and (c.get('body') or '').strip():
+            if login(c) == author and (not since or t > since) and (c.get('body') or '').strip() and (
+                    author != (us or '').lower() or (c.get('databaseId') not in our_posts and not pr_format.is_ours(c['body']))):
                 out.append((t, c['body'][:MAX_TEXT]))
     return [b for _, b in sorted(out)][-MAX_COMMENTS:]
 

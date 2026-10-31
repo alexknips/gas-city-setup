@@ -756,6 +756,20 @@ def apply_rewrite(rv, asks, answer, clean=lambda t: t):
     return rv, n
 
 
+def raw_anchors(model):
+    """The model's own entries before the script's confidence bar, with their confidence, so one run scores
+    precision at stricter bars too: (path, start, end, kind, confidence). The benchmark and the eval rows."""
+    if not model:
+        return None
+    out = [(i['path'], i['line_start'], i['line_end'], i['kind'], i['confidence'])
+           for i in model.get('items') or [] if i.get('side', 'new') == 'new']
+    for d in model.get('decisions') or []:
+        ln = d.get('link') or {}
+        if ln.get('kind') == 'code' and ln.get('path') and ln.get('line_start'):
+            out.append((ln['path'], ln['line_start'], ln.get('line_end') or ln['line_start'], 'decision', d['confidence']))
+    return out
+
+
 def first_item(rv):
     """The number of the first item in the body: the author's own decisions come before the items."""
     return len(split(rv.get('decisions') or [])[1]) + 1

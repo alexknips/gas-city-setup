@@ -182,6 +182,28 @@ SCHEMA = {
 DENY_ROOTS = ['//home/**', '//root/**', '//etc/**', '//proc/**', '//sys/**', '//run/**', '//data/**', '//tmp/**',
               '//mnt/**', '//srv/**', '//opt/**', '//var/lib/**', '//var/log/**', '//var/backups/**',
               '//var/mail/**', '//var/spool/**', '//usr/local/etc/**']
+# The work dir's stores, named even before they exist (the mayor, 2026-10-31 00:18Z: belt and braces).
+STORES = ('mirrors', 'runs', 'feedback', 'regression', 'bench', 'digest', 'gaps', 'client-slack', 'redteam', 'eval',
+          'state')
+
+
+def store_denies(roots, own):
+    """Deny rules for every store of the work dirs (`roots`) but this run's own dir: the mirrors, kept reviews,
+    the benchmark, the red team's files, the eval runs and every other run. At each level on the way down to
+    `own` every sibling is denied; a root `own` is not under is denied whole."""
+    own, out = os.path.realpath(own), []
+    for root in dict.fromkeys(os.path.realpath(r) for r in roots if r):
+        if not own.startswith(root + os.sep):
+            out.append(f'/{root}/**')
+            continue
+        d = root
+        while d != own:
+            step = own[len(d) + 1:].split(os.sep)[0]
+            names = set(os.listdir(d)) if os.path.isdir(d) else set()
+            for name in sorted((names | (set(STORES) if d == root else set())) - {step}):
+                out += [f'/{os.path.join(d, name)}/**', f'/{os.path.join(d, name)}']
+            d = os.path.join(d, step)
+    return out
 
 FINAL = """START ANALYSIS:
 
@@ -425,8 +447,10 @@ def clean(text):
 def run_model(cfg, tree, ctx, prompt, answer_schema=None, max_turns=None):
     """The headless review (`answer_schema`: another answer in the same sandbox, the follow-up's). Returns
     (structured output or None, meta with cost and counts)."""
+    roots = [cfg['work'], cfg.get('live_work'), pr_state.DEFAULT_WORK]
     settings = {'disableAllHooks': True,
-                'permissions': {'deny': [f'{t}({p})' for p in DENY_ROOTS for t in ('Read', 'Grep', 'Glob')]}}
+                'permissions': {'deny': [f'{t}({p})' for p in DENY_ROOTS + store_denies(roots, os.path.dirname(ctx))
+                                         for t in ('Read', 'Grep', 'Glob')]}}
     keep = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
     env = {k: v for k, v in os.environ.items() if k in keep}
     env.update(LOOMTRACER_INGEST_DISABLE='1', HIVEMIND_INGEST_DISABLE='1')
@@ -625,12 +649,26 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     The client's channel gets the PR's entry once per head; `summary`: the model's summary of the PR, for
     the entry's 3-5 words."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
-    event = pr_format.event_of(rv)
+    intended = pr_format.event_of(rv)
+    # gcs-71c: GitHub refuses APPROVE and REQUEST_CHANGES on a PR whose author is the reviewer, and an eval
+    # review is one COMMENT on the draft: there it goes out as COMMENT with line 1 as rendered, and the record
+    # keeps the event it would have had.
+    own = bool(cfg.get('reviewer')) and ((pr.get('author') or {}).get('login') or '').lower() == cfg['reviewer'].lower()
+    event = 'COMMENT' if own or cfg.get('eval') else intended
+    if event != intended or cfg.get('eval'):
+        extra['intended_event'] = intended
     # The gap kinds, host-local and counts only (decision-3aeec149); the feedback order asks once per kind.
     extra.update(gaps=sorted({g['kind'] for g in rv.get('gaps') or []}),
                  gaps_open=sorted({g['kind'] for g in pr_format.open_gaps(rv)}), voice=rv.get('voice'))
+    if cfg.get('eval'):
+        cfg['eval_row'].update(rv=rv, body=body, comments=comments)
+        if pr_rules.marked([body] + [c['body'] for c in comments]):
+            # the review of an eval PR never mentions the test (the model never saw the marker)
+            finish(cfg, key, dict(entry, head=head), 'held-marker', {**extra, 'gate': ['eval-marker']})
+            return
     if cfg.get('no_deliver'):
-        finish(cfg, key, entry, rv['outcome'], {**extra, 'event': event, 'inline': len(comments), 'body_chars': len(body)})
+        finish(cfg, key, dict(entry, head=head), rv['outcome'],
+               {**extra, 'event': event, 'inline': len(comments), 'body_chars': len(body)})
         return
     fresh = pr_rules.get_pr(repo, n)
     if fresh['state'] != 'OPEN':
@@ -643,7 +681,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     if head in heads and not rereview:
         finish(cfg, key, dict(entry, head=head), entry.get('outcome') or rv['outcome'], {**extra, 'posted': 'skipped-same-head'})
         return
-    if event == 'APPROVE':
+    if intended == 'APPROVE':  # line 1 says so even when it goes out as COMMENT: the same bar
         why = pr_format.gate_approve(rv, fresh, head, flagged, idx)
         if why:  # CI or the PR changed between the review and now: review it again later
             finish(cfg, key, entry, 'requeued', {**extra, 'note': 'the approval bar failed at posting',
@@ -690,16 +728,19 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     if reasons:  # posted, but it broke a delivery rule: no Slack link, and the log says which
         finish(cfg, key, dict(entry, head=head), 'error', {**extra, 'gate': [r.split(':')[0] for r in reasons]})
         return
-    ts = entry.get('slack_ts') if rereview and head in (entry.get('review_heads') or []) else None
-    slack, new_ts = pr_state.slack_post(cfg, rv['outcome'], entry['url'], url, approved=event == 'APPROVE', ts=ts,
-                                        event=event, gap=bool(pr_format.open_gaps(rv)))
-    extra['slack'] = slack
-    if new_ts:
-        extra['slack_ts'] = new_ts
+    if cfg.get('eval'):  # gcs-71c: an eval run never posts to our channel or the client's
+        extra['slack'] = 'eval'
+    else:
+        ts = entry.get('slack_ts') if rereview and head in (entry.get('review_heads') or []) else None
+        slack, new_ts = pr_state.slack_post(cfg, rv['outcome'], entry['url'], url, approved=intended == 'APPROVE', ts=ts,
+                                            event=intended, gap=bool(pr_format.open_gaps(rv)))
+        extra['slack'] = slack
+        if new_ts:
+            extra['slack_ts'] = new_ts
     # The client's entry (decision-14bb1b55; the mayor, 2026-10-30 19:40Z and 19:41Z): the review in two lines. Its
     # confidence and flag counts stay on the PR's entry for the queue. Once per head, by the client post's own
     # record (the mayor, 19:12Z: our channel is off, so its ts says nothing about the client's).
-    review = pr_client_slack.review_of(rv, event, extra.get('ci') or pr_rules.ci_state(fresh),
+    review = pr_client_slack.review_of(rv, intended, extra.get('ci') or pr_rules.ci_state(fresh),
                                        extra.get('flagged_hunks', len(result.get('flagged') or [])),
                                        extra.get('flags_cut', rv.get('flags_cut') or 0), extra.get('gaps_open') or ())
     extra.update(confidence=review['confidence'], flagged_total=review['flagged'], open_changes=review['changes'],
@@ -707,8 +748,8 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     # Once per head and status (decision-57b6d9bb): a follow-up posts a new entry only when readiness moved.
     ready = pr_client_slack.readiness(fresh.get('mergeable'), extra.get('ci') or pr_rules.ci_state(fresh),
                                       pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'))
-    if cfg['client_slack'] != 'off' and not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state']),
-                                                                      ready):
+    if cfg['client_slack'] != 'off' and not cfg.get('eval') and \
+            not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state']), ready):
         try:
             status, meta = pr_client_slack.deliver_entry(cfg, key, dict(entry, review_url=url), review, fresh, summary,
                                                          lambda s: pr_client_slack.words_turn(cfg, s))
@@ -759,17 +800,26 @@ def redeliver(cfg, key):
 FOLLOWUP_TURNS = 16  # the follow-up reads the asks' lines and what the answers point at; the review used 2-11
 
 
+def posted_id(r):
+    """The id of what a `gh api` POST created (True when posted without one, None when it failed): on a PR whose
+    author is the reviewer, our own posts are told from the author's answers by these ids (gcs-71c)."""
+    if r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout).get('id') or True
+    except ValueError:
+        return True
+
+
 def post_reply(repo, number, comment_id, body):
-    """A reply in the review thread of our inline comment `comment_id`."""
-    r = subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/pulls/{number}/comments/{int(comment_id)}/replies',
-                        '-f', f'body={body}'], capture_output=True, text=True, timeout=60)
-    return r.returncode == 0
+    """A reply in the review thread of our inline comment `comment_id`: its id, or None."""
+    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/pulls/{number}/comments/{int(comment_id)}/replies',
+                                     '-f', f'body={body}'], capture_output=True, text=True, timeout=60))
 
 
 def post_comment(repo, number, body):
-    r = subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}'],
-                       capture_output=True, text=True, timeout=60)
-    return r.returncode == 0
+    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}'],
+                                    capture_output=True, text=True, timeout=60))
 
 
 def rebuild(cfg, repo, pr, ci, res, calls, asks, author):
@@ -796,7 +846,12 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
     the rounds on the head are used up. The answers are read from GitHub into the prompt only (host-local,
     capture off); what is printed and kept is counts and ids. `answer(prompt)` stands in for the model."""
     repo, n = entry['repo'], entry['number']
-    pr = pr_rules.get_pr(repo, n)
+    pr = pr_rules.unmarked(pr_rules.get_pr(repo, n))
+    if pr.get('eval'):
+        if not cfg.get('eval'):  # gcs-71c: a test PR is followed up only by --eval's runs, never the live queue
+            finish(cfg, key, entry, 'eval-skipped', {'model': False})
+            return
+        entry = dict(entry, eval_case=pr['eval'])
     if pr['state'] != 'OPEN':
         finish(cfg, key, entry, 'closed', {'model': False})
         return
@@ -809,8 +864,9 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
     author, voice = author_of(pr), cfg.get('voice') or 'disclose'
     if entry.get('followup') == 'cap':
         ok = dry or cfg.get('no_deliver') or post_comment(repo, n, pr_followup.cap_line(author, rounds.get(head, 0), voice, NAME))
+        mine = {'our_posts': ((entry.get('our_posts') or []) + [ok])[-50:]} if type(ok) is int else {}
         finish(cfg, key, entry, entry.get('outcome') or 'done',
-               {**done, 'model': False, 'answer_capped': head if ok else None, 'followup_cap': 'posted' if ok else 'failed'})
+               {**done, 'model': False, 'answer_capped': head if ok else None, 'followup_cap': 'posted' if ok else 'failed', **mine})
         return
     p = os.path.join(pr_state.private_dir(cfg, 'feedback', 'posted'), f"{repo.replace('/', '__')}-{n}-{head[:10]}.json")
     try:
@@ -825,8 +881,9 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
     owner, name = repo.split('/')
     act = pr_rules.graphql(pr_followup.REPLIES_Q, o=owner, r=name, n=n)['repository']['pullRequest']
     ours = [x for x in entry.get('head_review_ids') or [entry.get('review_id')] if x]
-    threads = pr_followup.threads_of(act, cfg['reviewer'], asks, ours)
-    others = pr_followup.others_of(act, cfg['reviewer'], entry.get('head_reviewed_at') or entry.get('delivered_at'))
+    posts = set(entry.get('our_posts') or [])  # our follow-ups and lines: on the reviewer's own PR, not answers
+    threads = pr_followup.threads_of(act, cfg['reviewer'], asks, ours, posts)
+    others = pr_followup.others_of(act, cfg['reviewer'], entry.get('head_reviewed_at') or entry.get('delivered_at'), posts)
     prompt = pr_followup.prompt(pr['url'], head, author, asks, threads, others)
     if dry:
         print(json.dumps({'pr': entry['url'], 'would': 'follow-up', 'asks': len(asks), 'threads': len(threads),
@@ -869,10 +926,14 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
         url = deliver(cfg, key, entry, pr, rv, body, [], result, extra, flagged, idx, rereview=True,
                       summary=res.get('summary') or '')
         if url:  # the follow-ups go into the open asks' threads once the review is up
-            sent = sum(post_reply(repo, n, threads[a]['comment'], t) for a, t in replies if a in threads)
+            got = [post_reply(repo, n, threads[a]['comment'], t) for a, t in replies if a in threads]
+            sent = sum(1 for x in got if x)
             with pr_state.locked(cfg['state']) as st:
-                st['prs'][key].update(followup_replies=sent)
-            pr_state.log(cfg['state'], {'run': 'followup-replies', 'pr': entry['url'], 'sent': sent, 'open': len(replies)})
+                e = st['prs'][key]
+                e.update(followup_replies=sent, our_posts=((e.get('our_posts') or []) +
+                                                           [x for x in got if type(x) is int])[-50:])
+            pr_state.log(cfg['state'], {'run': 'followup-replies', 'pr': entry['url'], 'sent': sent, 'open': len(replies),
+                                        **eval_tag(entry)})
     except (RuntimeError, OSError, subprocess.SubprocessError, pr_rules.GhError) as e:
         finish(cfg, key, entry, 'error', {**done, 'model': False, 'error': type(e).__name__})
     finally:
@@ -886,8 +947,94 @@ def pr_diff(repo, number):
     return r.stdout if r.returncode == 0 else ''
 
 
+def eval_tag(entry):
+    """gcs-71c: an eval run's tag in the run log, with its case id."""
+    return {'eval': True, 'case': entry['eval_case']} if entry.get('eval_case') else {}
+
+
+def eval_push(old, head_of):
+    """gcs-71c: the sweep skips eval PRs, so a run by hand on a new head of one we reviewed is its push
+    follow-up, as the sweep would queue it for any other PR. `head_of()` reads the PR's head (one GitHub call,
+    only for an eval PR we reviewed)."""
+    return bool(old.get('eval_case') and old.get('review_heads')) and pr_rules.followup_push(old, head_of())
+
+
+def pack_sha():
+    """The pack checkout's commit and whether its tracked files differ from it (the eval rows' pack_sha)."""
+    pack = os.path.dirname(os.path.dirname(HERE))
+    r = subprocess.run(['git', '-C', pack, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        return None, None
+    d = subprocess.run(['git', '-C', pack, 'status', '--porcelain', '--untracked-files=no', '--', '.'],
+                       capture_output=True, text=True, timeout=30)
+    return r.stdout.strip(), bool(d.stdout.strip())
+
+
+def eval_cfg(cfg, run=None):
+    """gcs-71c (the mayor, 2026-10-31 00:18Z): an eval run's settings. Its own work dir and state, so the live
+    queue, prs.json and stores never see a test PR; no Slack, no client Slack, no bead; PR_REVIEW_EVAL_DELIVER
+    'none' posts nothing and keeps no state, 'comment' posts one COMMENT and keeps the eval state for the
+    follow-ups. Its rows go to <PR_REVIEW_EVAL_OUT_DIR>/<run>.jsonl (default run: the pack's commit)."""
+    sha, dirty = pack_sha()
+    run = re.sub(r'[^A-Za-z0-9._-]', '-', run or cfg['eval_run'] or (sha or 'eval')[:10])
+    return dict(cfg, eval=True, live_work=cfg['work'], work=cfg['eval_work'], state=os.path.join(cfg['eval_work'], 'state'),
+                beads=False, slack_channel='', client_slack='off', no_deliver=cfg['eval_deliver'] == 'none',
+                eval_file=os.path.join(cfg['eval_out'], f'{run}.jsonl'), eval_pack=(sha, dirty), eval_row={})
+
+
+def eval_write(cfg, entry, outcome, extra):
+    """gcs-71c: one row per run on an eval PR's head (mode 600): the benchmark's kept-review row (pr, head, rv,
+    body, reasons, flagged), the run log's fields (`extra`, checks included), the model's own entries
+    (`raw`, as the benchmark scores them) and the pack's commit."""
+    r, (sha, dirty) = cfg.get('eval_row') or {}, cfg['eval_pack']
+    diff = r.get('diff') or ''
+    row = {'pr': entry['url'], 'head': entry.get('head') or r.get('head'), 'case': entry.get('eval_case'),
+           'deliver': cfg['eval_deliver'], 'attempt': 'eval', 'at': pr_state.iso(pr_state.now()), 'outcome': outcome,
+           'author': r.get('author'), 'reasons': r.get('reasons') or [], 'rv': r.get('rv'), 'body': r.get('body'),
+           'comments': r.get('comments') or [], 'flagged': r.get('flagged') or [], 'pr_text': r.get('pr_text') or '',
+           'diff': diff if len(diff) <= HELD_DIFF_MAX else None, 'raw': pr_format.raw_anchors(r.get('model')),
+           'extra': extra, 'pack_sha': sha, 'pack_dirty': dirty}
+    os.makedirs(os.path.dirname(cfg['eval_file']), mode=0o700, exist_ok=True)
+    pr_state.prune_jsonl(cfg['eval_file'], cfg['keep_days'])
+    with open(cfg['eval_file'], 'a') as f:
+        f.write(json.dumps(row) + '\n')
+    os.chmod(cfg['eval_file'], 0o600)
+    cfg['eval_row'] = {}
+
+
+def run_eval(cfg, key, run=None, answer=False, dry=False):
+    """gcs-71c: review an eval PR by hand with the shipped pipeline, outside the live queue (eval_cfg), as a PR
+    that requests the reviewer (every PR the live run reviews under PR_REVIEW_QUEUE=requested does). A run on a
+    new head of one we reviewed is its push follow-up; `answer`: the follow-up on the author's answers."""
+    repo, n = key.rsplit('#', 1)
+    pr = pr_rules.get_pr(repo, int(n))
+    case = pr_rules.eval_case(pr)
+    if not case:
+        print(json.dumps({'pr': key, 'eval': 'not an eval PR: neither its branch nor its title has the marker'}))
+        return 1
+    ecfg = eval_cfg(cfg, run)
+    pr_state.prune_private(ecfg)
+    with pr_state.locked(ecfg['state']) as st:
+        old = dict(st['prs'].get(key) or {})
+    entry = dict(old or {'repo': repo, 'number': int(n), 'url': f'https://github.com/{repo}/pull/{n}',
+                         'rig': cfg['repos'].get(repo, repo.split('/')[1]), 'rules': []}, eval_case=case)
+    if answer:
+        if not old.get('review_heads'):
+            print(json.dumps({'pr': key, **eval_tag(entry), 'followup': 'no review of ours on this PR'}))
+            return 0
+        answer_review(ecfg, key, dict(entry, followup='answer'), dry)
+    else:
+        if eval_push(old, lambda: pr['headRefOid']):
+            entry['followup'] = 'push'
+        ci_escalation(ecfg, key, entry, dry, rereview=True)
+    return 0
+
+
 def finish(cfg, key, entry, outcome, extra):
     """Record the run's end. 'requeued' puts the PR back in the queue and keeps its bead open."""
+    extra = {**eval_tag(entry), **extra}
+    if cfg.get('eval'):
+        eval_write(cfg, entry, outcome, extra)
     if cfg.get('no_deliver'):
         print(json.dumps({'pr': entry['url'], 'outcome': outcome, 'no_deliver': True, **extra}))
         return
@@ -1249,7 +1396,12 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     dropped (R15)."""
     ruleset = pr_rules.load_rules(cfg['rules'])
     area_of = pr_rules.areas(ruleset)
-    pr = pr_rules.get_pr(entry['repo'], entry['number'])
+    pr = pr_rules.unmarked(pr_rules.get_pr(entry['repo'], entry['number']))
+    if pr.get('eval'):
+        if not cfg.get('eval'):  # gcs-71c: a test PR is reviewed only by --eval, never through the live queue
+            finish(cfg, key, entry, 'eval-skipped', {'model': False})
+            return
+        entry = dict(entry, eval_case=pr['eval'])
     if pr['state'] != 'OPEN':
         finish(cfg, key, entry, 'closed', {'model': False})
         return
@@ -1260,6 +1412,8 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     files = pr_rules.pr_files(entry['repo'], pr['number'])
     base = pr_rules.base_for(pr, {pr['baseRefName']: pr_rules.branch_oid(entry['repo'], pr['baseRefName'])})
     hits = pr_rules.evaluate(pr, files, ruleset, cfg['reviewer'], entry['repo'], base)
+    if cfg.get('eval'):  # gcs-71c: reviewed as a PR that requests the reviewer (R34)
+        hits.setdefault('requested', ['e'])
     # A follow-up (decision-57b6d9bb) is reviewed by the model like a requested PR (R34).
     if entry.get('followup') or not pr_rules.ci_only(ci, 'requested' in hits, bool(content_rules(hits, area_of, ruleset))):
         return model_review(cfg, key, entry, dry, rereview)
@@ -1286,13 +1440,17 @@ def model_review(cfg, key, entry, dry, rereview=False):
     repo = entry['repo']
     ruleset = pr_rules.load_rules(cfg['rules'])
     area_of = pr_rules.areas(ruleset)
-    pr = pr_rules.get_pr(repo, entry['number'])
+    pr = pr_rules.unmarked(pr_rules.get_pr(repo, entry['number']))  # gcs-71c: an eval PR without its test marker
+    if pr.get('eval'):
+        entry = dict(entry, eval_case=pr['eval'])
     if pr['state'] != 'OPEN' and not cfg.get('bench'):  # the benchmark reviews merged PRs at their head, offline
         finish(cfg, key, entry, 'closed', {'model': False})
         return
     files_gh = pr_rules.pr_files(repo, pr['number'])
     base = pr_rules.base_for(pr, {pr['baseRefName']: pr_rules.branch_oid(repo, pr['baseRefName'])})
     hits = pr_rules.evaluate(pr, files_gh, ruleset, cfg['reviewer'], repo, base)
+    if cfg.get('eval'):
+        hits.setdefault('requested', ['e'])
     ci = pr_rules.ci_state(pr)
     flagged, flags_cut, nc_rule = flags_for(files_gh, ruleset, hits, area_of)
     author = author_of(pr)
@@ -1300,6 +1458,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
     mirror = None
     try:
         mirror, tree, ctx, diff, files, commits, fork = prepare(cfg, repo, pr, run_id)
+        if pr.get('eval'):
+            commits = pr_rules.unmarked_commits(commits)
         # R37: the repository's own rules, as they stand on the base branch the PR merges into
         digest, dmeta = pr_digest.get(cfg, repo, mirror, git(mirror, 'rev-parse', f"refs/heads/{pr['baseRefName']}").strip())
         conflicts = conflict_files(mirror, pr)
@@ -1319,7 +1479,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'),
                               pr_digest.prompt_block(digest), author, context_block, since_block)
         if dry:
-            print(json.dumps({'pr': entry['url'], 'dry_run': True, 'prompt_chars': len(prompt),
+            print(json.dumps({'pr': entry['url'], 'dry_run': True, **eval_tag(entry), 'prompt_chars': len(prompt),
                               'context_chars': len(context_block), **{f'context_{k}': v for k, v in cstats.items()},
                               'diff_chars': len(diff), 'files': len(files.splitlines()), 'rules': sorted(hits),
                               'flagged_hunks': len(flagged), 'flags_cut': flags_cut, 'not_checked_hunks': len(nc_rule)}))
@@ -1461,6 +1621,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
                      **({f'since_{k}': rv['since'][k] for k in ('fixed', 'again', 'open', 'gone')}
                         | {'since_to_resolve': len(rv['since']['resolve'])} if rv.get('since') else {}),
                      gate=sorted({r.split(':')[0] for r in reasons}))
+        if cfg.get('eval'):  # gcs-71c: the review as it stands, for the eval row; the run goes on to deliver
+            cfg['eval_row'].update(model=model, rv=rv, body=body, comments=comments, reasons=reasons, flagged=flagged,
+                                   author=author, pr_text=pr.get('body') or '', head=pr['headRefOid'], diff=diff)
         if cfg.get('collect') is not None:  # the benchmark (pr_bench.py): the review as it stands, nothing delivered
             cfg['collect'].append({'rv': rv, 'held': sorted({r.split(':')[0] for r in reasons}), 'extra': dict(extra),
                                    'model': model, 'body': body, 'reasons': reasons, 'flagged': flagged, 'author': author,
@@ -1635,6 +1798,7 @@ def selftest():
     checks['retention: nothing to drop leaves the file as it is'] = pr_state.prune_jsonl(held, 30, t) == 0
     checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
+    checks.update(selftest_eval(tempfile.mkdtemp()))
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
@@ -1756,6 +1920,197 @@ def selftest_retention(work, t):
             sorted(asked) == [('o-x/r-y', 1), ('o-x/r-y', 2), ('o-x/r-y', 3), ('o-x/r-y', 5)]}
 
 
+def selftest_eval(tmp):
+    """gcs-71c, a red team's draft PR opened under the reviewer's own login, with GitHub, our Slack, the client
+    runner and the model stubbed: (1) an eval run keeps its own state and writes one row per run (case, the
+    review, the run log's fields, the pack's commit), the live state untouched; (2) 'comment' posts one COMMENT
+    with line 1 as rendered and the intended event recorded, 'none' posts and keeps nothing; on the reviewer's
+    own PR outside eval too; (3) the model's view has no test marker, a review that names it is held, any other
+    PR's view is the PR itself; (4) no Slack, no client line, no bead, the live queue never reviews a test PR, and
+    the model may read no store but its own run; (5) our own posts are told from the author's answers, a run by
+    hand on a new head is the push follow-up, and a test PR is reviewed as one that requests the reviewer."""
+    import contextlib
+    import io
+    url, head = 'https://github.com/o/r/pull/7', 'a' * 40
+    green = {'nodes': [{'commit': {'statusCheckRollup': {'state': 'SUCCESS', 'contexts': {
+        'totalCount': 1, 'nodes': [{'conclusion': 'SUCCESS'}]}}}}]}
+    raw = {'number': 7, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'isDraft': True, 'mergeable': 'MERGEABLE',
+           'headRefName': 'review-test/c07', 'author': {'login': 'Rev'}, 'commits': green, 'baseRefName': 'main',
+           'title': '[review-test] DO NOT MERGE: Reminders go out by text',
+           'body': 'Reminders go out by text now.\n\n---\nreview-test rt-07: synthetic, do not merge or review.\n'}
+    pr = pr_rules.unmarked(raw)
+    other = dict(raw, headRefName='topic', title='Reminders go out by text')
+    live = os.path.join(tmp, 'live')
+    cfg = dict(pr_state.config(), voice='reviewer', reviewer='rev', state=os.path.join(live, 'state'), city=tmp,
+               work=live, beads=False, mode='live', slack_channel='C1', slack_env=[], client_slack='on',
+               request_changes=True, approve=True, eval_deliver='comment', eval_work=os.path.join(live, 'eval'),
+               eval_out=os.path.join(live, 'redteam', 'eval'), eval_run='', keep_days=30)
+    commits = pr_rules.unmarked_commits('1234567 [review-test] DO NOT MERGE: Reminders go out by text\n'
+                                        '89abcde Note the review-test case\nfedcba9 Send the reminder once\n')
+    prompt = build_prompt(cfg, pr, '', 'M\tsrc/a.ts\n', commits, 'f' * 40, tmp, [], 'billing', '', 'Author')
+    checks = {
+        '(3) the model sees the title without its prefix and the description without the test lines; the case is the branch':
+            pr['title'] == 'Reminders go out by text' and pr['body'] == 'Reminders go out by text now.' and pr['eval'] == 'c07',
+        '(3) the prompt never names the test (title, description, commits)':
+            'review-test' not in prompt.lower() and 'do not merge' not in prompt.lower() and
+            'Reminders go out by text' in prompt and 'fedcba9 Send the reminder once' in prompt,
+        '(3) any other PR is the PR itself, so its prompt is unchanged': pr_rules.unmarked(other) is other and
+            pr_rules.eval_case(other) is None and pr_rules.eval_case(dict(other, title=raw['title'])) == '?',
+    }
+    posted, slack, sent, beads, calls = [], [], [], [], []
+    g = globals()
+    names = ('post_review', 'update_review', 'dismiss_stale', 'repoint', 'ours_on_head', 'model_review',
+             'ci_escalation', 'answer_review')
+    saved = {k: g[k] for k in names}
+    mods = [(pr_rules, 'get_pr'), (pr_state, 'slack_token'), (pr_state, 'slack_call'), (pr_client_slack, 'deliver_entry'),
+            (pr_state, 'Beads'), (pr_rules, 'pr_files'), (pr_rules, 'branch_oid'), (pr_rules, 'evaluate'),
+            (pr_rules, 'ci_state')]
+    kept = [getattr(m, n) for m, n in mods]
+    fresh = dict(raw)
+
+    def post(repo, p, body, comments, event='COMMENT'):
+        posted.append((event, body))
+        return 'ok', f'{url}#pullrequestreview-{len(posted)}', 'COMMENTED', len(posted)
+
+    class NoBeads:
+        def __init__(self, *a, **k):
+            pass
+
+        def set(self, rig, bead, **k):
+            beads.append(bead)
+    g.update(post_review=post, update_review=lambda *a: ('ok', None, None, None), dismiss_stale=lambda *a: (0, 0),
+             repoint=lambda *a: (0, 0), ours_on_head=lambda *a: 1)
+    pr_rules.get_pr = lambda repo, n: fresh
+    pr_state.slack_token = lambda *a: slack.append('token') or 'xoxb'
+    pr_state.slack_call = lambda *a: slack.append('call') or {'ok': True, 'ts': '1'}
+    pr_client_slack.deliver_entry = lambda *a, **k: sent.append(1) or ('ok', {'ts': '1'})
+    pr_state.Beads = NoBeads
+    low = {'outcome': 'low-risk', 'approve': True, 'request_changes': True, 'decisions': [], 'blockers': [], 'gaps': [],
+           'cleared': [], 'items': [], 'not_checked': ''}
+    changes = dict(low, outcome='changes', approve=False, items=[{'kind': 'change'}])
+    entry = {'repo': 'o/r', 'number': 7, 'url': url, 'rig': 'r', 'eval_case': 'c07'}
+    line1 = '**Approved** · nothing needed <!-- pr-review v5.9 -->\nbody'
+    ecfg = eval_cfg(cfg, 'selftest')
+    rows_p = os.path.join(cfg['eval_out'], 'selftest.jsonl')
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ecfg['eval_row'].update(model={'items': [{'path': 'src/a.ts', 'line_start': 2, 'line_end': 2, 'kind': 'change',
+                                                      'confidence': 6}], 'decisions': []}, author='Author')
+            deliver(ecfg, 'o/r#7', entry, pr, low, line1, [], {'flagged': []}, {'ci': 'green', 'checks': {'tests': 'no'}})
+            with pr_state.locked(ecfg['state']) as st:
+                e1 = dict(st['prs']['o/r#7'])
+            fresh['headRefOid'] = 'b' * 40
+            deliver(ecfg, 'o/r#7', e1, dict(pr, headRefOid='b' * 40), changes, 'Changes body', [], {'flagged': []},
+                    {'ci': 'green'})
+            with pr_state.locked(ecfg['state']) as st:
+                e2 = dict(st['prs']['o/r#7'])
+            fresh['headRefOid'] = 'c' * 40
+            deliver(ecfg, 'o/r#7', e2, dict(pr, headRefOid='c' * 40), low, 'Ok, the review-test case.', [],
+                    {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(ecfg['state']) as st:
+                e3 = dict(st['prs']['o/r#7'])
+            ncfg = eval_cfg(dict(cfg, eval_deliver='none'), 'selftest')
+            deliver(ncfg, 'o/r#7', entry, dict(pr, headRefOid='c' * 40), low, line1, [], {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(ecfg['state']) as st:
+                e4 = dict(st['prs']['o/r#7'])
+            after_none = len(posted)
+            fresh['headRefOid'], fresh['author'] = 'e' * 40, {'login': 'someone'}  # comment mode, another author
+            deliver(ecfg, 'o/r#7', e4, dict(pr, headRefOid='e' * 40, author={'login': 'someone'}), low, line1, [],
+                    {'flagged': []}, {'ci': 'green'})
+            fresh['author'] = raw['author']
+            live_prs = os.path.exists(os.path.join(cfg['state'], 'prs.json'))
+            eval_slack = list(slack)
+            mine = dict(fresh, headRefName='topic', title='Fees')  # the reviewer's own PR, outside eval
+            fresh = mine
+            deliver(dict(cfg, state=os.path.join(tmp, 'own'), client_slack='off'), 'o/r#8', dict(entry, number=8, eval_case=None),
+                    dict(mine, number=8), low, line1, [], {'flagged': []}, {'ci': 'green'})
+            with pr_state.locked(os.path.join(tmp, 'own')) as st:
+                e5 = dict(st['prs']['o/r#8'])
+            fresh = dict(raw)
+            pr_rules.pr_files, pr_rules.branch_oid = (lambda repo, n: []), (lambda repo, b: 'f' * 40)
+            pr_rules.evaluate, pr_rules.ci_state = (lambda *a: {}), (lambda p: 'red')
+            g['model_review'] = lambda c, k, e, dry, rereview=False: calls.append(('model', c.get('eval'), e.get('eval_case')))
+            ci_escalation(dict(cfg, state=os.path.join(tmp, 'q')), 'o/r#7', dict(entry, eval_case=None), False)
+            with pr_state.locked(os.path.join(tmp, 'q')) as st:
+                skipped = dict(st['prs'].get('o/r#7') or {})
+            ci_escalation(ecfg, 'o/r#7', dict(entry), False)
+            g['ci_escalation'] = lambda c, k, e, dry, rereview=False: calls.append(('review', e.get('followup'), c['state']))
+            g['answer_review'] = lambda c, k, e, dry=False: calls.append(('answer', e.get('followup'), c['state']))
+            fresh['headRefOid'] = 'd' * 40  # pushed after the reviewed head 'b' * 40 (e4 keeps 'b' and 'c' is held)
+            run_eval(cfg, 'o/r#7', 'selftest')
+            run_eval(cfg, 'o/r#7', 'selftest', answer=True)
+            fresh.update(headRefName='topic', title='Fees')
+            not_eval = run_eval(cfg, 'o/r#7', 'selftest')
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    rows = [json.loads(x) for x in open(rows_p)]
+    checks.update({
+        '(2) comment: an approval goes out as COMMENT, line 1 as rendered, the intended event recorded':
+            posted[0] == ('COMMENT', line1) and e1.get('event') == 'COMMENT' and e1.get('intended_event') == 'APPROVE'
+            and not e1.get('approved'),
+        '(2) comment mode posts COMMENT whoever opened the draft': posted[2] == ('COMMENT', line1) and
+            rows[4]['extra'].get('intended_event') == 'APPROVE',
+        '(2) so does a change request, and it is not live as one': posted[1][0] == 'COMMENT' and
+            e2.get('intended_event') == 'REQUEST_CHANGES' and not e2.get('rc_live'),
+        "(2) on the reviewer's own PR outside eval: COMMENT, the intended event kept, our Slack as usual":
+            posted[3][0] == 'COMMENT' and e5.get('intended_event') == 'APPROVE' and 'call' in slack and not
+            e5.get('eval_case'),
+        '(1) one row per run with the case, the review, the run log fields and the pack commit; the live state untouched':
+            [r['case'] for r in rows] == ['c07'] * 5 and [r['deliver'] for r in rows] == ['comment'] * 3 + ['none', 'comment'] and
+            rows[0]['body'] == line1 and rows[0]['raw'] == [['src/a.ts', 2, 2, 'change', 6]] and
+            rows[0]['extra'].get('checks') == {'tests': 'no'} and rows[0]['extra'].get('intended_event') == 'APPROVE' and
+            rows[0]['extra'].get('eval') is True and 'pack_sha' in rows[0] and rows[0]['author'] == 'Author' and
+            not live_prs and e1.get('eval_case') == 'c07' and os.stat(rows_p).st_mode & 0o777 == 0o600,
+        '(2) none: nothing posted and no eval state; its row says what it would have been':
+            after_none == 2 and e4 == e3 and rows[3]['outcome'] == 'low-risk' and
+            rows[3]['extra'].get('intended_event') == 'APPROVE',
+        '(4) no Slack, no client line, no bead in eval': not eval_slack and not sent and
+            e1.get('slack') == 'eval' and set(beads) == {None},
+        '(3) a review that names the test is held, nothing posted': rows[2]['outcome'] == 'held-marker' and
+            len([p for p in posted if 'review-test' in p[1]]) == 0,
+        '(4) the live queue never reviews a test PR: it is finished as eval-skipped':
+            skipped.get('outcome') == 'eval-skipped' and calls[0] == ('model', True, 'c07'),
+        '(5) a test PR is reviewed as one that requests the reviewer: red CI and no rule still go to the model':
+            calls[0][0] == 'model',
+        '(5) --eval on a new head of a reviewed test PR is its push follow-up, in the eval state; --followup its answer':
+            calls[1] == ('review', 'push', ecfg['state']) and calls[2] == ('answer', 'answer', ecfg['state']),
+        '(1) --eval on a PR without the marker does nothing': not_eval == 1 and len(calls) == 3,
+    })
+    runs = os.path.join(live, 'runs')
+    for d in ('mirrors', 'feedback', 'redteam/eval', 'runs/a/ctx', 'runs/b', 'eval/runs/x/ctx', 'eval/mirrors'):
+        os.makedirs(os.path.join(live, d), exist_ok=True)
+    deny = store_denies([live, pr_state.DEFAULT_WORK], os.path.join(runs, 'a'))
+    deny_e = store_denies([os.path.join(live, 'eval'), live], os.path.join(live, 'eval', 'runs', 'x'))
+    checks['(4) the model reads no store but its own run (mirrors, kept reviews, the red team, other runs, eval)'] = \
+        all(f'/{live}/{s}/**' in deny for s in ('mirrors', 'feedback', 'redteam', 'eval', 'bench')) and \
+        f'/{runs}/b/**' in deny and not any(x.startswith(f'/{runs}/a') or x == f'/{runs}/**' for x in deny) and \
+        all(f'/{live}/{s}/**' in deny_e for s in ('runs', 'redteam', 'mirrors')) and \
+        f'/{live}/eval/mirrors/**' in deny_e and not any(x.startswith(f'/{live}/eval/runs/x') for x in deny_e) and \
+        (live.startswith(pr_state.DEFAULT_WORK) or f'/{pr_state.DEFAULT_WORK}/**' in deny)
+    q = {'side': 'new', 'line_start': 3, 'line_end': 4, 'kind': 'question', 'path': 'src/a.ts', 'change': 'c', 'ask': 'a?'}
+    asks = pr_followup.asks_of({'items': [q], 'decisions': []})
+
+    def node(cid, body, path=None, line=None, rid=None, at='2026-10-31T01:00:00Z'):
+        return {'databaseId': cid, 'author': {'login': 'Rev'}, 'body': body, 'createdAt': at, 'submittedAt': at,
+                'path': path, 'originalLine': line, 'pullRequestReview': {'databaseId': rid}}
+    act = {'author': {'login': 'Rev'},
+           'reviewThreads': {'nodes': [{'id': 'T1', 'isResolved': False, 'comments': {'nodes': [
+               node(1, 'ours', 'src/a.ts', 4, 77), node(5, 'It is sent once per visit.'), node(9, 'Which visit?')]}}]},
+           'comments': {'nodes': [node(6, 'The owner signed off.'), node(8, 'Our cap line.')]},
+           'reviews': {'nodes': [node(77, f'**Questions** · for you {pr_format.MARK_PREFIX}v5.9 -->')]}}
+    th = pr_followup.threads_of(act, 'rev', asks, [77], {8, 9})
+    checks['(5) on its own PR our recorded posts are ours, the rest are the author\'s answers'] = \
+        th.get('E1', {}).get('replies') == [('author', 'It is sent once per visit.'), ('we', 'Which visit?')] and \
+        pr_followup.others_of(act, 'rev', '2026-10-31T00:00:00Z', {8, 9}) == ['The owner signed off.']
+    reviewed = {'eval_case': 'c07', 'review_heads': [head], 'head': head, 'status': 'done'}
+    checks['(5) a new head of a reviewed eval PR is its push follow-up; the same head or another PR is not'] = \
+        eval_push(reviewed, lambda: 'b' * 40) and not eval_push(reviewed, lambda: head) and \
+        not eval_push(dict(reviewed, eval_case=None), lambda: 'b' * 40)
+    return checks
+
+
 def selftest_client_once(cfg, tmp):
     """deliver() with GitHub, our Slack and the client runner stubbed (the mayor, 2026-10-30 19:12Z): with our
     channel empty, a same-head re-review sends no second client line and makes no Slack call; a new head
@@ -1853,11 +2208,23 @@ def main():
     ap.add_argument('--rereview', metavar='REPO#N')
     ap.add_argument('--no-deliver', action='store_true')
     ap.add_argument('--followup', metavar='REPO#N', help="the same-head follow-up on the author's answers")
+    ap.add_argument('--eval', metavar='REPO#N', help='review an eval PR by hand, outside the live queue (gcs-71c)')
+    ap.add_argument('--eval-run', metavar='NAME', help="the eval rows' file name (default: the pack's commit)")
     ap.add_argument('--selftest', action='store_true', help='the note and its floor on synthetic data')
     a = ap.parse_args()
     if a.selftest:
         return 0 if selftest() else 1
     cfg = pr_state.config()
+    target = a.eval or a.pr or a.rereview or a.followup
+    if target and (a.eval or pr_rules.eval_case(pr_rules.get_pr(target.rsplit('#', 1)[0], int(target.rsplit('#', 1)[1])))):
+        # gcs-71c: an eval PR never enters the live queue or state, whichever way it is started
+        if a.no_deliver:
+            cfg['eval_deliver'] = 'none'
+        load = pr_rules.load_avg()
+        if load > cfg['max_load']:
+            print(json.dumps({'skipped': 'load', 'load': load}))
+            return
+        return run_eval(cfg, target, a.eval_run, answer=bool(a.followup and not a.eval), dry=a.dry_run)
     if a.no_deliver and (a.pr or a.rereview):
         cfg['no_deliver'] = True
         key = a.pr or a.rereview
