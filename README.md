@@ -60,6 +60,9 @@ The built-in dashboard listens on the server's loopback (`gc dashboard --no-open
 laptop: `ssh -L 8372:127.0.0.1:8372 <user>@<server>`, then open <http://127.0.0.1:8372>. The Daily and
 Scoreboard pages are a component (`dashboard/install.sh`), installed by the same script whenever it is present.
 
+To open a dashboard from a browser with no VPN (HTTPS and a login, Caddy on the server itself), run
+[`public-dashboard/expose.sh`](public-dashboard/README.md) by hand; `setup.sh` never does.
+
 ## Configuration
 
 One file, `~/.config/gcs/config.env`, written with its defaults on the first run and documented line by line.

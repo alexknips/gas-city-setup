@@ -1,0 +1,37 @@
+# Caddyfile TEMPLATE for public-dashboard/expose.sh. The upper-case names wrapped in double at-signs below
+# are filled in by the script; the rendered file lives only on the host (/etc/caddy/Caddyfile), never in
+# this repo.
+#
+# One site, one login. Everything under the hostname, every path, sits behind basic_auth; there is no
+# route that answers before it (ACME challenges are handled inside Caddy ahead of all routes).
+{
+	# Bind to one address instead of the wildcard. A wildcard :443 would collide with anything that already
+	# listens on a specific address there (tailscaled does, on the tailnet IP).
+	default_bind @@BIND_IP@@
+	@@ACME_CA_LINE@@
+}
+
+@@HOSTNAME@@ {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		X-Robots-Tag "noindex, nofollow"
+		Cache-Control "no-store"
+		-Server
+	}
+
+	# Single user. Password is a long random string; only its bcrypt hash is in this file.
+	basic_auth {
+		@@USER@@ @@PASSWORD_HASH@@
+	}
+
+	# The upstream is read-only already; refuse anything else here as well (defence in depth).
+	@not_read not method GET HEAD
+	respond @not_read "Method not allowed" 405
+
+	reverse_proxy @@UPSTREAM@@
+}
