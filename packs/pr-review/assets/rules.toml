@@ -2,7 +2,11 @@
 # matches on a PR's changed paths (`paths`), on its added lines (`added`), or both; `in_paths` limits
 # `added` to files whose path matches, `not_paths` skips files whose path matches. Patterns are Python
 # regexes, searched (not anchored); keep one term per pattern, so a backtest can say which term flags
-# what (markers p<i> and a<i> are indexes into `paths` and `added`). A city replaces this file with
+# what (markers p<i> and a<i> are indexes into `paths` and `added`). A rule with a `control` guards a control
+# (access, patient data, audit; SOC 2 CC6/CC7, HIPAA 164.312): its hunk is never silent. The review prompt
+# names the control beside the hunk, a review held only for the reader's usefulness score still goes out
+# when an item of it sits on the hunk, and a held review's note asks the control first (README, "Never
+# silent on a control"). Write it as the question, in plain words. A city replaces this file with
 # PR_REVIEW_RULES = "<path>". The code-defined rules (requested, ci-*, migration*, conflicts, untested,
 # no-description) are always on and are described in the README.
 #
@@ -24,6 +28,7 @@ not_paths = ['(?i)\.(md|mdx|txt|rst|lock|snap|svg|png|jpe?g|gif|ico|pdf)$', '(?i
 id = "phi-schema"
 area = "A1"
 label = "schema, model or migration lines that name patient data"
+control = "who can read the new patient fields, are they protected like the rest, and is reading them logged"
 in_paths = ['(?i)(migrations?/|migrate/|alembic/|drizzle/|schema|models?/|entities/|\.prisma$|\.sql$)']
 added = ['(?i)\b(patients?|members?)\b', '(?i)\b(dob|date_?of_?birth|birth_?date)\b', '(?i)\b(ssn|social_?security)\b', '(?i)\b(mrn|medical_?record\w*)\b', '(?i)\b(diagnos\w*|icd_?10|conditions?)\b', '(?i)\b(medications?|prescriptions?)\b', '(?i)\b(insurance\w*|member_?id|policy_?number|payer\w*)\b', '(?i)\b(first_?name|last_?name|full_?name)\b', '(?i)\b(phone\w*|address\w*|zip_?code|postal_?code)\b']
 
@@ -31,6 +36,7 @@ added = ['(?i)\b(patients?|members?)\b', '(?i)\b(dob|date_?of_?birth|birth_?date
 id = "phi-logs"
 area = "A1"
 label = "a log, error or print call that passes patient data"
+control = "which patient fields now reach logs, errors or events, and who can read them there"
 # A log call whose arguments interpolate or pass a patient-data field: `${patient.email}`, `, dob)`,
 # `patient.phone`. A message that only says the word ("patient sync done") does not count.
 added = ['(?i)(console\.(log|info|warn|error|debug)|logger\.\w+|\blog\.(info|warn|warning|error|debug|exception)|logging\.\w+|\bprint\(|capture(Exception|Message)|new \w*Error\(|raise \w+\().*(\$\{[^}]*|[(,]\s*|\b(patient|member|user|contact|lead)\??\.)(patients?|dob|birth\w*|ssn|mrn|diagnos\w*|medications?|insurance\w*|phone\w*|address\w*|email\w*|first_?name|last_?name|full_?name)\b']
@@ -39,6 +45,7 @@ added = ['(?i)(console\.(log|info|warn|error|debug)|logger\.\w+|\blog\.(info|war
 id = "phi-third-party"
 area = "A1"
 label = "analytics, export or a third party that could receive patient data"
+control = "which patient fields now leave for the outside service, and may that service receive them"
 paths = ['(?i)(analytics|telemetry|tracking)', '(?i)\bexports?\b', '(?i)webhooks?', '(?i)integrations?/']
 added = ['(?i)\b(posthog|segment|mixpanel|amplitude|gtag|google-analytics)\b', '(?i)\b(datadog|sentry)\b', '(?i)\b(intercom|hubspot|salesforce|zapier)\b', '(?i)\b(openai|anthropic|gemini)\b', '(?i)\bwebhooks?\b', '(?i)\b(to_csv|csv\.writer|createObjectCsvWriter|exportTo\w+|putObject|upload_file)\b']
 
@@ -52,6 +59,7 @@ paths = ['(?i)athena', '(?i)(mychart|\bepic\b)', '(?i)(fhir|hl7)', '(?i)\b(ehr|e
 id = "phi-ehr-write"
 area = "A1"
 label = "a line that writes, sends or syncs to an EHR"
+control = "what is written to the health record when the input is wrong, repeated or for another patient, and can it be undone"
 # A write verb called on the same line as an EHR name, in either order. Mentions alone (UI text,
 # types, reads) do not count: in the first backtest the bare names flagged 30% of all PRs.
 added = ['(?i)\b(athena\w*|epic|mychart|fhir|ehr|emr|redox|healthie|elation)\b.*\b(post|put|patch|create|update|upsert|write|push|send|sync|delete|cancel|book)\w*\(', '(?i)\b(post|put|patch|create|update|upsert|write|push|send|sync|delete|cancel|book)\w*\(.*\b(athena\w*|epic|mychart|fhir|ehr|emr|redox|healthie|elation)\b', '''(?i)method:\s*['"](POST|PUT|PATCH|DELETE)['"].*\b(athena|epic|mychart|fhir|ehr|emr)''']
@@ -68,6 +76,7 @@ added = ['\b\d{3}-\d{2}-\d{4}\b', '\(?\b\d{3}\)?[-. ](?!555)\d{3}[-. ]\d{4}\b', 
 id = "sec-auth"
 area = "A2"
 label = "sign-in, sessions, roles or permissions"
+control = "who can reach this now: can a signed-out user, another role or another practice's user get past a check that stopped them before"
 paths = ['(?i)(auth(?!or)|login|signin|sign-in|signup|logout)', '(?i)session', '(?i)(oauth|sso|saml|oidc|jwt)', '(?i)(passw(or)?d|mfa|2fa|\botp\b)', '(?i)(permission|rbac|\broles?\b|\bacl\b|guards?/)', '(?i)polic(y|ies)', '(?i)(^|/)middleware\.\w+$']
 
 [[rule]]
@@ -94,6 +103,7 @@ paths = ['^\.github/(workflows|actions)/', '(?i)(^|/)(CODEOWNERS|\.gitlab-ci\.ya
 id = "sec-audit"
 area = "A2"
 label = "audit logging"
+control = "is every access to patient data and every sign-in or permission change here still written to the audit log"
 paths = ['(?i)audit']
 added = ['(?i)\baudit[_ -]?(log|trail|events?)\w*']
 

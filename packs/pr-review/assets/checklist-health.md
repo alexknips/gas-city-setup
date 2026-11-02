@@ -8,7 +8,8 @@ A1. Protected health information (PHI). Ground: HIPAA Security Rule technical sa
 authentication (d), transmission security (e).
 - Patient data newly stored, or a schema or migration that adds or changes fields holding it:
   who can read it, is it encrypted where the rest is, is access logged.
-- Patient data in logs, error messages, exceptions, analytics or telemetry events.
+- Patient data in logs, error messages, exceptions, analytics or telemetry events, or in metadata:
+  URLs and query strings, file names, headers, tags, job or event names.
 - Patient data in exports (CSV, files, emails) or sent to a third party: analytics, AI/LLM APIs,
   webhooks, CRMs. Name the third party and the fields.
 - Writes to an EHR (Athena, Epic, MyChart, FHIR, HL7 and similar): what is written, can it be wrong
@@ -16,14 +17,31 @@ authentication (d), transmission security (e).
 - Real-looking personal data in tests, fixtures or seeds (names with dates of birth, SSNs, phone
   numbers, emails, addresses).
 
-A2. Security and SOC 2. Ground: Trust Services Criteria CC6 (logical access), CC7 (system
-monitoring), CC8.1 (change management), plus the security review above.
+A2. Security and SOC 2. Ground: Trust Services Criteria CC6.1-CC6.3 (logical access, least
+privilege), CC7.2 (monitoring and audit), CC8.1 (change management), plus the security review above.
 - Sign-in, sessions, roles, permissions: can a user reach data or actions of another practice,
-  patient or role. Missing or weakened authorization checks.
+  patient or role. Missing or weakened authorization checks. Read every changed condition in
+  sign-in, session, middleware, guard, role or permission code as an attacker would; the subtle
+  forms count: a new early return, skip list, allow list, public route or "reason" that lets a
+  request through; a default that grants access when a value is missing; a check moved after the
+  action it guards; a comparison widened (any for all, includes for equals, a prefix match); a
+  role, user or practice taken from the request instead of the session.
+- Tenant scoping: every new or changed query, endpoint or job over patient or practice data is
+  limited to the caller's practice, taken from the session.
+- Least privilege: new roles, service accounts, API keys, tokens or IAM statements get the narrowest
+  access that works; a wildcard, an admin grant or a longer-lived credential is a finding.
 - Secrets and keys: committed, logged, or sent to the client.
 - Infrastructure: WAF, IAM, Kubernetes, CDK, Terraform: wider access, public exposure, removed limits.
 - CI workflows: permissions, secrets exposure, untrusted input in workflow steps.
-- Audit logging: removed, reduced, or missing for a new sensitive action.
+- Audit logging: removed, reduced, or missing for a new sensitive action. Here a missing audit log for
+  access to patient data, or for a sign-in, role or permission change, is a finding (HIPAA
+  164.312(b), SOC 2 CC7.2), whatever an exclusion in the security review above says.
+- A flagged hunk marked CONTROL names the control it touches: answer that control for the hunk.
+  Clear it only with the fact that shows the control still holds (the check or the test that still
+  refuses the request, the field that still stays out of the log); reading it as fine is not
+  enough. Without that fact it is an item.
+- Never say or imply that the change is HIPAA- or SOC 2-compliant or certified: name the control
+  and what you checked.
 
 A3. Money (billing, plans, credits, pricing): NOT CHECKED. Do not review it and do not imply that you
 did. The review states "Not checked: billing, plans, credits, pricing." on its own.

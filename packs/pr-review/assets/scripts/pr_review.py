@@ -358,8 +358,7 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
     checklist = open(cfg['checklist']).read()
     style = SCRIPT_ONLY_RE.sub('', open(STYLE).read())  # the parts the script writes stay out (byte-identical prompt)
     idx = pr_format.diff_index(diff)
-    hunks = '\n'.join(f"- {f['id']}: {f['path']} line {f['line']} (new side), hunk {hunk_span(idx, f)}: {f['label']}"
-                      for f in flagged) or '- none'
+    hunks = flag_lines(idx, flagged)
     final = FINAL.replace('{not_checked}', not_checked or 'billing, plans, credits or pricing')
     final = final.replace('{name}', NAME).replace('{author}', author)
     final = final.replace('{author_option}', '"You change it to follow the rule"' if cfg.get('voice') == 'reviewer'
@@ -375,6 +374,12 @@ def build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, not_checked,
             f'{hunks}\n\nVALID ITEM RANGES (an item\'s line_start and line_end must both fall inside ONE of these '
             f'ranges on its side, or the review is rejected):\n{hunk_ranges(diff)}\n\n'
             f"{final}")
+
+
+def flag_lines(idx, flagged):
+    """The prompt's FLAGGED HUNKS lines; a rule that guards a control names it (gcs-9j8)."""
+    return '\n'.join(f"- {f['id']}: {f['path']} line {f['line']} (new side), hunk {hunk_span(idx, f)}: {f['label']}"
+                     + (f"; CONTROL: {f['control']}" if f.get('control') else '') for f in flagged) or '- none'
 
 
 # Step 1's second half when the prompt carries REPOSITORY CONTEXT (PR_REVIEW_CONTEXT=on, gc-sy1hm.2 a).
@@ -1188,7 +1193,9 @@ def not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, 
     and one rule-level decision with lettered options and a recommendation. `floor`: the minimal note
     when the note itself was held (never silent): one place, described by the script's own words."""
     places, seen = [], set()
-    for x in list(money) + [dict(pr_format.changed_range(idx, f['path'], f['line']), what=f['label']) for f in flagged]:
+    ctl = [dict(pr_format.changed_range(idx, f['path'], f['line']), what=f['label']) for f in pr_rules.controlled(flagged)]
+    rest = [dict(pr_format.changed_range(idx, f['path'], f['line']), what=f['label']) for f in flagged if not f.get('control')]
+    for x in ctl + list(money) + rest:  # gcs-9j8: a control first
         k = (x['path'], x.get('hunk') if x.get('hunk') is not None else x['line_start'])
         if k not in seen:
             seen.add(k)
@@ -1230,7 +1237,7 @@ def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note
     Returns (rv, body, comments, meta: counts, rule ids and cost); rv None when no place got a question
     that passes, or the questions match a secret's shape: the stock fallback then."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
-    places = pr_fallback.places(idx, money, flagged if note else [], fill=note)
+    places = pr_fallback.places(idx, money, flagged if note else pr_rules.controlled(flagged), fill=note)
     if not places or not (answer or cfg.get('judge_model')):
         return None, None, None, {'asked': 0}
     items, others, summary, meta = pr_fallback.ask(cfg, idx, places, answer, title=pr.get('title') or '',
@@ -1264,6 +1271,20 @@ def asked_log(meta, form):
 def linked_paths(rv):
     """The files a review's decisions and items link, for their line counts at the head (R16)."""
     return [w['path'] for d in rv['decisions'] for w in d.get('where') or []] + [i['path'] for i in rv['items']]
+
+
+USEFUL_HOLD = 'R26: the reader test scored useful '
+
+
+def control_waiver(rv, flagged, reasons):
+    """gcs-9j8: the rule ids of the controlled flags that an item of `rv` sits on, when the reader's usefulness
+    score alone holds it ([] otherwise, and for any other reason: markers, a gate rule, R31, R37). A subtle change to
+    sign-in, permissions, patient data or the audit log is the class a review must not go silent on: the review
+    that names it goes out even when the reader found the rest of it of little use."""
+    if not reasons or not all(r.startswith(USEFUL_HOLD) for r in reasons):
+        return []
+    return pr_rules.covers([i for i in rv.get('items') or [] if i.get('kind') in ('change', 'question')],
+                           pr_rules.controlled(flagged))
 
 
 def reader_reasons(scores, jm, risky):
@@ -1575,6 +1596,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             links = [(d.get('link') or {}).get('path') for d in rv['decisions'] if (d.get('link') or {}).get('kind') == 'code']
             reasons = pr_format.gate(rv, idx, body, tree_lines(tree, links), pr.get('body') or '', flagged, comments)
             extra['r31_questions'] = len(asked)
+        cand = (rv, body, comments, reasons)  # gcs-9j8: the review as it stands and what holds it
         if pr_format.fixable(reasons):
             # The flow fix (the mayor, 2026-10-30 16:10Z and 16:36Z): the posted review is never worse than the
             # one it replaces, so a wording or format rule never turns a finished review into a fallback.
@@ -1607,9 +1629,17 @@ def model_review(cfg, key, entry, dry, rereview=False):
             extra['repair_held'] = sorted({r.split(':')[0] for r in again})
             if again:  # still held: the reasons that hold it now (the fallback split below)
                 keep_held(cfg, entry, pr, 'repaired', rv_r, body_r, again, flagged, diff, author)
+                cand = (rv_r, body_r, comments_r, again)
             else:
                 rv, body, comments = rv_r, body_r, comments_r
             reasons = again
+        waived = control_waiver(cand[0], flagged, cand[3]) if reasons else []
+        if waived:
+            # gcs-9j8: held only for the reader's usefulness score, yet an item sits on a hunk whose rule guards a
+            # control (access, patient data, audit): it goes out, never the fallback's general question or silence.
+            rv, body, comments, reasons = cand[0], cand[1], cand[2], []
+            rv['approve'] = False
+            extra.update(control_waived=waived, held_useful=extra.get('judge'))
         # Enum values, counts and rule ids only, so the log can say why reviews end where they do.
         extra.update(decisions=len(rv['decisions']), author_decisions=len(pr_format.split(rv['decisions'])[1]),
                      items=len(rv['items']), cleared=len(rv['cleared']),
@@ -1638,14 +1668,15 @@ def model_review(cfg, key, entry, dry, rereview=False):
         fb_since = pr_incremental.held(since_rows, prev, pr['headRefOid']) if prev and since_rows else None
         fallback = held and pr_rules.held_fallback(
             'requested' in hits, bool(rv['not_checked']),
-            held == 'held-gate', reviewed)
+            held == 'held-gate', reviewed, bool(pr_rules.controlled(flagged)))
         if fallback == 'not-checked-minimal':
             # The gate or the reader test held it twice, but a PR that touches a not-checked area is never silent:
             # first one question per money place (R33, the mayor 21:39Z); without one that passes, line 2, the
             # stock money question and the facts line, with no model findings.
             def gated(x, b, c):
                 return pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c)
-            rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, [], money, author, ruleset, since=fb_since)
+            rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, pr_rules.controlled(flagged), money, author,
+                                                       ruleset, since=fb_since)
             reasons, form = (gated(rv, body, comments), 'asked') if rv else (['R33: no question'], 'asked')
             if reasons:
                 if rv:
@@ -1660,7 +1691,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 fs, _, fm = pr_judge.judge(cfg, body, comments, NAME, author)
                 extra.update(fallback_judge=fs, judge_cost_usd=extra['judge_cost_usd'] + (fm.get('cost_usd') or 0))
             held = 'held-gate' if reasons else None
-            fallback = held and pr_rules.held_fallback('requested' in hits, False, False, reviewed)
+            fallback = held and pr_rules.held_fallback('requested' in hits, False, False, reviewed,
+                                                       bool(pr_rules.controlled(flagged)))
         if fallback == 'not-reviewed':
             # A PR that requests the reviewer, or one we reviewed before, is never silent: the note, with its floor (R33).
             codes = extra.get('held_gate') or extra['gate']
@@ -1765,6 +1797,7 @@ def selftest():
               body.count('](https://github.com/o/r/blob/') == 10 and '<details><summary>Other places</summary>' in body
               and '/pull/1/files)' not in body}
     checks.update(selftest_asked(cfg, idx, flagged, pr, ruleset, real))
+    checks.update(selftest_control(idx))
     checks.update(selftest_followup(idx, pr))
     calls = []
 
@@ -1802,6 +1835,41 @@ def selftest():
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
+
+
+def selftest_control(idx):
+    """gcs-9j8: a review held only for the reader's usefulness score goes out when an item sits on a controlled hunk;
+    any other hold, an item elsewhere or a flag without a control keeps it held; the prompt names the control."""
+    ctl = {'id': 'F1', 'rule': 'sec-auth', 'label': 'sign-in', 'path': 'src/a0.ts', 'line': 2, 'control': 'who can reach this now',
+           'area': 'A2'}
+    plain = {'id': 'F2', 'rule': 'irrev-messages', 'label': 'a message', 'path': 'src/a1.ts', 'line': 2}
+    on = {'path': 'src/a0.ts', 'side': 'new', 'line_start': 1, 'line_end': 3, 'kind': 'question'}
+    off = dict(on, path='src/a1.ts')
+    useful = ['R26: the reader test scored useful 2, at least 3 needed']
+    markers = ['R26: the reader test scored markers 3, at least 4 needed']
+    rv = {'items': [on]}
+    return {
+        'gcs-9j8: held only for usefulness, an item on a controlled hunk: it goes out':
+            control_waiver(rv, [ctl, plain], useful) == ['sec-auth'],
+        'gcs-9j8: a markers hold, a gate rule or R31 beside it keeps it held':
+            control_waiver(rv, [ctl], useful + markers) == [] and control_waiver(rv, [ctl], markers) == [] and
+            control_waiver(rv, [ctl], useful + ['R31: cleared entries [1] describe a possible risk']) == [] and
+            control_waiver(rv, [ctl], useful + ['R4: an ask is too long']) == [],
+        'gcs-9j8: no item on the controlled hunk, or a flag without a control: held':
+            control_waiver({'items': [off]}, [ctl, plain], useful) == [] and control_waiver(rv, [plain], useful) == [] and
+            control_waiver({'items': [dict(on, side='old')]}, [ctl], useful) == [] and control_waiver(rv, [ctl], []) == [],
+        'gcs-9j8: the prompt names the control beside its flagged hunk, not beside the others':
+            'F1: src/a0.ts line 2 (new side)' in flag_lines(idx, [ctl, plain]) and
+            flag_lines(idx, [ctl, plain]).splitlines()[0].endswith('; CONTROL: who can reach this now') and
+            'CONTROL' not in flag_lines(idx, [ctl, plain]).splitlines()[1] and flag_lines(idx, []) == '- none',
+        "gcs-9j8: the waiver reads the reader test's own usefulness reason, not its markers reason":
+            [r.startswith(USEFUL_HOLD) for r in pr_judge.below_bar(dict(scan=5, markers=3, decisions=5, plain=5, length=5,
+                                                                        useful=2))] == [False, True],
+        'gcs-9j8: a held review with a controlled hunk is never silent, even unrequested and never reviewed':
+            pr_rules.held_fallback(False, False, True, False, True) == 'not-reviewed' and
+            pr_rules.held_fallback(False, False, False, False, True) == 'not-reviewed' and
+            pr_rules.held_fallback(False, False, True, False, False) is None,
+    }
 
 
 def selftest_asked(cfg, idx, flagged, pr, ruleset, real):

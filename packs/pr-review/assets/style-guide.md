@@ -194,4 +194,10 @@ benchmark's pin (the mayor, 2026-10-30 22:22Z). The gate checks them like the ru
   R27. A follow-up on a fallback never approves. One follow-up per batch of answers, at most
   PR_REVIEW_FOLLOWUP_ROUNDS per head, then one line tells the author and it stops. A fallback's line 1 says
   who acts only while the author has something to do.
+- v6.1, 2026-11-02, gcs-9j8 (decision-0c7a6507, after the red-team pilot): never silent on a control. A rule
+  with a `control` (sign-in and permissions, the audit log, patient data in logs, schemas, third parties and
+  health-record writes) names it beside its flagged hunk. R26: a review held only for the reader's usefulness
+  score still goes out, never approving, when one of its items sits on a controlled hunk. R33: a held review
+  with a controlled hunk is never silent, requested or not, and the fallback asks the controlled hunks first
+  with the control as the question (medium severity).
 <!-- /not in the review prompt -->

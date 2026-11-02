@@ -10,7 +10,8 @@ one more turn with the reasons; a place still without a question goes to the col
 linked to its lines. When no place has a question, the fallback is the stock one (R33's ladder). Nothing
 it reads or writes is printed.
 
-  places(idx, money, flagged)       the places, the riskiest first: money places, the flagged hunks, else the largest hunks
+  places(idx, money, flagged)       the places, the riskiest first: controlled hunks, money places, the other flagged
+                                    hunks, else the largest hunks
   ask(cfg, idx, places[, answer])   (items, the places not asked about, "What it does", meta): the questions as items
 
 The same turn reads the PR's title and description and writes one "What it does" sentence, checked like the
@@ -59,6 +60,11 @@ get one question about each place, so each question must be worth their time. Wr
   - `reason`: one sentence of at most 25 words: what goes wrong, and for whom, if the answer is not what
     the code assumes.
 
+A place marked CONTROL changes who can reach data or actions, or where patient data goes. Its question
+asks that control about this place, in plain words: who can now get through, see, send or change what
+they could not before. Its reason says who could then reach which data or actions. For such a place this
+replaces the behaviour question above.
+
 Never a stock question that fits any pull request: never ask whether it was tested, who reviews it,
 whether it is safe or correct in general, or for a sign-off. Use plain words a person who does not read
 code understands: no file, function or variable names, no code, no links. Give `n`, the place's number.
@@ -84,15 +90,21 @@ WHY = {'R29': 'the change must be 3 to 6 plain words with no code names', 'R13':
        'none': 'no answer came back'}
 
 
+# A controlled place's item area, by its rule's area (rules.toml): patient data for A1, security otherwise.
+CONTROL_AREA = {'A1': 'patient data', 'A2': 'security'}
+
+
 def is_test(path):
     return bool(TEST_RE.search(path or ''))
 
 
 def places(idx, money, flagged, fill=False):
-    """The places to ask about, each once (one per hunk), the riskiest first: the money places that change
-    behaviour by their risk, then the rest of them, then the flagged hunks with their rule's label; when
-    the rules know no place, or with `fill` (the note) fewer than FALLBACK_QUESTIONS, the largest changed
-    hunks outside tests after them. Each place: {path, line_start, line_end, hunk, what, money}."""
+    """The places to ask about, each once (one per hunk), the riskiest first: the flagged hunks whose rule
+    guards a control (gcs-9j8: access, patient data, audit), then the money places that change behaviour by
+    their risk, then the rest of them, then the other flagged hunks with their rule's label; when the rules
+    know no place, or with `fill` (the note) fewer than FALLBACK_QUESTIONS, the largest changed hunks outside
+    tests after them. Each place: {path, line_start, line_end, hunk, what, money}, and a controlled one its
+    rule's `control` question and `area`."""
     out, seen = [], set()
 
     def add(p):
@@ -100,6 +112,10 @@ def places(idx, money, flagged, fill=False):
         if key not in seen:
             seen.add(key)
             out.append(p)
+    for f in flagged:
+        if f.get('control'):
+            add(dict(pr_format.changed_range(idx, f['path'], f['line']), what=f.get('label') or '', money=False,
+                     control=f['control'], area=f.get('area')))
     order = sorted(range(len(money)), key=lambda j: (not money[j].get('behaviour', True), -(money[j].get('risk') or 3), j))
     for j in order:
         add(dict(money[j], money=True))
@@ -123,7 +139,8 @@ def place_text(idx, n, p):
     k = p.get('hunk')
     text = '\n'.join(hunks[k]) if k is not None and k < len(hunks) else '(the change is outside the diff)'
     seen = f" (the rules noted: {p['what']})" if p.get('what') and p['what'] != pr_format.NOT_SUMMARIZED else ''
-    return f"PLACE {n} (new lines {p['line_start']}-{p['line_end']}){seen}:\n{text[:MAX_HUNK_CHARS]}"
+    control = f"\nCONTROL: {p['control']}" if p.get('control') else ''
+    return f"PLACE {n} (new lines {p['line_start']}-{p['line_end']}){seen}:{control}\n{text[:MAX_HUNK_CHARS]}"
 
 
 def words(t):
@@ -167,8 +184,10 @@ def item(p, a):
     """A question as a review item on the place's lines: the body states the ask, the inline comment its
     reason (R4)."""
     end = min(p['line_end'], p['line_start'] + RANGE_MOST - 1)
+    ctl = bool(p.get('control'))  # gcs-9j8: a control's question is not a low-risk curiosity
     return {'path': p['path'], 'side': 'new', 'line_start': p['line_start'], 'line_end': end, 'kind': 'question',
-            'severity': 'low', 'area': 'other', 'change': a['change'].strip().rstrip('.'), 'why': a['reason'].strip(),
+            'severity': 'medium' if ctl else 'low', 'area': CONTROL_AREA.get(p.get('area'), 'security') if ctl else 'other',
+            'change': a['change'].strip().rstrip('.'), 'why': a['reason'].strip(),
             'ask': a['question'].strip(), 'rule': '', 'verified': 'fallback question', 'confidence': 7,
             'money': bool(p.get('money'))}
 
@@ -292,6 +311,19 @@ def selftest():
     checks['each question is an item on its place, in the order of risk'] = [i['path'] for i in items] == \
         ['src/b4.ts', 'src/b3.ts', 'src/b2.ts'] and all(i['kind'] == 'question' and i['money'] for i in items)
     checks['an item never spans more than 40 lines'] = all(i['line_end'] - i['line_start'] < RANGE_MOST for i in items)
+    ctl = {'path': 'src/b2.ts', 'line': 2, 'label': 'sign-in, sessions, roles or permissions', 'rule': 'sec-auth',
+           'control': 'who can reach this now', 'area': 'A2'}
+    cps = places(idx, money[:2], [{'path': 'src/b3.ts', 'line': 2, 'label': 'x'}, ctl])
+    checks['gcs-9j8: a controlled hunk comes before the money places and the other flags'] = \
+        [p['path'] for p in cps] == ['src/b2.ts', 'src/b0.ts', 'src/b1.ts', 'src/b3.ts'] and cps[0]['control'] and \
+        not cps[1].get('control')
+    checks['gcs-9j8: its place text names the control; the prompt tells the model how to ask it'] = \
+        'CONTROL: who can reach this now' in place_text(idx, 1, cps[0]) and 'CONTROL' not in place_text(idx, 2, cps[1]) \
+        and 'A place marked CONTROL' in PROMPT
+    ci = item(cps[0], dict(good[0]))
+    checks["gcs-9j8: a control's question is a medium security item; a money question stays low"] = \
+        ci['severity'] == 'medium' and ci['area'] == 'security' and \
+        item(dict(cps[0], area='A1'), dict(good[0]))['area'] == 'patient data' and item(cps[1], dict(good[0]))['severity'] == 'low'
     none, rest, _, m2 = ask({}, idx, ps, lambda p: (None, {'cost_usd': 0}))
     checks['no answer: no items, every place is another place, two calls'] = none == [] and len(rest) == 5 and \
         m2['calls'] == 2 and m2['failed'] == ['none']

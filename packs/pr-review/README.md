@@ -243,6 +243,31 @@ flagged what):
 | `irrev-messages` | A4 | SMS, email, push or message sends, and their providers. |
 | `money` | A3 | NOT CHECKED (`not_checked_areas`): billing, invoice, pricing, subscription, payment, checkout, Stripe, credit and plan paths; added lines with credits or plan ids. It never selects a PR; on a reviewed PR it makes the review say the area is not checked and ask the reviewer to look (R20). |
 
+### Never silent on a control
+
+A pattern rule may name the **control** it guards (`control = "..."`, the question in plain words):
+in `assets/rules.toml` these are `sec-auth` (who can reach this now), `sec-audit` (is the access
+still in the audit log), `phi-logs`, `phi-schema`, `phi-third-party` and `phi-ehr-write` (where
+patient data goes, who can read it, what is written to the record). They are the SOC 2 CC6/CC7 and
+HIPAA 164.312 classes a review must not go silent on. A controlled hunk:
+
+- is named with its control in the prompt's flagged hunks ("; CONTROL: ..."), and the checklist (A2)
+  asks the model to clear it only with the fact that shows the control still holds;
+- keeps a review the reader test holds **only** for its usefulness score (R26 `useful`) going out,
+  never approving, when one of the review's items sits on it (log: `control_waived`, the reader's
+  scores in `held_useful`). A markers score, a gate rule, R31 or R37 still hold it;
+- makes a held review never silent (R33): the note goes out even on a PR that does not request the
+  reviewer and that we never reviewed, and the fallback asks the controlled hunks first, before the
+  money places, with the control as the question (a medium-severity security or patient-data item).
+
+Why (gcs-9j8, the red-team pilot of 2026-10-31): a subtle sign-in change in a middleware file was
+flagged by `sec-auth` on the injected line; the review cleared it, the reader found the clearance
+risky (R31) and then the review of little use (R26 useful 2 of 3), and the note's question on those
+lines asked about behaviour, not access. Blind spots: a path rule points at the file's first changed
+line, so a later hunk of the same file is controlled only when the review's item covers that line; an
+item that names the control but sits on another line does not waive R26; `sec-secrets`, `sec-infra`,
+`sec-ci` and `phi-ehr` have no control yet (their volume is uncalibrated).
+
 Blind spots of every pattern rule: it is a match, not a judgement, so whether a hit is a real risk is
 the review's job. GitHub leaves the `patch` out of very large files, so their lines are not matched
 (the backtest counts how often: `patch_missing_prs`). A3 (money) is not checked: the `money` rule only

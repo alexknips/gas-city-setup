@@ -162,6 +162,7 @@ def load_rules(path):
             'in_paths': [re.compile(p) for p in r.get('in_paths', [])],
             'not_paths': [re.compile(p) for p in r.get('not_paths', [])],
             'tests': r.get('tests', 'skip'),
+            'control': (r.get('control') or '').strip(),
         })
         if rules[-1]['tests'] not in ('skip', 'also', 'only'):
             raise ValueError(f"rule {r['id']}: tests must be skip, also or only")
@@ -438,15 +439,34 @@ def in_queue(queue, requested, reviewed):
     return queue != 'requested' or bool(requested) or bool(reviewed)
 
 
-def held_fallback(requested, not_checked, gate_held, reviewed=False):
+def held_fallback(requested, not_checked, gate_held, reviewed=False, controlled=False):
     """R33: a held review is never silent on a PR that requests the reviewer, never on a PR in a
-    not-checked area that the gate or the reader test held, and never on a PR with a delivered review of
-    ours (the mayor, 2026-10-30 22:26Z: a held review of a new head left our change request standing):
-    'not-checked-minimal' (the money decision and the status line), 'not-reviewed' (the short note), or
-    None (held, silent: nobody asked for this review and we never reviewed the PR)."""
+    not-checked area that the gate or the reader test held, never on a PR with a delivered review of
+    ours (the mayor, 2026-10-30 22:26Z: a held review of a new head left our change request standing), and
+    never on a PR where a rule with a control flagged a hunk (`controlled`; gcs-9j8: the note asks the
+    control): 'not-checked-minimal' (the money decision and the status line), 'not-reviewed' (the short
+    note), or None (held, silent: nobody asked for this review, we never reviewed the PR and no control
+    rule fired)."""
     if not_checked and gate_held:
         return 'not-checked-minimal'
-    return 'not-reviewed' if requested or reviewed else None
+    return 'not-reviewed' if requested or reviewed or controlled else None
+
+
+def controlled(flagged):
+    """The flagged hunks whose rule guards a control (its `control` question): never silent (gcs-9j8)."""
+    return [f for f in flagged or [] if f.get('control')]
+
+
+def covers(entries, flags):
+    """The rule ids of `flags` whose line an entry's range covers on the new side (items: path and
+    line_start..line_end)."""
+    out = set()
+    for f in flags:
+        for e in entries or []:
+            if e.get('path') == f.get('path') and (e.get('side') or 'new') == 'new' and \
+                    (e.get('line_start') or 0) <= (f.get('line') or -1) <= (e.get('line_end') or e.get('line_start') or 0):
+                out.add(f['rule'])
+    return sorted(out)
 
 
 def added_lines(patch):
@@ -579,12 +599,13 @@ def locate(files, ruleset, hits, limit=12):
             if any(p.search(path) for p in r['not_paths']) or (r['tests'] == 'skip' and is_test) or (
                     r['tests'] == 'only' and not is_test):
                 continue
+            ctl = {'control': r['control'], 'area': r['area']} if r.get('control') else {}
             if any(p.search(path) for p in r['paths']) and first:
-                out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': first})
+                out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': first, **ctl})
             if r['added'] and (not r['in_paths'] or any(p.search(path) for p in r['in_paths'])):
                 for ln, text in added:
                     if any(p.search(text) for p in r['added']):
-                        out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': ln})
+                        out.append({'rule': rid, 'label': r['label'], 'path': path, 'line': ln, **ctl})
                         break
     seen, uniq = set(), []
     for o in out:
