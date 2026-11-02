@@ -639,11 +639,21 @@ It has two halves and a fence between them:
   scripts or settings). A change touching money or spend, scope, releases, merges, credentials or
   architecture is charter-level and its decision defaults to "No change". And the loop is closed by
   the script, not by the reviewer: next week's facts check with git whether the previous diff is in
-  the city (`git apply --check --reverse`: applied; `--check`: not applied; neither: unknown) and
-  read the named metric from both weeks' facts files. It calls the move "as expected" only when the
-  change was applied and the metric moved the wanted way; the review also records what it expected
-  without the change (`expect_without`), because work comes in bursts and a metric can fall on its
-  own.
+  the city (`git apply --check --reverse`: applied; `--check`: not applied) and read the named
+  metric from both weeks' facts files. When neither check passes, because whoever applied the
+  change wrote their own comments or context, it looks for the same change by value: a hunk of a
+  commit since last week's facts (or of the uncommitted diff) in the same file whose old side
+  holds the proposal's old values in order and whose new side its new values, both at one place
+  in the hunk (blank lines, whitespace and `#` comments aside); that shares one line of the
+  proposal's context or removed text which the file does not repeat; and whose lines adding the
+  proposal's new values are still in the file. Then it says applied and names the commit
+  (`applied_by`, shown on the page); else unknown. Checked on W43's cap change (f4b01b3, its own
+  comments: unknown before, applied now) and 14 scratch-repo cases. Blind spots: only `#`
+  comments are ignored; a value moved to another place, or applied before last week's facts,
+  reads unknown; one hunk spanning two like blocks, the other block changed the same way, could
+  read applied. It calls the move "as expected" only when the change was applied and the metric
+  moved the wanted way; the review also records what it expected without the change
+  (`expect_without`), because work comes in bursts and a metric can fall on its own.
 
 When it runs: hourly on a cooldown, like the metrics order; it does the work on the first fire
 after `QUALITY_REVIEW_WEEKDAY` at `QUALITY_REVIEW_HOUR` (local) once that day's quality-metrics run

@@ -6,7 +6,8 @@ No model and no tokens: this script reads the per-day history the quality-metric
 OUT_DIR/reviews/<week>.facts.json and <week>.facts.md for the review seat (formula
 mol-quality-review). The reviewed week is the 7 local days before this week's review day; it is
 compared with the 21 days before it, per week. The script, not the seat, checks whether the last
-review's change was applied (git apply --check) and reads its metric now.
+review's change was applied (git apply --check, else by value in a commit since) and reads its
+metric now.
 
     quality_review.py --due              print the week a review is due for (exit 0), or why not (exit 1)
     quality_review.py --facts [--week W] write the facts for the due week (or week W, e.g. 2026-W43)
@@ -19,7 +20,7 @@ import os
 import re
 import subprocess
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -241,11 +242,12 @@ def previous_review(label):
     return q.load_json(os.path.join(REVIEWS, f"{p}.json"), None), q.load_json(os.path.join(REVIEWS, f"{p}.facts.json"), None)
 
 
-def applied(diff, repo):
-    """'applied' when the diff is already in the repo, 'not applied' when it still applies, else
-    'unknown' (the files changed in another way since)."""
+def applied(diff, repo, since=None):
+    """(verdict, by): 'applied' when the diff is already in the repo, 'not applied' when it still
+    applies, else the same change by value (applied_by_value: a commit since the review, or the
+    uncommitted diff, named in `by`), else 'unknown' (the files changed in another way since)."""
     if not diff or not diff.strip():
-        return "no diff"
+        return "no diff", None
     patch = os.path.join(q.STATE_DIR, "review-check.patch")
     os.makedirs(q.STATE_DIR, exist_ok=True)
     with open(patch, "w") as f:
@@ -255,15 +257,146 @@ def applied(diff, repo):
             r = subprocess.run(["git", "-C", repo, "apply", "--check", *args, patch], capture_output=True, text=True,
                                timeout=60)
             if r.returncode == 0:
-                return verdict
-        return "unknown"
+                return verdict, None
+        by = applied_by_value(diff, repo, since)
+        return ("applied", by) if by else ("unknown", None)
     except (OSError, subprocess.SubprocessError):
-        return "unknown"
+        return "unknown", None
     finally:
         try:
             os.remove(patch)
         except OSError:
             pass
+
+
+def value(line):
+    """A config line's value: whitespace collapsed, a trailing ' #' comment dropped; '' for a blank
+    or comment-only line. Only '#' comments (TOML, shell, YAML): the city's config languages."""
+    s = line.strip()
+    if s.startswith("#"):
+        return ""
+    s = re.split(r"\s#", s, maxsplit=1)[0]
+    return " ".join(s.split())
+
+
+def hunks(diff):
+    """Each hunk of a unified diff: {file, lines: [(tag, text)]}, tag ' ', '-' or '+', in order.
+    Hunk ends come from the header's line counts, so a removed line that starts with '--' stays a
+    line."""
+    out, path, cur, old, new = [], None, None, 0, 0
+    for ln in diff.splitlines():
+        if cur is not None and (old > 0 or new > 0):
+            tag, text = (ln[:1] or " "), ln[1:]
+            if tag in " -+":
+                cur["lines"].append((tag, text))
+                old -= tag != "+"
+                new -= tag != "-"
+            continue  # '\ No newline at end of file' and the like
+        m = re.match(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", ln)
+        if m and path:
+            old, new = int(m.group(1) or 1), int(m.group(2) or 1)
+            cur = {"file": path, "lines": []}
+            out.append(cur)
+        elif ln.startswith("+++ "):
+            p = ln[4:].split("\t")[0].strip()
+            path, cur = p.removeprefix("b/"), None
+    return out
+
+
+def minus(a, b):
+    """The multiset a - b, in a's order."""
+    b, out = list(b), []
+    for v in a:
+        if v in b:
+            b.remove(v)
+        else:
+            out.append(v)
+    return out
+
+
+def sides(h):
+    """A hunk's old and new side as (position in the hunk, value) in order; blank and
+    comment-only lines dropped."""
+    old, new = [], []
+    for i, (tag, text) in enumerate(h["lines"]):
+        v = value(text)
+        if v:
+            if tag != "+":
+                old.append((i, v))
+            if tag != "-":
+                new.append((i, v))
+    return old, new
+
+
+def runs(side, vals):
+    """(first, last) hunk positions of each contiguous run of vals in side."""
+    n, seq = len(vals), [v for _, v in side]
+    return [(side[k][0], side[k + n - 1][0]) for k in range(len(seq) - n + 1) if seq[k:k + n] == vals]
+
+
+def same_place(h, p_old, p_new):
+    """True when hunk h holds the proposal's old values as one run on its old side and its new
+    values as one run on its new side, the two runs overlapping in the hunk (the same block)."""
+    h_old, h_new = sides(h)
+    ro, rn = runs(h_old, p_old) if p_old else None, runs(h_new, p_new) if p_new else None
+    if ro is None or rn is None:
+        return bool(ro or rn)
+    return any(a <= d and c <= b for a, b in ro for c, d in rn)
+
+
+def applied_by_value(diff, repo, since=None):
+    """The commits (short SHAs, or 'uncommitted') that made the proposal's change, when the exact
+    diff no longer matches because whoever applied it wrote their own comments or context. A
+    proposal hunk counts as applied by a hunk of one commit since the review (or of the working
+    tree's diff) in the same file whose old side holds the proposal's old values in order and whose
+    new side its new values (comments, blank lines and whitespace aside), both at one place in the
+    hunk; that shares one line of the proposal's context or removed text which the file does not
+    repeat (the same place, not a like block elsewhere); and whose lines adding the proposal's new
+    values are still in the file. None unless every proposal hunk that changes a value is found."""
+    props = []
+    for p in hunks(diff):
+        so, sn = sides(p)
+        o, n = [v for _, v in so], [v for _, v in sn]
+        if minus(o, n) or minus(n, o):
+            props.append((p, o, n, set(minus(n, o))))
+    if not props:
+        return None
+    files = sorted({p["file"] for p, *_ in props})
+
+    def run(*a):
+        return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, timeout=60, check=False)
+    log = run("log", f"--since={since or '30 days ago'}", "--no-color", "--no-ext-diff", "-U3", "--format=%x00%h", "-p",
+              "--", *files)
+    wt = run("diff", "--no-color", "--no-ext-diff", "-U3", "HEAD", "--", *files)
+    cands = [("uncommitted", wt.stdout)] if wt.returncode == 0 and wt.stdout.strip() else []
+    cands += [(c.split("\n", 1)[0].strip(), c.split("\n", 1)[1] if "\n" in c else "")
+              for c in (log.stdout.split("\x00")[1:] if log.returncode == 0 else [])]
+    now, seen = {}, {}
+    for f in files:
+        try:
+            with open(os.path.join(repo, f), errors="replace") as fd:
+                lines = fd.read().splitlines()
+        except OSError:
+            lines = []
+        now[f], seen[f] = {ln.rstrip() for ln in lines}, Counter(ln.strip() for ln in lines)
+    by = []
+    for p, p_old, p_new, added in props:
+        anchor = {s for s in (t.strip() for tag, t in p["lines"] if tag != "+") if s and seen[p["file"]][s] < 2}
+        hit = None
+        for name, text in cands:  # newest first: the change as it stands
+            for h in hunks(text):
+                if (h["file"] == p["file"] and same_place(h, p_old, p_new)
+                        and anchor & {t.strip() for tag, t in h["lines"] if tag != "+"}
+                        and all(t.rstrip() in now[p["file"]] for tag, t in h["lines"] if tag == "+" and value(t) in added)):
+                    hit = name
+                    break
+            if hit:
+                break
+        if not hit:
+            return None
+        if hit not in by:
+            by.append(hit)
+    return ", ".join(by)
 
 
 def last_review_check(label, metrics):
@@ -275,10 +408,11 @@ def last_review_check(label, metrics):
     then = ((facts or {}).get("metrics") or {}).get(key, {}).get("last") if key else None
     now = (metrics.get(key) or {}).get("last") if key else None
     repo = ch.get("repo") or q.CITY
+    verdict, by = applied(ch.get("diff"), repo, (facts or {}).get("generated_at"))
     out = {"week": rev.get("week"), "change": ch.get("title"), "metric": key, "direction": ch.get("direction"),
            "target": ch.get("target"), "expect_without": ch.get("expect_without"), "then": then, "now": now,
            "moved": r2(now - then) if isinstance(now, (int, float)) and isinstance(then, (int, float)) else None,
-           "applied": applied(ch.get("diff"), repo), "repo": repo,
+           "applied": verdict, "applied_by": by, "repo": repo,
            "decision_default": (rev.get("decision") or {}).get("default")}
     if out["moved"] is not None and out["direction"] in ("down", "up") and out["applied"] == "applied":
         # moved the wanted way; whether the change caused it is the reviewer's call (see expect_without)
@@ -439,7 +573,9 @@ def to_md(f):
     if not lr:
         L.append("No earlier review in the output directory.")
     else:
-        L.append(f"Week {lr['week']}: {lr['change'] or '(no change proposed)'}. Applied: {lr['applied']} (git apply --check in "
+        how = (f"by value in {lr['applied_by']}: the same values, other comments or context" if lr.get("applied_by")
+               else "git apply --check")
+        L.append(f"Week {lr['week']}: {lr['change'] or '(no change proposed)'}. Applied: {lr['applied']} ({how} in "
                  f"{lr['repo']}). Metric {lr['metric']}: then {fh(lr['then'])}, now {fh(lr['now'])}, moved {fh(lr['moved'])} "
                  f"(wanted {lr['direction'] or '-'} to {lr['target']})" + (f"; as expected: {lr['as_expected']}" if "as_expected" in lr else "") + ".")
     return "\n".join(L) + "\n"
@@ -468,7 +604,7 @@ def build_index():
                       "decision_default": dc.get("default")})
         lr = (nxt or {}).get("last_review")
         if lr and lr.get("week") == w:
-            e["followup"] = {k: lr.get(k) for k in ("applied", "metric", "then", "now", "moved", "as_expected")}
+            e["followup"] = {k: lr.get(k) for k in ("applied", "applied_by", "metric", "then", "now", "moved", "as_expected")}
         weeks.append(e)
     return {"generated_at": q.iso(datetime.now(UTC)), "weeks": weeks}
 

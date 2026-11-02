@@ -504,11 +504,11 @@ function renderReview() {
       el("td", { class: "l" }, sd && sd.stage ? document.createTextNode(`${STAGE_SHORT[sd.stage] || sd.stage}${sd.rig && sd.rig !== "all" ? ", " + sd.rig : ""}`) : nd(w.review ? "none" : "facts only")),
       el("td", { class: "l change" }, ch && ch.title ? el("span", { class: "bead-title", text: ch.title, title: ch.title }) : nd(w.review ? "no change proposed" : "–")),
       el("td", { class: "l", text: w.decision_default || "–" }),
-      el("td", { class: "l" }, f ? document.createTextNode(f.applied) : nd("next week")),
+      el("td", { class: "l" }, f ? document.createTextNode(f.applied_by ? `${f.applied} (${f.applied_by}, by value)` : f.applied) : nd("next week")),
       el("td", { class: "l", text: metric })));
   }
   tbl.append(body);
-  $("review-note").textContent = "The facts come from a script; the review is one agent's proposal and changes nothing. Whether a change was applied (a git check of its diff) and how its metric moved are read by the next week's script, not by the reviewer.";
+  $("review-note").textContent = "The facts come from a script; the review is one agent's proposal and changes nothing. Whether a change was applied (a git check of its diff, or of the same values in a later commit) and how its metric moved are read by the next week's script, not by the reviewer.";
 }
 
 function renderStops() {
