@@ -200,4 +200,6 @@ benchmark's pin (the mayor, 2026-10-30 22:22Z). The gate checks them like the ru
   score still goes out, never approving, when one of its items sits on a controlled hunk. R33: a held review
   with a controlled hunk is never silent, requested or not, and the fallback asks the controlled hunks first
   with the control as the question (medium severity).
+- v6.2, 2026-11-03, gcs-58j (red-team round 3): R30, the script drops from `Safe to skip:` every file the same
+  review raises an item or a decision on, so a review never tells its reader to skip a file it flags.
 <!-- /not in the review prompt -->

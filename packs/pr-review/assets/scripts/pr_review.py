@@ -1113,7 +1113,10 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
         gaps.append({'kind': 'not-checked', 'rule': '', 'accepted': 'not-checked' in accepted})
     labels = {f['id']: f['label'] for f in flagged}
     cleared = [dict(c, label=labels.get(c.get('flag'), 'a flagged change')) for c in cleared]
-    skip = [dict(g, paths=[x for x in g['paths'] if idx is None or x in idx]) for g in (skim or {}).get('skip') or []]
+    # gcs-58j: a file this review raises a decision or item on is never also "Safe to skip".
+    said = set(linked_paths({'decisions': decisions, 'items': items}))
+    skip = [dict(g, paths=[x for x in g['paths'] if (idx is None or x in idx) and x not in said])
+            for g in (skim or {}).get('skip') or []]
     rv = {'decisions': decisions, 'items': items, 'cleared': cleared, 'summary': (skim or {}).get('summary') or '',
           'skip': [g for g in skip if g['paths']],
           'blockers': pr_format.blockers(repo, pr, ci, ci_detail(pr), conflicts),
@@ -1798,6 +1801,7 @@ def selftest():
               and '/pull/1/files)' not in body}
     checks.update(selftest_asked(cfg, idx, flagged, pr, ruleset, real))
     checks.update(selftest_control(idx))
+    checks.update(selftest_skip(cfg, idx, pr, ruleset))
     checks.update(selftest_followup(idx, pr))
     calls = []
 
@@ -1835,6 +1839,24 @@ def selftest():
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
+
+
+def selftest_skip(cfg, idx, pr, ruleset):
+    """gcs-58j: "Safe to skip" never lists a file the same review raises an item or a decision on; a group
+    left with no file goes, and the other files stay."""
+    item = {'path': 'src/a0.ts', 'side': 'new', 'line_start': 2, 'line_end': 2, 'kind': 'change', 'severity': 'high',
+            'area': 'A2', 'change': 'c', 'why': 'w', 'ask': 'a', 'verified': ''}
+    dec = {'question': 'q', 'reason': 'r', 'why': 'w', 'verified': '', 'options': ['a', 'b'],
+           'where': [{'path': 'src/a2.ts', 'line_start': 2, 'line_end': 2, 'what': 'x'}]}
+    skim = {'summary': 's', 'skip': [{'group': 'docs', 'paths': ['src/a0.ts']},
+                                     {'group': 'tests', 'paths': ['src/a1.ts', 'src/a2.ts', 'src/a3.ts']}]}
+    rv = assemble(dict(cfg, request_changes=False, approve=False), 'o/r', pr, 'green', [dec], [item], [], skim, [], 0, [], ruleset,
+                  'Author', model=True, idx=idx)
+    plain = assemble(dict(cfg, request_changes=False, approve=False), 'o/r', pr, 'green', [], [], [], skim, [], 0, [], ruleset,
+                     'Author', model=True, idx=idx)
+    return {'gcs-58j: a file with an item or a decision is not "Safe to skip"; an emptied group goes, the rest stay':
+            rv['skip'] == [{'group': 'tests', 'paths': ['src/a1.ts', 'src/a3.ts']}] and
+            [g['paths'] for g in plain['skip']] == [['src/a0.ts'], ['src/a1.ts', 'src/a2.ts', 'src/a3.ts']]}
 
 
 def selftest_control(idx):
