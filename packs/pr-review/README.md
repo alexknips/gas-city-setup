@@ -420,6 +420,18 @@ review of ours (an approval, a comment, a change request, a fallback or the note
 - **An answer.** On the head we reviewed: since our first review of it, the PR's author replied in one of our
   review threads, posted a PR comment or a review, or resolved one of our threads (one GraphQL read per PR the
   sweep sees updated; our own posts never count). It queues a same-head follow-up, first in line.
+- **A request made again** (gcs-b3f; the mayor, 2026-11-04: requests made again on reviewed heads, with no new
+  commits, waited 14 hours and were never queued). A submitted review clears the request, so a live request for
+  the reviewer whose time (the newest ReviewRequestedEvent, from the sweep's own read) is after our last delivered
+  review of the same head means someone asked again. It queues a re-review of that head, first in line, run as
+  `--rereview` is, except that it always posts a new review (the old one cut to a pointer): an edit in place
+  would leave the request standing. So does `--rereview` by hand on a PR that requests the reviewer. Loop guard:
+  once per request (`asked_at`), at most `PR_REVIEW_FOLLOWUP_ROUNDS` per head (`asked_rounds`; the sweep counts
+  `asked_again` and, past the rounds, `asked_capped`), and never when our last attempt on the head did not post
+  (held, failed): a person's request after that is the mayor's to run by hand.
+
+A draft is never reviewed or recorded, even when it requests the reviewer; it enters when it is marked ready. The
+sweep's `draft_requested` count says how many drafts ask.
 
 The follow-up (`pr_followup.py`, `pr_review.py --followup REPO#N [--dry-run | --no-deliver]` by hand) gives the
 review model our delivered asks for the author with the replies in their threads and the author's other comments
@@ -747,6 +759,10 @@ commit messages and a PR's title and body (decision-67f9a695, forward only), as 
 at the PR head: `pr_hygiene.py --messages <base>..<head> --pr N --repo OWNER/NAME [--city city.toml]`.
 There the reviewer's own login and name are allowed, matching ignores case, and it prints labels and
 counts only.
+Cases `case-rr-*` (gcs-b3f, the sweep's `asked_after_review`): a request made again after our review or our
+note is a re-review; not for a request our last review answered, after a held or failed attempt, twice for one
+request, past the rounds, on a new head (the push follow-up's), without a live request, or while reviewing; a
+queued one keeps its mark.
 Cases 38-48 (the test batch of 2026-10-29, 22:30Z): a review request added after the first sweep, a
 held head not queued again and a request on a new head (the sweep's `asked_again`); a requested PR
 without CI gets the model, an unrequested one does not (R34, R11); a held requested PR gets the note, a
@@ -832,7 +848,9 @@ First calibration (2026-10-29, three repos, 329 PRs, one author):
    and add that panel path to the quality pack's `quality-stops` override:
    `QUALITY_PANELS = "<out dir>/pr-review-panel.json"` (the Today page shows it as a card).
 3. Check: `gc order run pr-review-sweep`, then `tail $PR_REVIEW_STATE_DIR/pr-review.jsonl`, and
-   `assets/scripts/pr-review-regress.sh` (every fixture as expected).
+   `assets/scripts/pr-review-regress.sh` (every fixture as expected). `pr_review.py --dry-run` (with or
+   without `--pr`) changes no state (gcs-b3f): it says what it would pick and finish, and runs no model (a rules
+   digest that is not cached yet is left out of the prompt it measures).
 
 Going live is one line: `PR_REVIEW_MODE = "live"` on `pr-review-run`. Leave it at `shadow` until
 the reviewer says so.

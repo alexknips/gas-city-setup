@@ -114,6 +114,8 @@ def get(cfg, repo, mirror, commit):
             return old, {'digest': 'cached', 'docs': len(docs), 'rules': len(old['rules'])}
     except (OSError, ValueError, KeyError):
         pass
+    if cfg.get('dry_run'):  # gcs-b3f: a dry run runs no model and writes no cache; the prompt goes without the digest
+        return None, {'digest': 'dry-run', 'docs': len(docs)}
     texts, lines_of, total = [], {}, 0
     for path, blob in docs:
         try:
