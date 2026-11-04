@@ -689,7 +689,10 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
             return
     old_id = entry.get('review_id') if rereview and head in heads else None
     old_event = entry.get('event') or ('APPROVE' if entry.get('approved') else 'COMMENT')
-    if old_id and event == old_event and not comments and not entry.get('inline', entry.get('items', 0)):
+    # gcs-b3f: only a submitted review clears a request; an edit in place would leave it standing
+    asked = entry.get('followup') == 'asked' or bool(cfg.get('reviewer') and fresh.get('reviewRequests')
+                                                       and pr_rules.requested_now(fresh, cfg['reviewer']))
+    if old_id and event == old_event and not comments and not entry.get('inline', entry.get('items', 0)) and not asked:
         posted, url, state, rid = update_review(repo, n, old_id, body)
     else:
         posted, url, state, rid = post_review(repo, pr, body, comments, event)
@@ -1033,6 +1036,9 @@ def run_eval(cfg, key, run=None, answer=False, dry=False):
 def finish(cfg, key, entry, outcome, extra):
     """Record the run's end. 'requeued' puts the PR back in the queue and keeps its bead open."""
     extra = {**eval_tag(entry), **extra}
+    if cfg.get('dry_run'):  # gcs-b3f: a dry run changes no state (a closed, skipped or expiring PR included)
+        print(json.dumps({'pr': entry['url'], 'would': outcome, 'dry_run': True, **extra}))
+        return
     if cfg.get('eval'):
         eval_write(cfg, entry, outcome, extra)
     if cfg.get('no_deliver'):
@@ -1461,7 +1467,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
         if pr.get('eval'):
             commits = pr_rules.unmarked_commits(commits)
         # R37: the repository's own rules, as they stand on the base branch the PR merges into
-        digest, dmeta = pr_digest.get(cfg, repo, mirror, git(mirror, 'rev-parse', f"refs/heads/{pr['baseRefName']}").strip())
+        digest, dmeta = pr_digest.get(dict(cfg, dry_run=True) if dry else cfg, repo, mirror,  # gcs-b3f: dry = no model
+                                      git(mirror, 'rev-parse', f"refs/heads/{pr['baseRefName']}").strip())
         conflicts = conflict_files(mirror, pr)
         # gc-sy1hm.2 a: where the changed code is used and tested, found by a word search (zero tokens)
         context_block, cstats = pr_context.build(tree, pr_format.diff_index(diff)) if cfg.get('context') else ('', {})
@@ -1479,7 +1486,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
         prompt = build_prompt(cfg, pr, diff, files, commits, fork, ctx, flagged, ruleset.get('not_checked'),
                               pr_digest.prompt_block(digest), author, context_block, since_block)
         if dry:
-            print(json.dumps({'pr': entry['url'], 'dry_run': True, **eval_tag(entry), 'prompt_chars': len(prompt),
+            print(json.dumps({'pr': entry['url'], 'dry_run': True, **eval_tag(entry), 'digest': dmeta.get('digest'),
+                              'prompt_chars': len(prompt),
                               'context_chars': len(context_block), **{f'context_{k}': v for k, v in cstats.items()},
                               'diff_chars': len(diff), 'files': len(files.splitlines()), 'rules': sorted(hits),
                               'flagged_hunks': len(flagged), 'flags_cut': flags_cut, 'not_checked_hunks': len(nc_rule)}))
@@ -1730,11 +1738,12 @@ def fair_selftest():
     return True
 
 
-def pick(cfg, only):
-    """Under the lock: expire what waited too long, reset stale picks, and choose this run's work."""
+def pick(cfg, only, dry=False):
+    """Under the lock: expire what waited too long, reset stale picks, and choose this run's work. `dry`
+    chooses on a copy and writes nothing (gcs-b3f: a dry run marked its pick 'reviewing')."""
     t = pr_state.now()
     today = t.strftime('%Y-%m-%d')
-    with pr_state.locked(cfg['state']) as st:
+    with (pr_state.peek if dry else pr_state.locked)(cfg['state']) as st:
         prs = st['prs']
         for e in prs.values():
             if e.get('status') == 'reviewing' and pr_state.parse(e['picked_at']) < t - dt.timedelta(hours=1):
@@ -1838,6 +1847,8 @@ def selftest():
     checks['retention: nothing to drop leaves the file as it is'] = pr_state.prune_jsonl(held, 30, t) == 0
     checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
+    checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_eval(tempfile.mkdtemp()))
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
@@ -2151,6 +2162,106 @@ def selftest_eval(tmp):
     return checks
 
 
+def selftest_rerequest(cfg, tmp):
+    """gcs-b3f, deliver() with GitHub stubbed: a re-review someone asked for posts a NEW review (only a submitted
+    review clears the request) and cuts the old one to a pointer; so does a --rereview by hand on a PR that
+    requests the reviewer now; a plain --rereview still edits the old review in place."""
+    import contextlib
+    import io
+    url, head = 'https://github.com/o/r/pull/2', 'c' * 40
+    fresh = {'number': 2, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'commits': {'nodes': []}}
+    calls, runs = [], {}
+    g = globals()
+    saved = {k: g[k] for k in ('post_review', 'update_review', 'dismiss_stale', 'repoint', 'ours_on_head')}
+    mods = [(pr_rules, 'get_pr'), (pr_state, 'slack_token'), (pr_state, 'slack_call')]
+    kept = [getattr(m, n) for m, n in mods]
+    g.update(post_review=lambda *a, **k: calls.append('post') or ('ok', f'{url}#pullrequestreview-9', 'COMMENTED', 9),
+             update_review=lambda repo, n, rid, body: calls.append(f'edit {rid}') or
+             ('ok', f'{url}#pullrequestreview-{rid}', 'COMMENTED', rid),
+             dismiss_stale=lambda *a: (0, 0), repoint=lambda *a: (0, 0), ours_on_head=lambda *a: 1)
+    pr_rules.get_pr = lambda repo, n: fresh
+    pr_state.slack_token = pr_state.slack_call = lambda *a: {}
+    dcfg = dict(cfg, state=tmp, city=tmp, beads=False, mode='live', slack_channel='', slack_env=[], client_slack='off',
+                reviewer='rev', request_changes=False)
+    rv = {'outcome': 'questions', 'approve': False, 'request_changes': False, 'decisions': [], 'blockers': [], 'gaps': [],
+          'cleared': [], 'items': [{'kind': 'question'}]}
+    entry = {'repo': 'o/r', 'number': 2, 'url': url, 'rig': 'r', 'review_id': 4, 'review_heads': [head],
+             'event': 'COMMENT', 'inline': 0}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name, e, asks in (('plain', entry, []), ('asked', dict(entry, followup='asked'), []),
+                                  ('by hand', entry, [{'requestedReviewer': {'login': 'Rev'}}])):
+                calls.clear()
+                fresh['reviewRequests'] = {'nodes': asks}
+                deliver(dcfg, 'o/r#2', e, fresh, rv, 'body', [], {'flagged': []}, {'ci': 'green'}, rereview=True)
+                runs[name] = list(calls)
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    return {
+        'gcs-b3f: a plain re-review edits the old review in place': runs['plain'] == ['edit 4'],
+        'gcs-b3f: a re-review someone asked for posts a new review and cuts the old one to a pointer':
+            runs['asked'] == ['post', 'edit 4'],
+        'gcs-b3f: so does a re-review by hand on a PR that requests the reviewer': runs['by hand'] == ['post', 'edit 4'],
+    }
+
+
+def selftest_dry(tmp):
+    """gcs-b3f, main() with the config and the runs stubbed: --dry-run without --pr changes no state (its pick is
+    not marked 'reviewing', a stale pick is not reset, an expired entry is not finished 'over-cap', nothing is
+    logged) and says what it would do; the live run then does it, a queued re-review someone asked for as a
+    --rereview."""
+    import contextlib
+    import io
+    t = pr_state.now()
+    ago = lambda h: pr_state.iso(t - dt.timedelta(hours=h))  # noqa: E731
+    base = {'repo': 'o/r', 'rig': 'r', 'status': 'queued', 'tier': 1, 'rules': ['requested'], 'ci': 'green', 'areas': []}
+    with pr_state.locked(tmp) as st:
+        st['prs'] = {f'o/r#{n}': dict(base, number=n, url=f'https://github.com/o/r/pull/{n}', **x) for n, x in (
+            (1, {'created': ago(1), 'queued_at': ago(1)}),
+            (2, {'created': ago(90), 'queued_at': ago(90)}),
+            (3, {'created': ago(5), 'queued_at': ago(5), 'status': 'reviewing', 'picked_at': ago(2)}),
+            (4, {'created': ago(30), 'queued_at': ago(0.5), 'tier': 0, 'followup': 'asked', 'review_heads': ['a' * 40]}))}
+    path, log = os.path.join(tmp, 'prs.json'), os.path.join(tmp, 'pr-review.jsonl')
+    before = open(path, 'rb').read()
+    cfg = {'state': tmp, 'city': tmp, 'beads': False, 'on': True, 'max_load': 99, 'max_wait_h': 48, 'queue': 'requested',
+           'rules': '', 'cap': 10, 'reserve': 0, 'age_h': 2, 'repos': {'o/r': 'r'}, 'work': tmp}
+    calls, g, argv = [], globals(), sys.argv
+    saved = {k: g[k] for k in ('ci_escalation', 'answer_review')}
+    mods = [(pr_state, 'config'), (pr_rules, 'load_avg'), (pr_rules, 'load_rules'), (pr_rules, 'areas')]
+    kept = [getattr(m, n) for m, n in mods]
+    out = io.StringIO()
+    try:
+        pr_state.config = lambda: dict(cfg)
+        pr_rules.load_avg = lambda: 0
+        pr_rules.load_rules = lambda p: {'select_areas': []}
+        pr_rules.areas = lambda r: {}
+        g['ci_escalation'] = lambda c, k, e, dry, rereview=False: calls.append((k, dry, rereview))
+        g['answer_review'] = lambda c, k, e, dry=False: calls.append((k, dry, 'answer'))
+        with contextlib.redirect_stdout(out):
+            sys.argv = ['pr_review.py', '--dry-run']
+            main()
+            dry_same, dry_log = open(path, 'rb').read() == before, os.path.exists(log)
+            sys.argv = ['pr_review.py']
+            main()
+    finally:
+        sys.argv = argv
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    with pr_state.locked(tmp) as st:
+        after = st['prs']
+    return {
+        'gcs-b3f: --dry-run without --pr leaves the state file as it was and logs nothing': dry_same and not dry_log,
+        'gcs-b3f: the dry run still says what it would do (its pick, the expired entry)':
+            calls[:1] == [('o/r#4', True, True)] and '"would": "over-cap"' in out.getvalue(),
+        'gcs-b3f: the live run picks the same as a --rereview, finishes the expired entry, resets the stale pick':
+            calls[1:] == [('o/r#4', False, True)] and after['o/r#4']['status'] == 'reviewing' and
+            after['o/r#2'].get('outcome') == 'over-cap' and after['o/r#3']['status'] == 'queued',
+    }
+
+
 def selftest_client_once(cfg, tmp):
     """deliver() with GitHub, our Slack and the client runner stubbed (the mayor, 2026-10-30 19:12Z): with our
     channel empty, a same-head re-review sends no second client line and makes no Slack call; a new head
@@ -2255,6 +2366,7 @@ def main():
     if a.selftest:
         return 0 if (fair_selftest() and selftest()) else 1
     cfg = pr_state.config()
+    cfg['dry_run'] = a.dry_run
     target = a.eval or a.pr or a.rereview or a.followup
     if target and (a.eval or pr_rules.eval_case(pr_rules.get_pr(target.rsplit('#', 1)[0], int(target.rsplit('#', 1)[1])))):
         # gcs-71c: an eval PR never enters the live queue or state, whichever way it is started
@@ -2311,7 +2423,7 @@ def main():
                                    'tier': 0, 'rules': [], 'created': pr_state.iso(pr_state.now()),
                                    'queued_at': pr_state.iso(pr_state.now())}
             st['prs'][a.pr]['status'] = 'queued'
-    chosen, ci_keys, expiring, snap, used = pick(cfg, a.pr)
+    chosen, ci_keys, expiring, snap, used = pick(cfg, a.pr, a.dry_run)
     for k in expiring:
         finish(cfg, k, snap[k], 'over-cap', {'model': False})
     for k in ci_keys:
@@ -2319,8 +2431,8 @@ def main():
     for k in chosen:  # hands the PR to model_review unless only CI is wrong; answers go to their follow-up
         if snap[k].get('followup') in ('answer', 'cap'):
             answer_review(cfg, k, snap[k], a.dry_run)
-        else:
-            ci_escalation(cfg, k, snap[k], a.dry_run, rereview=bool(a.rereview))
+        else:  # gcs-b3f: a re-review someone asked for is a --rereview
+            ci_escalation(cfg, k, snap[k], a.dry_run, rereview=bool(a.rereview) or snap[k].get('followup') == 'asked')
     if not (chosen or ci_keys or expiring):
         print(json.dumps({'idle': True, 'reviews_today': used, 'cap': cfg['cap']}))
 

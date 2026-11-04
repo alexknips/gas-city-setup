@@ -44,8 +44,8 @@ PR_FIELDS = """
   headRefOid baseRefName baseRefOid mergeable
   mergeCommit { oid parents(first: 1) { nodes { oid } } }
   reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
-  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], first: 20) {
-    nodes { ... on ReviewRequestedEvent { requestedReviewer { ... on User { login } } } } }
+  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+    nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state
     contexts(first: 100) { totalCount nodes { __typename
       ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
@@ -278,10 +278,48 @@ def requested_now(pr, reviewer):
 def asked_again(old, head, asked):
     """The sweep (the mayor, 2026-10-29 22:11Z: a request added after the first sweep never re-selected
     the PR): a PR that requests the reviewer now is queued when its head was set aside without a rule, or
-    when it is a new head after a review. Never a head already reviewed or held: no loop."""
+    when it is a new head after a review. Never a head already reviewed or held: no loop. A request made
+    again after our review of the same head is asked_after_review's."""
     if not asked or old.get('status') in ('queued', 'reviewing', 'waiting-ci'):
         return False
     return old.get('head') != head or old.get('outcome') in ('no-rule', 'unrequested')
+
+
+# The outcomes of a run that posted a review on GitHub (pr_feedback.DELIVERED); the others held, failed or skipped.
+POSTED = ('low-risk', 'questions', 'changes', 'escalate', 'not-reviewed')
+
+
+def last_asked(pr, reviewer):
+    """gcs-b3f: when the reviewer's review was last requested (the newest ReviewRequestedEvent for them),
+    while that request is live; None otherwise, or when GitHub gave no time."""
+    if not reviewer or not requested_now(pr, reviewer):
+        return None
+    who = reviewer.lower()
+    ts = [n['createdAt'] for n in ((pr.get('timelineItems') or {}).get('nodes') or [])
+          if n.get('createdAt') and ((n.get('requestedReviewer') or {}).get('login') or '').lower() == who]
+    return max(ts) if ts else None
+
+
+def _at(s):
+    return dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+
+
+def asked_after_review(old, head, asked_at, rounds):
+    """gcs-b3f (the mayor, 2026-11-04: three requests made again on reviewed heads waited 14 hours, never
+    queued): a submitted review clears the request, so a live request made after our last delivered review,
+    on the head that review saw, means someone asked again. It is a re-review (as --rereview), queued once
+    per request and at most `rounds` times per head (PR_REVIEW_FOLLOWUP_ROUNDS); never when our last attempt
+    on the head did not post, so a held or failed review never loops. A re-review still waiting for CI or in
+    the queue keeps its mark until it runs. `asked_at`: last_asked(pr, reviewer)."""
+    if old.get('status') in ('waiting-ci', 'queued'):
+        return old.get('followup') == 'asked' and old.get('head') == head
+    if not asked_at or old.get('status') != 'done' or old.get('head') != head:
+        return False
+    if head not in (old.get('review_heads') or []) or old.get('outcome') not in POSTED or not old.get('delivered_at'):
+        return False
+    if _at(asked_at) <= _at(old['delivered_at']) or asked_at == old.get('asked_at'):
+        return False
+    return (old.get('asked_rounds') or {}).get(head, 0) < rounds
 
 
 def formal_block(old, head, mergeable, ci):

@@ -149,6 +149,20 @@ def locked(state_dir):
         os.replace(path + '.tmp', path)
 
 
+@contextlib.contextmanager
+def peek(state_dir):
+    """The state as `locked` gives it, read under the lock, but a copy that is never written back: a dry
+    run's view (gcs-b3f)."""
+    path = os.path.join(state_dir, 'prs.json')
+    st = {'prs': {}}
+    if os.path.exists(path):
+        with open(os.path.join(state_dir, 'state.lock'), 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            with open(path) as f:
+                st = json.load(f)
+    yield st
+
+
 def log(state_dir, rec):
     """One JSON line per run or action to $state/pr-review.jsonl (ids, counts, outcomes, cost only)."""
     os.makedirs(state_dir, exist_ok=True)
