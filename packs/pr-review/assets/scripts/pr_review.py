@@ -1699,6 +1699,37 @@ def model_review(cfg, key, entry, dry, rereview=False):
         cleanup(cfg, mirror, run_id)
 
 
+def repo_of(key, e):
+    """owner/name of a queue entry (keys are owner/name#N)."""
+    return e.get('repo') or key.rsplit('#', 1)[0]
+
+
+def fair_key(key, e, served, aged):
+    """Queue order: tier; then the least recently served repo; then PRs waiting since before `aged`
+    (an ISO time), oldest first; then more areas. Applied after a newest-first sort, so ties stay newest first."""
+    waited = (e.get('queued_at') or '9999') < aged
+    return (e['tier'], served.get(repo_of(key, e), ''), 0 if waited else 1,
+            (e.get('queued_at') or '') if waited else '', -len(e.get('areas') or []))
+
+
+def fair_selftest():
+    """A busy repo cannot starve another (synthetic entries, no network)."""
+    served = {'o/busy': '2026-01-01T10:00:00Z', 'o/quiet': '2026-01-01T08:00:00Z'}
+    aged = '2026-01-01T09:00:00Z'
+    q = {'o/busy#9': {'tier': 1, 'created': '2026-01-01T11:00:00Z', 'queued_at': '2026-01-01T11:00:00Z', 'areas': ['a', 'b']},
+         'o/quiet#1': {'tier': 1, 'created': '2026-01-01T07:00:00Z', 'queued_at': '2026-01-01T07:00:00Z', 'areas': []},
+         'o/new#2': {'tier': 1, 'created': '2026-01-01T11:30:00Z', 'queued_at': '2026-01-01T11:30:00Z', 'areas': []},
+         'o/busy#8': {'tier': 0, 'created': '2026-01-01T06:00:00Z', 'queued_at': '2026-01-01T06:00:00Z', 'areas': []},
+         'o/busy#7': {'tier': 1, 'created': '2026-01-01T05:00:00Z', 'queued_at': '2026-01-01T05:00:00Z', 'areas': []}}
+    rest = sorted(q.items(), key=lambda ke: ke[1]['created'], reverse=True)
+    rest.sort(key=lambda ke: fair_key(ke[0], ke[1], served, aged))
+    order = [k for k, _ in rest]
+    # tier 0 first; then the never-served repo; then the repo served longest ago; then the busy repo,
+    # its PR that waited since 05:00 before its fresh one with more areas
+    assert order == ['o/busy#8', 'o/new#2', 'o/quiet#1', 'o/busy#7', 'o/busy#9'], order
+    return True
+
+
 def pick(cfg, only):
     """Under the lock: expire what waited too long, reset stale picks, and choose this run's work."""
     t = pr_state.now()
@@ -1727,9 +1758,18 @@ def pick(cfg, only):
             # requests the reviewer (R34), waits its turn for the model.
             ci_keys = [k for k, e in queued if not e.get('followup') and pr_rules.ci_only(e.get('ci'), 'requested' in e.get('rules', []),
                                                                 bool(content_rules(e.get('rules', []), area_of, ruleset)))]
-            # Tier, then more areas, then the newest PR first (most merge within half an hour).
+            # Tier first. Within a tier the repo whose last model review is oldest goes first, so one busy
+            # repo cannot starve the others. Within a repo a PR that has waited longer than PR_REVIEW_AGE_H
+            # goes first, oldest first, so it is reviewed before max_wait_h expires it. Fresh PRs keep the
+            # old order: more areas, then the newest first (most merge within half an hour).
+            served = {}
+            for k2, e2 in prs.items():
+                if e2.get('model') and e2.get('reviewed_at'):
+                    r2 = repo_of(k2, e2)
+                    served[r2] = max(served.get(r2, ''), e2['reviewed_at'])
+            aged = pr_state.iso(t - dt.timedelta(hours=cfg['age_h']))
             rest = sorted(((k, e) for k, e in queued if k not in ci_keys), key=lambda ke: ke[1]['created'], reverse=True)
-            rest.sort(key=lambda ke: (ke[1]['tier'], -len(ke[1].get('areas') or [])))
+            rest.sort(key=lambda ke: fair_key(ke[0], ke[1], served, aged))
             chosen = []
             for k, e in rest:
                 room = cfg['cap'] - used - (cfg['reserve'] if e['tier'] == 2 else 0)
@@ -2213,7 +2253,7 @@ def main():
     ap.add_argument('--selftest', action='store_true', help='the note and its floor on synthetic data')
     a = ap.parse_args()
     if a.selftest:
-        return 0 if selftest() else 1
+        return 0 if (fair_selftest() and selftest()) else 1
     cfg = pr_state.config()
     target = a.eval or a.pr or a.rereview or a.followup
     if target and (a.eval or pr_rules.eval_case(pr_rules.get_pr(target.rsplit('#', 1)[0], int(target.rsplit('#', 1)[1])))):

@@ -68,6 +68,7 @@ def config():
         'cap': NO_CAP if e('PR_REVIEW_DAILY_CAP', 'off') == 'off' else int(e('PR_REVIEW_DAILY_CAP')),
         'reserve': int(e('PR_REVIEW_RESERVE', '3')),
         'max_wait_h': float(e('PR_REVIEW_MAX_WAIT_H', '24')),
+        'age_h': float(e('PR_REVIEW_AGE_H', '2')),
         'lookback_h': float(e('PR_REVIEW_LOOKBACK_H', '2')),
         'ci_wait_h': float(e('PR_REVIEW_CI_WAIT_H', '3')),
         'state': e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'),
