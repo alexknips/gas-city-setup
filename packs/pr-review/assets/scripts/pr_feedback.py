@@ -39,7 +39,7 @@ VERDICTS = {'good', 'bad', 'rejected'}
 
 
 def reviews_by(repo, number, reviewer):
-    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq',
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews?per_page=100', '--jq',
                         f'.[] | {{id, state, login: .user.login, submitted_at, ours: ({OURS_JQ})}}'],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:

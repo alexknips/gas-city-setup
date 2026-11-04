@@ -347,7 +347,7 @@ CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block'
 def lift_block(repo, pr, review_id):
     """Dismiss our formal block once the merge conflict and the failing checks it rested on are fixed."""
     msg = f"Lifted: the merge conflict and failing checks are fixed on {pr['headRefOid'][:7]}."
-    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{repo}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
+    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{pr_rules.rest(repo)}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
                         '-f', f'message={msg}', '-f', 'event=DISMISS'], capture_output=True, text=True, timeout=60)
     return r.returncode == 0
 

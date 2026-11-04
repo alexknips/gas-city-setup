@@ -838,6 +838,11 @@ the reviewer says so.
 
 ## Traps
 
+- A configured repository renamed on GitHub (gcs-kwj): GraphQL and REST reads follow the rename, but a REST write
+  to the old name gets a 307 that gh does not follow, so the review would fail to post. Every REST path uses the
+  repository's current owner/name, learnt from its PRs' own URLs (GraphQL); the state, the beads and
+  `PR_REVIEW_REPOS` keep the configured name, so nothing has to move. Renaming the repository in `PR_REVIEW_REPOS`
+  instead would start its PRs over (new state keys, no record of our earlier reviews).
 - One pending review per user per PR: if the reviewer already has a draft review on a PR, the post
   fails (`pending-exists` in the log) and the outcome is still recorded.
 - `claude -p` resolves from `PR_REVIEW_CLAUDE`, then PATH, then `~/.local/bin/claude`. An order's PATH
