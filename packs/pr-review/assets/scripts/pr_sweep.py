@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """PR review sweep (README.md, "Sweep"): which PRs need a review, from zero-token rules only.
 
-  pr_sweep.py                   one sweep: PRs updated since the last one (open non-draft, or merged
+  pr_sweep.py                   one sweep: PRs updated since the last one (open, a draft only if it
+                                requests the reviewer, or merged
                                 since), each new head through the rules, one bead per PR, the review
                                 queue in the state file. No model, nothing posted.
   pr_sweep.py --dry-run         the same, printed; writes nothing, creates nothing
@@ -212,16 +213,24 @@ def sweep(cfg, dry):
             counts['left_for_next'] += 1
             continue
         old = seen.get(key, {})
+        asked = pr_rules.requested_now(pr, cfg['reviewer'])
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
-            continue
-        if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, even out of draft
+            if pr_rules.draft_skipped(True, asked):  # gcs-g9e: only a draft that requests the reviewer is reviewed
+                continue
+            counts['draft_requested'] += 1
+        if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, in draft or not
             counts['eval'] += 1
             continue
         block = pr_rules.formal_block(old, pr['headRefOid'], pr.get('mergeable'), pr_rules.ci_state(pr))
-        again = pr_rules.asked_again(old, pr['headRefOid'], pr_rules.requested_now(pr, cfg['reviewer'])) or \
+        again = pr_rules.asked_again(old, pr['headRefOid'], asked) or \
             block == 'review'  # our block rested on content: the new head gets a review
-        if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci' and not again:
+        # gcs-b3f: asked again after our review of this very head (a submitted review clears the request)
+        asked_at = pr_rules.last_asked(pr, cfg['reviewer']) if asked else None
+        reask = cfg['followups'] and pr_rules.asked_after_review(old, pr['headRefOid'], asked_at, cfg['followup_rounds'])
+        if cfg['followups'] and not reask and pr_rules.asked_after_review(old, pr['headRefOid'], asked_at, float('inf')):
+            counts['asked_capped'] += 1  # asked again, and this head's rounds are used up
+        if old.get('head') == pr['headRefOid'] and old.get('status') != 'waiting-ci' and not (again or reask):
             ans = answers(cfg, repo, pr, old, since) if cfg['followups'] else None
             if not ans:
                 counts['seen'] += 1
@@ -251,14 +260,23 @@ def sweep(cfg, dry):
         # decision-57b6d9bb: a new head on a PR we reviewed is reviewed again once its CI settles (incremental);
         # PR_REVIEW_QUEUE=requested keeps an unrequested new PR out of the queue.
         push = cfg['followups'] and pr_rules.followup_push(old, rec['head'])
-        wanted = push or again or pr_rules.in_queue(cfg['queue'], 'requested' in rec['hits'], bool(old.get('review_heads')))
+        wanted = push or reask or again or \
+            pr_rules.in_queue(cfg['queue'], 'requested' in rec['hits'], bool(old.get('review_heads')))
+        if reask and old.get('status') == 'done':  # a new request: counted once, when it is first queued
+            rounds = dict(old.get('asked_rounds') or {})
+            rounds[rec['head']] = rounds.get(rec['head'], 0) + 1
+            entry.update(asked_at=asked_at, asked_rounds=dict(list(rounds.items())[-10:]))
+            counts['asked_again'] += 1
+        mark = {'followup': 'push'} if push else {'followup': 'asked'} if reask else {}
         if not wanted and rec['tier'] is not None:
             entry.update(status='done', outcome='unrequested')
         elif rec['ci'] == 'pending' and t0 < ci_wait:
-            entry.update(status='waiting-ci', **({'followup': 'push'} if push else {}))
+            entry.update(status='waiting-ci', **mark)
         elif push:
             entry.update(status='queued', queued_at=pr_state.iso(t0), followup='push',
                          tier=rec['tier'] if rec['tier'] is not None else 2)
+        elif reask:  # gcs-b3f: the re-review a person asked for, first in line like an answer follow-up
+            entry.update(status='queued', queued_at=pr_state.iso(t0), followup='asked', tier=0)
         elif old.get('status') in ('done', 'reviewing') and not again and not (
                 pr_rules.SERIOUS & (set(rec['hits']) - set(old.get('rules', [])))):
             # Pushed again after a review: reviewed once unless the reviewer is asked again or the new head
@@ -323,13 +341,13 @@ def closed_at(repo, number):
 CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block', 'rc_live', 'slack', 'slack_ts',
          'delivered_at', 'inline', 'body_sha', 'judge', 'judge_at', 'judge_review', 'judge_below_bar', 'judge_risky',
          'client_posts', 'confidence', 'flagged_total', 'open_changes', 'open_questions',
-         'head_reviewed_at', 'head_review_ids', 'answers_key', 'answer_rounds', 'answer_capped')
+         'head_reviewed_at', 'head_review_ids', 'answers_key', 'answer_rounds', 'answer_capped', 'asked_at', 'asked_rounds')
 
 
 def lift_block(repo, pr, review_id):
     """Dismiss our formal block once the merge conflict and the failing checks it rested on are fixed."""
     msg = f"Lifted: the merge conflict and failing checks are fixed on {pr['headRefOid'][:7]}."
-    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{repo}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
+    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{pr_rules.rest(repo)}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
                         '-f', f'message={msg}', '-f', 'event=DISMISS'], capture_output=True, text=True, timeout=60)
     return r.returncode == 0
 
@@ -474,7 +492,7 @@ def selftest():
     fails += selftest_followups()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {13 - len(fails)} of 13')
+    print(f'pr_sweep selftest: {20 - len(fails)} of 20')
     return 1 if fails else 0
 
 
@@ -485,16 +503,29 @@ def selftest_followups():
     import tempfile
     a40, b40, t = 'a' * 40, 'b' * 40, pr_state.now()
     now = pr_state.iso(t)
+    ago = lambda h: pr_state.iso(t - dt.timedelta(hours=h))  # noqa: E731
     prs = {1: {'head': b40, 'ci': 'pending'}, 2: {'head': a40, 'ci': 'green'}, 3: {'head': a40, 'ci': 'green'},
            4: {'head': a40, 'ci': 'green', 'requested': True},
            5: {'head': a40, 'ci': 'green', 'requested': True, 'branch': 'review-test/c1'},  # gcs-71c: out of draft
-           6: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True}}
+           6: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True},
+           # gcs-b3f: asked again after our review of the same head (7), after a held attempt (8), before our
+           # last review (9: a hand re-review answered it), with the head's rounds used up (10), while CI runs (11)
+           7: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
+           8: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
+           9: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
+           10: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
+           11: {'head': a40, 'ci': 'pending', 'requested': True, 'asked': ago(1)},  # its CI re-runs
+           # gcs-g9e: a draft that does not request the reviewer (12), a red team's test draft that does (13)
+           12: {'head': a40, 'ci': 'green', 'draft': True},
+           13: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True, 'branch': 'review-test/c2'}}
 
     def fake(n):
         p = prs[n]
         return {'number': n, 'url': f'https://github.com/o/r/pull/{n}', 'state': 'OPEN', 'isDraft': bool(p.get('draft')),
                 'headRefOid': p['head'], 'updatedAt': now, 'mergeable': 'MERGEABLE', 'createdAt': now, 'mergedAt': None,
-                'baseRefName': 'main', 'headRefName': p.get('branch') or f'topic-{n}'}
+                'baseRefName': 'main', 'headRefName': p.get('branch') or f'topic-{n}',
+                'timelineItems': {'nodes': [{'createdAt': p['asked'], 'requestedReviewer': {'login': 'Rev'}}]
+                                  if p.get('asked') else []}}
 
     def fake_record(cfg, repo, pr, files, ruleset, area_of, heads):
         p = prs[pr['number']]
@@ -509,7 +540,7 @@ def selftest_followups():
              (pr_rules, 'open_prs'): lambda repo: ([fake(n) for n in prs], {'main': 'c' * 40}),
              (pr_rules, 'pr_files'): lambda repo, n: [], (pr_rules, 'ci_state'): lambda pr: prs[pr['number']]['ci'],
              (pr_rules, 'requested_now'): lambda pr, who: bool(prs[pr['number']].get('requested')),
-             (pr_rules, 'get_pr'): lambda repo, n: fake(n), (pr_rules, 'activity'): lambda repo, n: act,
+             (pr_rules, 'get_pr'): lambda repo, n: fake(n), (pr_rules, 'activity'): lambda repo, n: act if n == 2 else {'author': {'login': 'auth'}},
              (pr_state, 'Beads'): lambda *a, **k: FakeBeads(), (pr_state, 'prune_private'): lambda *a: {}}
     kept = {k: getattr(*k) for k in stubs}
     g = globals()
@@ -525,18 +556,37 @@ def selftest_followups():
             cfg = {'state': d, 'city': d, 'beads': False, 'reviewer': 'rev', 'repos': {'o/r': 'rig'}, 'rules': '',
                    'lookback_h': 2, 'ci_wait_h': 3, 'sweep_budget_s': 60, 'followups': True, 'followup_rounds': 3,
                    'queue': 'requested', 'work': d, 'keep_days': 30}
+            delivered = dict(reviewed, delivered_at=ago(70), head_reviewed_at=ago(70), rules=['requested', 'r1'])
             with pr_state.locked(d) as st:
                 st['last_sweep'] = pr_state.iso(t - dt.timedelta(minutes=30))
                 st['prs'] = {'o/r#1': dict(reviewed, number=1, url='https://github.com/o/r/pull/1'),
-                             'o/r#2': dict(reviewed, number=2, url='https://github.com/o/r/pull/2')}
-            with contextlib.redirect_stdout(io.StringIO()):
+                             'o/r#2': dict(reviewed, number=2, url='https://github.com/o/r/pull/2'),
+                             'o/r#7': dict(delivered, number=7, url='https://github.com/o/r/pull/7'),
+                             'o/r#8': dict(delivered, number=8, url='https://github.com/o/r/pull/8', outcome='held-gate'),
+                             'o/r#9': dict(delivered, number=9, url='https://github.com/o/r/pull/9', delivered_at=ago(1)),
+                             'o/r#10': dict(delivered, number=10, url='https://github.com/o/r/pull/10',
+                                            asked_rounds={a40: 3}),
+                             'o/r#11': dict(delivered, number=11, url='https://github.com/o/r/pull/11', head_seen_at=ago(2),
+                                             delivered_at=ago(1.5), head_reviewed_at=ago(1.5))}
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
                 sweep(cfg, False)
                 with pr_state.locked(d) as st:
                     first = {k: dict(v) for k, v in st['prs'].items()}
-                prs[1]['ci'] = 'green'
+                prs[1]['ci'] = prs[11]['ci'] = 'green'
                 sweep(cfg, False)
-            with pr_state.locked(d) as st:
-                second = {k: dict(v) for k, v in st['prs'].items()}
+                with pr_state.locked(d) as st:
+                    second = {k: dict(v) for k, v in st['prs'].items()}
+                    # the re-review ran and posted (7), or ran and was held (8 asked again, the same request)
+                    st['prs']['o/r#7'].update(status='done', outcome='questions', delivered_at=ago(0.5))
+                    st['prs']['o/r#7'].pop('followup', None)
+                    st['prs']['o/r#8'] = dict(second['o/r#7'], number=8, url='https://github.com/o/r/pull/8',
+                                              status='done', outcome='held-gate')
+                    st['prs']['o/r#8'].pop('followup', None)
+                sweep(cfg, False)
+                with pr_state.locked(d) as st:
+                    third = {k: dict(v) for k, v in st['prs'].items()}
+            counts = [json.loads(x)['counts'] for x in out.getvalue().splitlines() if x.startswith('{"sweep"')]
     finally:
         for (m, n), f in kept.items():
             setattr(m, n, f)
@@ -554,8 +604,27 @@ def selftest_followups():
         fails.append('a PR that requests the reviewer enters the queue')
     if second['o/r#2'].get('followup') != 'answer' or second['o/r#2'].get('status') != 'queued':
         fails.append('a queued follow-up is not queued twice or lost by the next sweep')
-    if 'o/r#5' in second or 'o/r#6' in second:
-        fails.append('a draft, and an eval PR out of draft, stay out of the queue and get no bead (gcs-71c)')
+    if any(k in second for k in ('o/r#5', 'o/r#12', 'o/r#13')):
+        fails.append('an unrequested draft, and an eval PR in draft or not, stay out of the queue and get no bead (gcs-71c)')
+    if (first.get('o/r#6') or {}).get('status') != 'queued' or (first.get('o/r#6') or {}).get('tier') != 0:
+        fails.append('gcs-g9e: a draft that requests the reviewer enters the queue like any requested PR')
+    p7, p7b = first['o/r#7'], second['o/r#7']
+    if not (p7.get('status') == 'queued' and p7.get('followup') == 'asked' and p7.get('tier') == 0 and
+            p7.get('asked_at') == prs[7]['asked'] and p7.get('asked_rounds') == {a40: 1}):
+        fails.append('gcs-b3f: a request made again after our review of the same head queues a re-review, first in line')
+    if not (p7b.get('status') == 'queued' and p7b.get('followup') == 'asked' and p7b.get('asked_rounds') == {a40: 1}):
+        fails.append('gcs-b3f: a queued re-review keeps its mark and is counted once')
+    if any(first[k].get('status') != 'done' or first[k].get('followup') for k in ('o/r#8', 'o/r#9', 'o/r#10')):
+        fails.append('gcs-b3f: no re-review after a held attempt, for a request our last review answered, or past the rounds')
+    if any(third[k].get('status') != 'done' or third[k].get('followup') for k in ('o/r#7', 'o/r#8')):
+        fails.append('gcs-b3f: one request is one re-review, whether it posted or was held')
+    p11, p11b = first['o/r#11'], second['o/r#11']
+    if not (p11.get('status') == 'waiting-ci' and p11.get('followup') == 'asked' and p11b.get('status') == 'queued'
+            and p11b.get('followup') == 'asked' and p11b.get('asked_rounds') == {a40: 1}):
+        fails.append('gcs-b3f: a re-review waits for CI with its mark, then is queued as one')
+    if not counts or counts[0].get('asked_again') != 2 or counts[0].get('asked_capped') != 1 or \
+            counts[0].get('draft_requested') != 2 or counts[0].get('draft') != 3:
+        fails.append('gcs-b3f: the sweep counts re-reviews, used-up rounds and drafts that request the reviewer')
     return fails
 
 

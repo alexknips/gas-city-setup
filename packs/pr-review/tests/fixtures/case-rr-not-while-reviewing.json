@@ -1,0 +1,25 @@
+{
+ "expect": "pass",
+ "rule": "sweep",
+ "route": "asked_after_review",
+ "want": false,
+ "args": {
+  "old": {
+   "review_heads": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "status": "reviewing",
+   "review_id": 77,
+   "head_review_ids": [
+    77
+   ],
+   "outcome": "questions",
+   "delivered_at": "2026-01-01T10:00:00Z",
+   "followup": "asked"
+  },
+  "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "asked_at": "2026-01-02T09:00:00Z",
+  "rounds": 3
+ }
+}

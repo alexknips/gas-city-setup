@@ -44,8 +44,8 @@ PR_FIELDS = """
   headRefOid baseRefName baseRefOid mergeable
   mergeCommit { oid parents(first: 1) { nodes { oid } } }
   reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
-  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], first: 20) {
-    nodes { ... on ReviewRequestedEvent { requestedReviewer { ... on User { login } } } } }
+  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
+    nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state
     contexts(first: 100) { totalCount nodes { __typename
       ... on CheckRun { name status conclusion } ... on StatusContext { context state } } } } } } }
@@ -54,6 +54,32 @@ PR_FIELDS = """
 
 class GhError(RuntimeError):
     pass
+
+
+# gcs-kwj (2026-11-04: a configured repository was renamed on GitHub): the state keeps the configured name, and
+# GraphQL and REST reads follow the rename, but a REST write to the old name gets a 307 that gh does not follow.
+# The PR's own URL (from GraphQL) carries the repository's current owner/name; every REST path uses rest(repo).
+CANON = {}
+PR_URL = re.compile(r'^https://github\.com/([^/\s]+/[^/\s]+)/pull/\d+')
+
+
+def canonical_repo(repo, url):
+    """owner/name of the repository the PR at `url` is in, as GitHub names it now; else `repo`."""
+    m = PR_URL.match(url or '')
+    return m.group(1) if m else repo
+
+
+def learn(repo, pr):
+    """Remember a configured repository's current owner/name from one of its PRs; returns the PR."""
+    name = canonical_repo(repo, (pr or {}).get('url'))
+    if repo and name.lower() != repo.lower():
+        CANON[repo.lower()] = name
+    return pr
+
+
+def rest(repo):
+    """The owner/name for a REST path: the current one once a PR has shown the repository was renamed."""
+    return CANON.get((repo or '').lower(), repo)
 
 
 def gh(args, timeout=120):
@@ -100,6 +126,8 @@ def open_prs(repo, page=25):
         r = graphql(q, o=owner, r=name, n=page, after=after)['repository']
         heads[r['defaultBranchRef']['name']] = r['defaultBranchRef']['target']['oid']
         prs += r['pullRequests']['nodes']
+        for p in r['pullRequests']['nodes'][:1]:
+            learn(repo, p)
         if not r['pullRequests']['pageInfo']['hasNextPage']:
             return prs, heads
         after = r['pullRequests']['pageInfo']['endCursor']
@@ -109,7 +137,7 @@ def get_pr(repo, number):
     owner, name = repo.split('/')
     q = ('query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) {'
          ' pullRequest(number: $n) {' + PR_FIELDS + '} } }')
-    return graphql(q, o=owner, r=name, n=number)['repository']['pullRequest']
+    return learn(repo, graphql(q, o=owner, r=name, n=number)['repository']['pullRequest'])
 
 
 def base_for(pr, branch_heads):
@@ -130,7 +158,7 @@ def branch_oid(repo, branch):
 
 def pr_files(repo, number):
     """The PR's changed files with their patches (GitHub leaves `patch` out of very large files)."""
-    out = gh(['api', '--paginate', f'repos/{repo}/pulls/{number}/files?per_page=100', '--jq',
+    out = gh(['api', '--paginate', f'repos/{rest(repo)}/pulls/{number}/files?per_page=100', '--jq',
               '.[] | {filename, status, additions, deletions, patch, previous_filename}'], timeout=300)
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
@@ -213,14 +241,14 @@ def required_checks(repo, branch):
     if (repo, branch) not in _required:
         ctx = None
         try:
-            rules = json.loads(gh(['api', f'repos/{repo}/rules/branches/{branch}']) or '[]')
+            rules = json.loads(gh(['api', f'repos/{rest(repo)}/rules/branches/{branch}']) or '[]')
             ctx = sorted({c['context'] for r in rules if r.get('type') == 'required_status_checks'
                           for c in (r.get('parameters') or {}).get('required_status_checks') or []}) or None
         except (GhError, ValueError, KeyError):
             pass
         if not ctx:
             try:
-                prot = json.loads(gh(['api', f'repos/{repo}/branches/{branch}/protection/required_status_checks']))
+                prot = json.loads(gh(['api', f'repos/{rest(repo)}/branches/{branch}/protection/required_status_checks']))
                 ctx = sorted(set(prot.get('contexts') or []) | {c['context'] for c in prot.get('checks') or []}) or None
             except (GhError, ValueError, KeyError):
                 pass
@@ -231,13 +259,13 @@ def required_checks(repo, branch):
 def first_pass(repo, sha, required):
     """Whether a commit passed the required checks on their first run (a re-run of a red check is not a
     first pass); None when it has no checks."""
-    runs = json.loads(gh(['api', f'repos/{repo}/commits/{sha}/check-runs?per_page=100']))['check_runs']
+    runs = json.loads(gh(['api', f'repos/{rest(repo)}/commits/{sha}/check-runs?per_page=100']))['check_runs']
     first = {}
     for c in sorted(runs, key=lambda c: c['id']):
         first.setdefault(c['name'], c.get('conclusion') or c.get('status'))
     names = required or sorted(first)
     if required and any(n not in first for n in names):  # required contexts can be commit statuses
-        for s in json.loads(gh(['api', f'repos/{repo}/commits/{sha}/status'])).get('statuses') or []:
+        for s in json.loads(gh(['api', f'repos/{rest(repo)}/commits/{sha}/status'])).get('statuses') or []:
             first.setdefault(s['context'], s['state'])
     return all(first.get(n) in CI_OK for n in names) if names else None
 
@@ -246,7 +274,7 @@ def pushes(repo, pr, branch):
     """The PR's heads in push order, as the quality pack finds a PR's first head: the head commits of its
     pull_request workflow runs from its opening on, the current head last when no run reported it yet."""
     opened = dt.datetime.fromisoformat(pr['createdAt'].replace('Z', '+00:00')) - dt.timedelta(minutes=10)
-    out = gh(['api', '--paginate', f'repos/{repo}/actions/runs?event=pull_request&branch={urllib.parse.quote(branch)}'
+    out = gh(['api', '--paginate', f'repos/{rest(repo)}/actions/runs?event=pull_request&branch={urllib.parse.quote(branch)}'
               f'&created=>={opened:%Y-%m-%d}&per_page=100', '--jq', '.workflow_runs[] | [.head_sha, .created_at] | @tsv'])
     runs = sorted((at, sha) for sha, at in (x.split('\t') for x in out.splitlines() if x.count('\t') == 1)
                   if dt.datetime.fromisoformat(at.replace('Z', '+00:00')) >= opened)
@@ -279,10 +307,55 @@ def requested_now(pr, reviewer):
 def asked_again(old, head, asked):
     """The sweep (the mayor, 2026-10-29 22:11Z: a request added after the first sweep never re-selected
     the PR): a PR that requests the reviewer now is queued when its head was set aside without a rule, or
-    when it is a new head after a review. Never a head already reviewed or held: no loop."""
+    when it is a new head after a review. Never a head already reviewed or held: no loop. A request made
+    again after our review of the same head is asked_after_review's."""
     if not asked or old.get('status') in ('queued', 'reviewing', 'waiting-ci'):
         return False
     return old.get('head') != head or old.get('outcome') in ('no-rule', 'unrequested')
+
+
+def draft_skipped(draft, asked):
+    """gcs-g9e (the reviewer, 2026-11-04: "let's post on drafts", decision-9fa387eb): the sweep skips a draft,
+    unrecorded, unless it requests the reviewer; then it is reviewed like any requested PR. A red team's test
+    PR stays hand-only either way (eval_case)."""
+    return bool(draft) and not asked
+
+
+# The outcomes of a run that posted a review on GitHub (pr_feedback.DELIVERED); the others held, failed or skipped.
+POSTED = ('low-risk', 'questions', 'changes', 'escalate', 'not-reviewed')
+
+
+def last_asked(pr, reviewer):
+    """gcs-b3f: when the reviewer's review was last requested (the newest ReviewRequestedEvent for them),
+    while that request is live; None otherwise, or when GitHub gave no time."""
+    if not reviewer or not requested_now(pr, reviewer):
+        return None
+    who = reviewer.lower()
+    ts = [n['createdAt'] for n in ((pr.get('timelineItems') or {}).get('nodes') or [])
+          if n.get('createdAt') and ((n.get('requestedReviewer') or {}).get('login') or '').lower() == who]
+    return max(ts) if ts else None
+
+
+def _at(s):
+    return dt.datetime.fromisoformat(s.replace('Z', '+00:00'))
+
+
+def asked_after_review(old, head, asked_at, rounds):
+    """gcs-b3f (the mayor, 2026-11-04: three requests made again on reviewed heads waited 14 hours, never
+    queued): a submitted review clears the request, so a live request made after our last delivered review,
+    on the head that review saw, means someone asked again. It is a re-review (as --rereview), queued once
+    per request and at most `rounds` times per head (PR_REVIEW_FOLLOWUP_ROUNDS); never when our last attempt
+    on the head did not post, so a held or failed review never loops. A re-review still waiting for CI or in
+    the queue keeps its mark until it runs. `asked_at`: last_asked(pr, reviewer)."""
+    if old.get('status') in ('waiting-ci', 'queued'):
+        return old.get('followup') == 'asked' and old.get('head') == head
+    if not asked_at or old.get('status') != 'done' or old.get('head') != head:
+        return False
+    if head not in (old.get('review_heads') or []) or old.get('outcome') not in POSTED or not old.get('delivered_at'):
+        return False
+    if _at(asked_at) <= _at(old['delivered_at']) or asked_at == old.get('asked_at'):
+        return False
+    return (old.get('asked_rounds') or {}).get(head, 0) < rounds
 
 
 def formal_block(old, head, mergeable, ci):

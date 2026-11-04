@@ -908,6 +908,44 @@ CASES.update({
                     r'^\*\*Questions\*\* · for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$']},
 })
 
+# gcs-b3f (the mayor, 2026-11-04): requests made again on heads we had reviewed, with no new commits, waited 14
+# hours and were never queued. A submitted review clears the request, so a live request newer than our last
+# delivered review of the head is asked again: a re-review, once per request, PR_REVIEW_FOLLOWUP_ROUNDS per head,
+# never after an attempt that did not post.
+ASKED = dict(REVIEWED, outcome='questions', delivered_at='2026-01-01T10:00:00Z')
+for name, want, old, extra in (
+        ('asked-again-after-our-review', True, ASKED, {}),
+        ('asked-again-after-our-note', True, dict(ASKED, outcome='not-reviewed'), {}),
+        ('request-our-last-review-answered', False, dict(ASKED, delivered_at='2026-01-02T12:00:00Z'), {}),
+        ('held-last-attempt-never-loops', False, dict(ASKED, outcome='held-gate'), {}),
+        ('failed-last-attempt-never-loops', False, dict(ASKED, outcome='error'), {}),
+        ('one-request-one-rereview', False, dict(ASKED, asked_at='2026-01-02T09:00:00Z'), {}),
+        ('rounds-used-up', False, dict(ASKED, asked_rounds={A40: 3}), {}),
+        ('new-head-is-the-push-follow-up', False, ASKED, {'head': B40}),
+        ('no-live-request', False, ASKED, {'asked_at': None}),
+        ('queued-keeps-its-mark', True, dict(ASKED, status='queued', followup='asked'), {}),
+        ('not-while-reviewing', False, dict(ASKED, status='reviewing', followup='asked'), {})):
+    CASES[f'case-rr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'asked_after_review', 'want': want,
+                                'args': {'old': old, 'head': A40, 'asked_at': '2026-01-02T09:00:00Z', 'rounds': 3, **extra}}
+
+# gcs-g9e (the reviewer, 2026-11-04: "let's post on drafts"): a draft that requests the reviewer is reviewed like any
+# requested PR; any other draft stays out, unrecorded.
+for name, want, draft, asked in (('unrequested-draft-skipped', True, True, False),
+                                 ('requested-draft-reviewed', False, True, True),
+                                 ('ready-pr-never-skipped-as-a-draft', False, False, False)):
+    CASES[f'case-dr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'draft_skipped', 'want': want,
+                                'args': {'draft': draft, 'asked': asked}}
+
+# gcs-kwj (2026-11-04: a configured repository was renamed and every REST write to its old name got a 307): REST
+# paths use the repository's current owner/name, from the PR's own URL; the state keeps the configured name.
+for name, want, url in (('renamed-repository-takes-the-new-name', 'example/new-name', 'https://github.com/example/new-name/pull/7'),
+                        ('same-repository-keeps-its-name', 'example/repo', 'https://github.com/example/repo/pull/7'),
+                        ('no-url-keeps-the-configured-name', 'example/repo', None),
+                        ('not-a-pull-request-url-keeps-the-configured-name', 'example/repo',
+                         'https://github.com/example/new-name/issues/7')):
+    CASES[f'case-rn-{name}'] = {'expect': 'pass', 'rule': 'rest', 'route': 'canonical_repo', 'want': want,
+                                'args': {'repo': 'example/repo', 'url': url}}
+
 if __name__ == '__main__':
     out = os.path.join(HERE, 'fixtures')
     os.makedirs(out, exist_ok=True)

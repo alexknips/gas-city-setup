@@ -68,6 +68,7 @@ def config():
         'cap': NO_CAP if e('PR_REVIEW_DAILY_CAP', 'off') == 'off' else int(e('PR_REVIEW_DAILY_CAP')),
         'reserve': int(e('PR_REVIEW_RESERVE', '3')),
         'max_wait_h': float(e('PR_REVIEW_MAX_WAIT_H', '24')),
+        'age_h': float(e('PR_REVIEW_AGE_H', '2')),
         'lookback_h': float(e('PR_REVIEW_LOOKBACK_H', '2')),
         'ci_wait_h': float(e('PR_REVIEW_CI_WAIT_H', '3')),
         'state': e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'),
@@ -146,6 +147,20 @@ def locked(state_dir):
         with open(path + '.tmp', 'w') as f:
             json.dump(st, f, indent=1, sort_keys=True)
         os.replace(path + '.tmp', path)
+
+
+@contextlib.contextmanager
+def peek(state_dir):
+    """The state as `locked` gives it, read under the lock, but a copy that is never written back: a dry
+    run's view (gcs-b3f)."""
+    path = os.path.join(state_dir, 'prs.json')
+    st = {'prs': {}}
+    if os.path.exists(path):
+        with open(os.path.join(state_dir, 'state.lock'), 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            with open(path) as f:
+                st = json.load(f)
+    yield st
 
 
 def log(state_dir, rec):
