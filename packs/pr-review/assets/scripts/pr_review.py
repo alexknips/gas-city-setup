@@ -552,7 +552,7 @@ def post_review(repo, pr, body, comments, event='COMMENT'):
     payload = {'commit_id': pr['headRefOid'], 'body': body, 'event': event}
     if comments:
         payload['comments'] = comments
-    r = subprocess.run(['gh', 'api', '-X', 'POST', f"repos/{repo}/pulls/{pr['number']}/reviews", '--input', '-'],
+    r = subprocess.run(['gh', 'api', '-X', 'POST', f"repos/{pr_rules.rest(repo)}/pulls/{pr['number']}/reviews", '--input', '-'],
                        input=json.dumps(payload), capture_output=True, text=True, timeout=120)
     if r.returncode == 0:
         out = json.loads(r.stdout)
@@ -563,7 +563,7 @@ def post_review(repo, pr, body, comments, event='COMMENT'):
 
 def update_review(repo, number, review_id, body):
     """Replace the body of a submitted review (its event and inline comments stay). Same return shape."""
-    r = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{repo}/pulls/{number}/reviews/{review_id}', '--input', '-'],
+    r = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews/{review_id}', '--input', '-'],
                        input=json.dumps({'body': body}), capture_output=True, text=True, timeout=120)
     if r.returncode == 0:
         out = json.loads(r.stdout)
@@ -575,7 +575,7 @@ def update_review(repo, number, review_id, body):
 def anchored_lines(repo, number, review_id):
     """The `line` GitHub reports for each inline comment of a review (None = not anchored), read from the
     PR's comment list (the per-review list never reports `line`)."""
-    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/comments?per_page=100', '--jq',
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/comments?per_page=100', '--jq',
                         f'.[] | select(.pull_request_review_id == {int(review_id)}) | .line'],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
@@ -586,7 +586,7 @@ def anchored_lines(repo, number, review_id):
 def ours_on_head(repo, number, head):
     """R24: how many automated reviews of this head are whole reviews (not pointers to a newer one)."""
     jq = f'.[] | select(.commit_id == "{head}") | [({OURS_JQ}), (.body | contains("{pr_format.POINTER_PREFIX}"))]'
-    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return None
@@ -607,13 +607,13 @@ def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose', message=Non
     begins the way ours do); never one the reviewer wrote. Returns (dismissed, failed)."""
     jq = (f'.[] | select((.state == "CHANGES_REQUESTED" or .state == "APPROVED") and .id != {int(keep_id)} and '
           f'(.user.login | ascii_downcase) == "{reviewer.lower()}" and ({OURS_JQ})) | .id')
-    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return 0, 1
     ok = bad = 0
     for rid in (l.strip() for l in r.stdout.splitlines() if l.strip()):
-        d = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{repo}/pulls/{number}/reviews/{rid}/dismissals',
+        d = subprocess.run(['gh', 'api', '-X', 'PUT', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews/{rid}/dismissals',
                             '-f', f"message={(message or {}).get(voice) or (DISMISSAL_VOICE if voice == 'reviewer' else DISMISSAL)}",
                             '-f', 'event=DISMISS'],
                            capture_output=True, text=True, timeout=60)
@@ -625,7 +625,7 @@ def repoint(repo, number, reviewer, voice='disclose'):
     """R24: every pointer of ours on the PR follows the newest review (the mayor, 2026-10-30 07:21Z: a chain
     of pointers left the oldest review pointing at a replaced one). Returns (updated, failed)."""
     jq = f'.[] | select((.user.login | ascii_downcase) == "{reviewer.lower()}" and ({OURS_JQ})) | {{id, body, html_url}}'
-    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{repo}/pulls/{number}/reviews?per_page=100', '--jq', jq],
+    r = subprocess.run(['gh', 'api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews?per_page=100', '--jq', jq],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0:
         return 0, 1
@@ -708,7 +708,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
             p2 = update_review(repo, n, old_id, pr_format.pointer_body(NAME, url, cfg.get('voice')))[0]
             extra.update(replaced=old_id, replaced_status=p2)
     if posted == 'ok' and state == 'PENDING':  # R0: never leave one in the reviewer's slot
-        subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{repo}/pulls/{n}/reviews/{rid}'],
+        subprocess.run(['gh', 'api', '-X', 'DELETE', f'repos/{pr_rules.rest(repo)}/pulls/{n}/reviews/{rid}'],
                        capture_output=True, text=True, timeout=60)
     elif posted == 'ok':
         extra['dismissed'], extra['dismiss_failed'] = dismiss_stale(repo, n, rid, cfg['reviewer'], cfg.get('voice'))
@@ -755,7 +755,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
                  open_questions=review['questions'])
     # Once per head and status (decision-57b6d9bb): a follow-up posts a new entry only when readiness moved.
     ready = pr_client_slack.readiness(fresh.get('mergeable'), extra.get('ci') or pr_rules.ci_state(fresh),
-                                      pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'))
+                                      pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'), fresh.get('isDraft'))
     if cfg['client_slack'] != 'off' and not cfg.get('eval') and \
             not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state']), ready):
         try:
@@ -821,12 +821,12 @@ def posted_id(r):
 
 def post_reply(repo, number, comment_id, body):
     """A reply in the review thread of our inline comment `comment_id`: its id, or None."""
-    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/pulls/{number}/comments/{int(comment_id)}/replies',
+    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{pr_rules.rest(repo)}/pulls/{number}/comments/{int(comment_id)}/replies',
                                      '-f', f'body={body}'], capture_output=True, text=True, timeout=60))
 
 
 def post_comment(repo, number, body):
-    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{repo}/issues/{number}/comments', '-f', f'body={body}'],
+    return posted_id(subprocess.run(['gh', 'api', '-X', 'POST', f'repos/{pr_rules.rest(repo)}/issues/{number}/comments', '-f', f'body={body}'],
                                     capture_output=True, text=True, timeout=60))
 
 
@@ -950,7 +950,7 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
 
 
 def pr_diff(repo, number):
-    r = subprocess.run(['gh', 'api', f'repos/{repo}/pulls/{number}', '-H', 'Accept: application/vnd.github.diff'],
+    r = subprocess.run(['gh', 'api', f'repos/{pr_rules.rest(repo)}/pulls/{number}', '-H', 'Accept: application/vnd.github.diff'],
                        capture_output=True, text=True, timeout=120)
     return r.stdout if r.returncode == 0 else ''
 
@@ -1882,6 +1882,7 @@ def selftest():
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
+    checks.update(selftest_renamed())
     checks.update(selftest_eval(tempfile.mkdtemp()))
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
@@ -2273,6 +2274,36 @@ def selftest_rerequest(cfg, tmp):
             runs['asked'] == ['post', 'edit 4'],
         'gcs-b3f: so does a re-review by hand on a PR that requests the reviewer': runs['by hand'] == ['post', 'edit 4'],
     }
+
+
+def selftest_renamed():
+    """gcs-kwj, the REST calls with subprocess stubbed: once a PR (from GraphQL, which follows a rename) shows that a
+    configured repository is now named otherwise, every REST path the run writes to uses the new name; a
+    repository never renamed keeps its own."""
+    calls, kept, canon = [], subprocess.run, dict(pr_rules.CANON)
+
+    def run(args, **k):
+        calls.append(next(a for a in args if a.startswith('repos/')))
+        return subprocess.CompletedProcess(args, 0, stdout='{"id": 5, "html_url": "u", "state": "COMMENTED"}', stderr='')
+    try:
+        pr_rules.CANON.clear()
+        pr_rules.learn('o/Old', {'url': 'https://github.com/o/new/pull/3'})
+        pr_rules.learn('o/same', {'url': 'https://github.com/o/same/pull/4'})
+        pr_rules.learn('o/gone', None)
+        subprocess.run = run
+        post_review('o/old', {'number': 3, 'headRefOid': 'a' * 40}, 'b', [])
+        update_review('o/old', 3, 9, 'b')
+        post_reply('o/old', 3, 7, 'b')
+        post_comment('o/old', 3, 'b')
+        post_comment('o/same', 4, 'b')
+        post_comment('o/gone', 5, 'b')
+    finally:
+        subprocess.run = kept
+        pr_rules.CANON.clear()
+        pr_rules.CANON.update(canon)
+    return {'gcs-kwj: a renamed repository: every REST write goes to its new name, others keep theirs':
+            [c.split('/pulls/')[0].split('/issues/')[0] for c in calls] ==
+            ['repos/o/new'] * 4 + ['repos/o/same', 'repos/o/gone']}
 
 
 def selftest_dry(tmp):

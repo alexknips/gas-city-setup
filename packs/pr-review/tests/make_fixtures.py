@@ -928,6 +928,24 @@ for name, want, old, extra in (
     CASES[f'case-rr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'asked_after_review', 'want': want,
                                 'args': {'old': old, 'head': A40, 'asked_at': '2026-01-02T09:00:00Z', 'rounds': 3, **extra}}
 
+# gcs-g9e (the reviewer, 2026-11-04: "let's post on drafts"): a draft that requests the reviewer is reviewed like any
+# requested PR; any other draft stays out, unrecorded.
+for name, want, draft, asked in (('unrequested-draft-skipped', True, True, False),
+                                 ('requested-draft-reviewed', False, True, True),
+                                 ('ready-pr-never-skipped-as-a-draft', False, False, False)):
+    CASES[f'case-dr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'draft_skipped', 'want': want,
+                                'args': {'draft': draft, 'asked': asked}}
+
+# gcs-kwj (2026-11-04: a configured repository was renamed and every REST write to its old name got a 307): REST
+# paths use the repository's current owner/name, from the PR's own URL; the state keeps the configured name.
+for name, want, url in (('renamed-repository-takes-the-new-name', 'example/new-name', 'https://github.com/example/new-name/pull/7'),
+                        ('same-repository-keeps-its-name', 'example/repo', 'https://github.com/example/repo/pull/7'),
+                        ('no-url-keeps-the-configured-name', 'example/repo', None),
+                        ('not-a-pull-request-url-keeps-the-configured-name', 'example/repo',
+                         'https://github.com/example/new-name/issues/7')):
+    CASES[f'case-rn-{name}'] = {'expect': 'pass', 'rule': 'rest', 'route': 'canonical_repo', 'want': want,
+                                'args': {'repo': 'example/repo', 'url': url}}
+
 if __name__ == '__main__':
     out = os.path.join(HERE, 'fixtures')
     os.makedirs(out, exist_ok=True)

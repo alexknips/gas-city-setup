@@ -1,0 +1,10 @@
+{
+ "expect": "pass",
+ "rule": "rest",
+ "route": "canonical_repo",
+ "want": "example/repo",
+ "args": {
+  "repo": "example/repo",
+  "url": "https://github.com/example/new-name/issues/7"
+ }
+}

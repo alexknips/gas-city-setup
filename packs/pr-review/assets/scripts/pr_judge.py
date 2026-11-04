@@ -158,10 +158,10 @@ def below_bar(scores):
 def delivered(repo, number, review_id):
     """A delivered review's body and inline comments, the comments from the PR's comment list: the
     per-review list does not report `line`, which made the first judge call anchored comments unanchored."""
-    rev = json.loads(pr_rules.gh(['api', f'repos/{repo}/pulls/{number}/reviews/{review_id}']))
-    author = pr_rules.gh(['api', f'repos/{repo}/pulls/{number}', '--jq', '.user.login']).strip()
+    rev = json.loads(pr_rules.gh(['api', f'repos/{pr_rules.rest(repo)}/pulls/{number}/reviews/{review_id}']))
+    author = pr_rules.gh(['api', f'repos/{pr_rules.rest(repo)}/pulls/{number}', '--jq', '.user.login']).strip()
     jq = f'.[] | select(.pull_request_review_id == {int(review_id)}) | {{path, line, start_line, body}}'
-    out = pr_rules.gh(['api', '--paginate', f'repos/{repo}/pulls/{number}/comments?per_page=100', '--jq', jq])
+    out = pr_rules.gh(['api', '--paginate', f'repos/{pr_rules.rest(repo)}/pulls/{number}/comments?per_page=100', '--jq', jq])
     mine = [json.loads(l) for l in out.splitlines() if l.strip()]
     return rev.get('body') or '', mine, rev.get('state'), author
 

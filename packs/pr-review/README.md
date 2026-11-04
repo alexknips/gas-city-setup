@@ -154,9 +154,10 @@ The entry, two lines per PR (the mayor, 2026-10-30 19:40Z and 19:41Z):
 - **Status**: our review's word when the latest run delivered a full review on the PR's current head
   ("Approved", "Changes requested", "Changes suggested", "Questions", "Low risk"); else "Waiting for
   review".
-- **Readiness**, the first that holds: Conflict, CI failing, Needs changes, Needs answers, Waiting for
-  review (no full review of ours on the head, or one without our approval), CI running (approved, checks
-  pending), Ready to merge. A PR posted by hand after it closed: Merged or Closed.
+- **Readiness**, the first that holds: Conflict, CI failing, Needs changes, Needs answers, Draft (a draft
+  is never ready to merge, whatever our review said), Waiting for review (no full review of ours on the head,
+  or one without our approval), CI running (approved, checks pending), Ready to merge. A PR posted by hand
+  after it closed: Merged or Closed.
 - **CI**: failing, pending, skipped or none; green with whether the PR's first push passed the required
   checks (the quality pack's first-pass rule: the branch's rulesets, else its protection; a re-run of a
   red check is not a first pass), "green first push" or "green after N pushes".
@@ -430,8 +431,11 @@ review of ours (an approval, a comment, a change request, a fallback or the note
   `asked_again` and, past the rounds, `asked_capped`), and never when our last attempt on the head did not post
   (held, failed): a person's request after that is the mayor's to run by hand.
 
-A draft is never reviewed or recorded, even when it requests the reviewer; it enters when it is marked ready. The
-sweep's `draft_requested` count says how many drafts ask.
+**Drafts** (gcs-g9e; the reviewer, 2026-11-04: "let's post on drafts", decision-9fa387eb). A draft that requests
+the reviewer is reviewed like any requested PR (the queue, the review, its client line with readiness "Draft");
+the sweep counts it as `draft_requested`. Any other draft is skipped and not recorded, so a reviewed draft
+gets its follow-ups again once it requests the reviewer or is marked ready. A red team's test PR stays
+hand-only, in draft or not.
 
 The follow-up (`pr_followup.py`, `pr_review.py --followup REPO#N [--dry-run | --no-deliver]` by hand) gives the
 review model our delivered asks for the author with the replies in their threads and the author's other comments
@@ -522,7 +526,7 @@ reviews, the benchmark, the red team's files, the eval instance, other runs; the
 `/var/tmp/gc-pr-review` included) is in its deny rules (`store_denies`), next to `DENY_ROOTS`.
 
 Checked by `pr_review.py --selftest` (cases (1)-(5) with GitHub, Slack, the client runner and the model
-stubbed) and `pr_sweep.py --selftest` (a draft and an eval PR out of draft stay out of the queue).
+stubbed) and `pr_sweep.py --selftest` (an unrequested draft and an eval PR, in draft or not, stay out of the queue; a requested draft enters it).
 
 ## Outcomes
 
@@ -759,6 +763,8 @@ commit messages and a PR's title and body (decision-67f9a695, forward only), as 
 at the PR head: `pr_hygiene.py --messages <base>..<head> --pr N --repo OWNER/NAME [--city city.toml]`.
 There the reviewer's own login and name are allowed, matching ignores case, and it prints labels and
 counts only.
+Cases `case-dr-*` (gcs-g9e, `draft_skipped`): an unrequested draft is skipped, a requested one and a ready PR
+are not.
 Cases `case-rr-*` (gcs-b3f, the sweep's `asked_after_review`): a request made again after our review or our
 note is a re-review; not for a request our last review answered, after a held or failed attempt, twice for one
 request, past the rounds, on a new head (the push follow-up's), without a live request, or while reviewing; a
@@ -857,6 +863,11 @@ the reviewer says so.
 
 ## Traps
 
+- A configured repository renamed on GitHub (gcs-kwj): GraphQL and REST reads follow the rename, but a REST write
+  to the old name gets a 307 that gh does not follow, so the review would fail to post. Every REST path uses the
+  repository's current owner/name, learnt from its PRs' own URLs (GraphQL); the state, the beads and
+  `PR_REVIEW_REPOS` keep the configured name, so nothing has to move. Renaming the repository in `PR_REVIEW_REPOS`
+  instead would start its PRs over (new state keys, no record of our earlier reviews).
 - One pending review per user per PR: if the reviewer already has a draft review on a PR, the post
   fails (`pending-exists` in the log) and the outcome is still recorded.
 - `claude -p` resolves from `PR_REVIEW_CLAUDE`, then PATH, then `~/.local/bin/claude`. An order's PATH

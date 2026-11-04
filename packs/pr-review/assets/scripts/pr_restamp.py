@@ -29,6 +29,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pr_format  # noqa: E402
+import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
 
 VERDICT_RE = re.compile(r'^\*\*(Approved as low risk|Approved|Needs you|Changes requested|Changes suggested|Questions|'
@@ -166,7 +167,8 @@ def restamp(cfg, apply, merged, ours=()):
     for repo, num, e in todo:
         key = f'{repo}#{num}'
         try:
-            pr = gh_lines(f'repos/{repo}/pulls/{num}', '{state, merged, author: .user.login}')[0]
+            pr = gh_lines(f'repos/{repo}/pulls/{num}', '{state, merged, author: .user.login, url: .html_url}')[0]
+            repo = pr_rules.canonical_repo(repo, pr.get('url'))  # gcs-kwj: a renamed repository's writes
             reviews = gh_lines(f'repos/{repo}/pulls/{num}/reviews?per_page=100',
                                f'.[] | select((.user.login | ascii_downcase) == "{reviewer}") | '
                                '{id, state, body, html_url}')

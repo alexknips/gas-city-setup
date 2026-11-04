@@ -66,6 +66,7 @@ Text: every line between the two marker lines, exactly, character for character,
 
 Make exactly one call to {tool}. Do not read, search or call any other tool. Then reply DONE."""
 WAITING = 'Waiting for review'
+DRAFT = 'Draft'  # gcs-g9e: a requested draft is reviewed; it is never ready to merge
 QUEUE_TRIES = 3  # failed queue posts retried on later runs of the same day, then left for the next day
 PROBE_PROMPT = 'Reply with the single word OK. Do not call any tool.'
 KEEP_ENV = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'USER', 'LOGNAME', 'TERM', 'TZ')
@@ -197,11 +198,12 @@ def ours_of(review):
     return {'changes': 'changes', 'questions': 'questions', 'escalate': 'questions'}.get(review.get('outcome'))
 
 
-def readiness(mergeable, ci, ours, state='OPEN'):
+def readiness(mergeable, ci, ours, state='OPEN', draft=False):
     """One word or two, the first that holds (the mayor, 19:41Z): Conflict, CI failing, Needs changes, Needs
-    answers, Waiting for review (no full review of ours on the head, or one without our approval), then
-    our approval on the head: CI running while checks are pending, else Ready to merge. A PR posted again
-    by hand after it merged or closed: Merged or Closed."""
+    answers, Draft (gcs-g9e: a draft is not ready to merge, whatever our review said), Waiting for review (no
+    full review of ours on the head, or one without our approval), then our approval on the head: CI running
+    while checks are pending, else Ready to merge. A PR posted again by hand after it merged or closed: Merged
+    or Closed."""
     if state in ('MERGED', 'CLOSED'):
         return state.capitalize()
     if mergeable == 'CONFLICTING':
@@ -212,6 +214,8 @@ def readiness(mergeable, ci, ours, state='OPEN'):
         return 'Needs changes'
     if ours == 'questions':
         return 'Needs answers'
+    if draft:
+        return DRAFT
     if ours != 'approved':
         return WAITING
     return 'CI running' if ci == 'pending' else 'Ready to merge'
@@ -261,7 +265,8 @@ def entry_text(url, words, review, facts):
     line1 = SEP.join(x for x in (url, words, conf and f'{conf} confidence', status) if x)
     size = f"+{facts.get('added', 0)}/-{facts.get('removed', 0)}"
     files = f" in {facts.get('files', 0)} file{'' if facts.get('files') == 1 else 's'}"
-    parts = [readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN')),
+    parts = [readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN'),
+                       facts.get('draft')),
              ci_part(facts.get('ci'), facts.get('first_pass'), facts.get('pushes', 0)), size + files,
              facts.get('tests'), *(open_part(review) if kind in ('full', 'fallback') else [])]
     line2 = SEP.join(x for x in parts if x)
@@ -283,7 +288,7 @@ def pr_facts(cfg, repo, number, pr=None):
     pr = pr or pr_rules.get_pr(repo, number)
     ci = pr_rules.ci_state(pr)
     facts = {'url': pr['url'], 'head': pr['headRefOid'], 'title': pr.get('title') or '', 'state': pr.get('state'),
-             'mergeable': pr.get('mergeable'),
+             'mergeable': pr.get('mergeable'), 'draft': bool(pr.get('isDraft')),
              'ci': ci, 'first_pass': None, 'pushes': 0, 'added': pr.get('additions') or 0,
              'removed': pr.get('deletions') or 0, 'files': pr.get('changedFiles') or 0, 'tests': None}
     owner, name = repo.split('/')
@@ -303,7 +308,8 @@ def facts_log(facts, review, words, how):
     return {'pr': facts.get('url'), 'status': client_word(review.get('outcome'), review.get('approved'), review.get('event'))
             if review.get('kind') == 'full' else WAITING, 'confidence': review.get('confidence') if review.get('kind') == 'full'
             else ('low' if review.get('kind') else None),
-            'readiness': readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN')),
+            'readiness': readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN'),
+                                   facts.get('draft')),
             'ci': ci_part(facts.get('ci'), facts.get('first_pass'), facts.get('pushes', 0)), 'tests': facts.get('tests'),
             'changes': review.get('changes'), 'questions': review.get('questions'), 'flagged': review.get('flagged'),
             'words_from': how, 'words': len(words.split())}
@@ -838,10 +844,11 @@ def selftest():
              readiness('MERGEABLE', 'green', 'changes'), readiness('MERGEABLE', 'green', 'questions'),
              readiness('MERGEABLE', 'green', None), readiness('MERGEABLE', 'green', 'approved'),
              readiness('MERGEABLE', 'pending', 'approved'), readiness('CONFLICTING', 'red', None, 'MERGED'),
-             readiness('UNKNOWN', 'green', 'approved', 'CLOSED')]
-    checks['readiness: each value, in the order of the rule'] = ready == [
+             readiness('UNKNOWN', 'green', 'approved', 'CLOSED'), readiness('MERGEABLE', 'green', 'approved', draft=True),
+             readiness('MERGEABLE', 'pending', None, draft=True), readiness('MERGEABLE', 'green', 'questions', draft=True)]
+    checks['readiness: each value, in the order of the rule; a draft is never ready to merge (gcs-g9e)'] = ready == [
         'Conflict', 'CI failing', 'Needs changes', 'Needs answers', WAITING, 'Ready to merge', 'CI running', 'Merged',
-        'Closed']
+        'Closed', DRAFT, DRAFT, 'Needs answers']
     checks['CI: green first push, green after 2 pushes, failing, pending'] = [
         ci_part('green', True, 1), ci_part('green', False, 2), ci_part('red'), ci_part('pending'), ci_part('green')] == [
         'CI green first push', 'CI green after 2 pushes', 'CI failing', 'CI pending', 'CI green']

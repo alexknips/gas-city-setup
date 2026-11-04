@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """PR review sweep (README.md, "Sweep"): which PRs need a review, from zero-token rules only.
 
-  pr_sweep.py                   one sweep: PRs updated since the last one (open non-draft, or merged
+  pr_sweep.py                   one sweep: PRs updated since the last one (open, a draft only if it
+                                requests the reviewer, or merged
                                 since), each new head through the rules, one bead per PR, the review
                                 queue in the state file. No model, nothing posted.
   pr_sweep.py --dry-run         the same, printed; writes nothing, creates nothing
@@ -214,13 +215,11 @@ def sweep(cfg, dry):
         old = seen.get(key, {})
         asked = pr_rules.requested_now(pr, cfg['reviewer'])
         if pr['isDraft'] and pr['state'] == 'OPEN':
-            # gcs-b3f: a draft is never reviewed nor recorded, even when it requests the reviewer; it enters
-            # when it is marked ready. The count says how many drafts ask.
             counts['draft'] += 1
-            if asked:
-                counts['draft_requested'] += 1
-            continue
-        if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, even out of draft
+            if pr_rules.draft_skipped(True, asked):  # gcs-g9e: only a draft that requests the reviewer is reviewed
+                continue
+            counts['draft_requested'] += 1
+        if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, in draft or not
             counts['eval'] += 1
             continue
         block = pr_rules.formal_block(old, pr['headRefOid'], pr.get('mergeable'), pr_rules.ci_state(pr))
@@ -348,7 +347,7 @@ CARRY = ('review_id', 'review_url', 'review_heads', 'event', 'approved', 'block'
 def lift_block(repo, pr, review_id):
     """Dismiss our formal block once the merge conflict and the failing checks it rested on are fixed."""
     msg = f"Lifted: the merge conflict and failing checks are fixed on {pr['headRefOid'][:7]}."
-    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{repo}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
+    r = subprocess.run(['gh', 'api', '-X', 'PUT', f"repos/{pr_rules.rest(repo)}/pulls/{pr['number']}/reviews/{int(review_id)}/dismissals",
                         '-f', f'message={msg}', '-f', 'event=DISMISS'], capture_output=True, text=True, timeout=60)
     return r.returncode == 0
 
@@ -493,7 +492,7 @@ def selftest():
     fails += selftest_followups()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {19 - len(fails)} of 19')
+    print(f'pr_sweep selftest: {20 - len(fails)} of 20')
     return 1 if fails else 0
 
 
@@ -515,7 +514,10 @@ def selftest_followups():
            8: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
            9: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
            10: {'head': a40, 'ci': 'green', 'requested': True, 'asked': ago(14)},
-           11: {'head': a40, 'ci': 'pending', 'requested': True, 'asked': ago(1)}}  # its CI re-runs
+           11: {'head': a40, 'ci': 'pending', 'requested': True, 'asked': ago(1)},  # its CI re-runs
+           # gcs-g9e: a draft that does not request the reviewer (12), a red team's test draft that does (13)
+           12: {'head': a40, 'ci': 'green', 'draft': True},
+           13: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True, 'branch': 'review-test/c2'}}
 
     def fake(n):
         p = prs[n]
@@ -602,8 +604,10 @@ def selftest_followups():
         fails.append('a PR that requests the reviewer enters the queue')
     if second['o/r#2'].get('followup') != 'answer' or second['o/r#2'].get('status') != 'queued':
         fails.append('a queued follow-up is not queued twice or lost by the next sweep')
-    if 'o/r#5' in second or 'o/r#6' in second:
-        fails.append('a draft, and an eval PR out of draft, stay out of the queue and get no bead (gcs-71c)')
+    if any(k in second for k in ('o/r#5', 'o/r#12', 'o/r#13')):
+        fails.append('an unrequested draft, and an eval PR in draft or not, stay out of the queue and get no bead (gcs-71c)')
+    if (first.get('o/r#6') or {}).get('status') != 'queued' or (first.get('o/r#6') or {}).get('tier') != 0:
+        fails.append('gcs-g9e: a draft that requests the reviewer enters the queue like any requested PR')
     p7, p7b = first['o/r#7'], second['o/r#7']
     if not (p7.get('status') == 'queued' and p7.get('followup') == 'asked' and p7.get('tier') == 0 and
             p7.get('asked_at') == prs[7]['asked'] and p7.get('asked_rounds') == {a40: 1}):
@@ -619,7 +623,7 @@ def selftest_followups():
             and p11b.get('followup') == 'asked' and p11b.get('asked_rounds') == {a40: 1}):
         fails.append('gcs-b3f: a re-review waits for CI with its mark, then is queued as one')
     if not counts or counts[0].get('asked_again') != 2 or counts[0].get('asked_capped') != 1 or \
-            counts[0].get('draft_requested') != 1:
+            counts[0].get('draft_requested') != 2 or counts[0].get('draft') != 3:
         fails.append('gcs-b3f: the sweep counts re-reviews, used-up rounds and drafts that request the reviewer')
     return fails
 

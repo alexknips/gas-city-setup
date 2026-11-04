@@ -1,0 +1,10 @@
+{
+ "expect": "pass",
+ "rule": "sweep",
+ "route": "draft_skipped",
+ "want": false,
+ "args": {
+  "draft": true,
+  "asked": true
+ }
+}
