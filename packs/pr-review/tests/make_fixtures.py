@@ -924,6 +924,14 @@ for name, want, old, extra in (
     CASES[f'case-rr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'asked_after_review', 'want': want,
                                 'args': {'old': old, 'head': A40, 'asked_at': '2026-01-02T09:00:00Z', 'rounds': 3, **extra}}
 
+# gcs-g9e (the reviewer, 2026-11-04: "let's post on drafts"): a draft that requests the reviewer is reviewed like any
+# requested PR; any other draft stays out, unrecorded.
+for name, want, draft, asked in (('unrequested-draft-skipped', True, True, False),
+                                 ('requested-draft-reviewed', False, True, True),
+                                 ('ready-pr-never-skipped-as-a-draft', False, False, False)):
+    CASES[f'case-dr-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'draft_skipped', 'want': want,
+                                'args': {'draft': draft, 'asked': asked}}
+
 if __name__ == '__main__':
     out = os.path.join(HERE, 'fixtures')
     os.makedirs(out, exist_ok=True)

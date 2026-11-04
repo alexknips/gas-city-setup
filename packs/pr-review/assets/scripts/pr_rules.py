@@ -285,6 +285,13 @@ def asked_again(old, head, asked):
     return old.get('head') != head or old.get('outcome') in ('no-rule', 'unrequested')
 
 
+def draft_skipped(draft, asked):
+    """gcs-g9e (the reviewer, 2026-11-04: "let's post on drafts", decision-9fa387eb): the sweep skips a draft,
+    unrecorded, unless it requests the reviewer; then it is reviewed like any requested PR. A red team's test
+    PR stays hand-only either way (eval_case)."""
+    return bool(draft) and not asked
+
+
 # The outcomes of a run that posted a review on GitHub (pr_feedback.DELIVERED); the others held, failed or skipped.
 POSTED = ('low-risk', 'questions', 'changes', 'escalate', 'not-reviewed')
 

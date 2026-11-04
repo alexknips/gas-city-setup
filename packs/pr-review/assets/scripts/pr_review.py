@@ -750,7 +750,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
                  open_questions=review['questions'])
     # Once per head and status (decision-57b6d9bb): a follow-up posts a new entry only when readiness moved.
     ready = pr_client_slack.readiness(fresh.get('mergeable'), extra.get('ci') or pr_rules.ci_state(fresh),
-                                      pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'))
+                                      pr_client_slack.ours_of(review), fresh.get('state', 'OPEN'), fresh.get('isDraft'))
     if cfg['client_slack'] != 'off' and not cfg.get('eval') and \
             not pr_client_slack.posted_on(entry, head, pr_client_slack.sent_reviews(cfg['state']), ready):
         try:
