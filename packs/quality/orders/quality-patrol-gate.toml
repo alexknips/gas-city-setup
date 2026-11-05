@@ -1,0 +1,24 @@
+# Patrol gate (README.md, "Patrol gate"): wake a patrol seat only when there is something to find.
+# No model, no tokens: one census pass (the same code as quality-stops, its state only read), one
+# `gc session list`, a capture of each patrol seat's pane, and the disk's free space.
+# - a witness is nudged for a census stop on its rig that a watcher clears, once per stop, and
+#   otherwise once every QUALITY_GATE_HEARTBEAT_H hours;
+# - gc's own wake prompt left unsent in a patrol seat's box is submitted with Enter (twice at most);
+# - the deacon is nudged for an open dialog, other unsent text, a prompt Enter did not clear, or the
+#   disk running low or falling fast.
+# Each part is off, shadow (logs what it would do) or live: QUALITY_GATE_WITNESS, _ENTER, _DEACON.
+# QUALITY_GATE = "off" (below) makes every fire exit at once; a city turns the gate on with an
+# override, e.g. QUALITY_GATE = "on" and every part left at shadow for a trial.
+# Every run appends one JSON line to $QUALITY_STATE_DIR/patrol-gate.jsonl.
+# Manual run: gc order run quality-patrol-gate
+# Dry run:    $PACK_DIR/assets/scripts/quality-patrol-gate.sh --dry-run   (acts on nothing, writes nothing)
+[order]
+description = "Patrol gate: wake a patrol seat only when there is something to find"
+scope = "city"
+exec = "$PACK_DIR/assets/scripts/quality-patrol-gate.sh"
+trigger = "cooldown"
+interval = "10m"
+timeout = "4m"
+
+[order.env]
+QUALITY_GATE = "off"
