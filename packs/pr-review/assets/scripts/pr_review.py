@@ -1247,8 +1247,12 @@ def asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, note
     that passes, or the questions match a secret's shape: the stock fallback then."""
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     places = pr_fallback.places(idx, money, flagged if note else pr_rules.controlled(flagged), fill=note)
+    before = len(places)
+    places = [p for p in places if not repeats(p['path'], p['line_start'], p['line_end'], cfg.get('_earlier') or [])]
+    if before and not places:  # gcs-y48: every place was asked before and the code there has not changed
+        return None, None, None, {'asked': 0, 'repeats': before, 'all_repeats': True}
     if not places or not (answer or cfg.get('judge_model')):
-        return None, None, None, {'asked': 0}
+        return None, None, None, {'asked': 0, 'repeats': before - len(places)}
     items, others, summary, meta = pr_fallback.ask(cfg, idx, places, answer, title=pr.get('title') or '',
                                                    description=pr.get('body') or '')
     if not items:
@@ -1294,6 +1298,62 @@ def control_waiver(rv, flagged, reasons):
         return []
     return pr_rules.covers([i for i in rv.get('items') or [] if i.get('kind') in ('change', 'question')],
                            pr_rules.controlled(flagged))
+
+
+# gcs-y48 (decision-8541ef04, decision-527cf053): the areas where a gap is big enough to raise after the author
+# answered, or at low severity: security, patient data, SOC 2 (compliance), what cannot be undone or loses data.
+BIG_AREAS = {'patient data', 'security', "can't be undone", 'migration order', 'compliance'}
+EARLIER_Q = """query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {
+  reviewThreads(first: 100) { nodes { path line startLine isOutdated comments(first: 1) { nodes { author { login } } } } } } } }"""
+
+
+def earlier_asks(cfg, repo, number):
+    """gcs-y48: the places our inline asks on the PR still sit on (their threads not outdated: the code there has not
+    changed since), as (path, first line, last line); [] when GitHub does not answer."""
+    owner, name = pr_rules.rest(repo).split('/')
+    try:
+        pr = pr_rules.graphql(EARLIER_Q, o=owner, r=name, n=number)['repository']['pullRequest'] or {}
+    except pr_rules.GhError:
+        return []
+    who = (cfg.get('reviewer') or '').lower()
+    out = []
+    for t in (pr.get('reviewThreads') or {}).get('nodes') or []:
+        cs = (t.get('comments') or {}).get('nodes') or []
+        if t.get('isOutdated') or not t.get('line') or not cs or \
+                ((cs[0].get('author') or {}).get('login') or '').lower() != who:
+            continue
+        out.append((t['path'], t.get('startLine') or t['line'], t['line']))
+    return out
+
+
+def repeats(path, lo, hi, earlier):
+    """Whether an ask on path lines lo..hi sits where an earlier ask of ours still stands (gcs-y48: never ask twice)."""
+    return any(p == path and a <= hi and lo <= b for p, a, b in earlier)
+
+
+def on_control(it, flagged):
+    """Whether an item sits on a flagged hunk whose rule guards a control (gcs-9j8)."""
+    return any(f.get('path') == it.get('path') and (it.get('line_start') or 0) <= (f.get('line') or -1) <= (it.get('line_end') or 0)
+               for f in pr_rules.controlled(flagged))
+
+
+def graceful(items, flagged, earlier, after_answers):
+    """decision-8541ef04 and decision-527cf053, zero tokens: the items that go out. Never an ask where an earlier one
+    of ours still stands; never a low-severity ask outside the big-gap areas; after the author answered our review
+    (a follow-up), only a big gap or a high-severity finding. An item on a control's hunk always stays.
+    Returns (kept, counts)."""
+    kept, counts = [], {'repeat': 0, 'low': 0, 'after_answers': 0}
+    for it in items:
+        big = it.get('area') in BIG_AREAS or on_control(it, flagged)
+        if repeats(it.get('path'), it.get('line_start') or 0, it.get('line_end') or 0, earlier):
+            counts['repeat'] += 1
+        elif not big and it.get('severity') == 'low':
+            counts['low'] += 1
+        elif after_answers and not big and it.get('severity') != 'high':
+            counts['after_answers'] += 1
+        else:
+            kept.append(it)
+    return kept, counts
 
 
 R39_WHY = ('R39: {n} sentence(s) state or recommend how the product should behave; never decide product behaviour: '
@@ -1416,6 +1476,10 @@ def held_note(cfg, repo, pr, ci, idx, flagged, money, author, held, codes, rules
     words = ruleset.get('not_checked') or 'billing, plans, credits or pricing'
     rv, body, comments, meta = asked_fallback(cfg, repo, pr, ci, idx, flagged, money, author, ruleset, True, held, codes,
                                               answer, since)
+    if meta.get('all_repeats') and not cfg.get('_requested'):
+        # gcs-y48: our earlier asks still stand on unchanged code and nobody asked for this review: nothing new to say
+        rv, body, comments = not_reviewed(repo, pr, ci, idx, flagged, money, author, held, codes, words, cfg, since=since)
+        return rv, body, comments, ['R33: nothing new to ask; the earlier asks stand'], asked_log(meta, 'none')
     if rv:
         reasons = gate(rv, body, comments)
         if not reasons:
@@ -1544,6 +1608,9 @@ def model_review(cfg, key, entry, dry, rereview=False):
                               'flagged_hunks': len(flagged), 'flags_cut': flags_cut, 'not_checked_hunks': len(nc_rule)}))
             return
         idx = pr_format.diff_index(diff)
+        cfg['_earlier'] = earlier_asks(cfg, repo, pr['number']) if entry.get('review_heads') and not cfg.get('bench') else []
+        cfg['_after_answers'] = bool(entry.get('followup') and entry.get('review_heads'))
+        cfg['_requested'] = 'requested' in hits
         extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
                  'digest_cost_usd': dmeta.get('cost_usd', 0),
@@ -1564,6 +1631,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 return
             decisions = [d for d in model['decisions'] if d['confidence'] >= 8]
             items = [i for i in model['items'] if i['confidence'] >= 8][:pr_format.MAX_ITEMS]
+            items, dropped = graceful(items, flagged, cfg.get('_earlier') or [], cfg.get('_after_answers'))
+            extra['graceful_dropped'] = {k: v for k, v in dropped.items() if v}
             if cfg.get('suggestions'):  # gc-sy1hm.2 b: a fix the gate would refuse is dropped, its item stays
                 items, extra['suggestions'], extra['suggestions_dropped'] = pr_format.keep_suggestions(items, idx)
             # R20: the rule's hunks, plus the money lines the model saw that are in the diff.
@@ -1919,6 +1988,7 @@ def selftest():
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
+    checks.update(selftest_graceful(cfg, tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
     checks.update(selftest_eval(tempfile.mkdtemp()))
@@ -2349,6 +2419,43 @@ def selftest_product():
             len(calls) == 3 and extra.get('product_calls') == 2,
             'R39: a check that does not answer holds nothing and is counted':
             failed == [] and extra.get('product_check_failed') == 1}
+
+
+def selftest_graceful(cfg, tmp):
+    """gcs-y48 (decision-8541ef04, decision-527cf053), zero tokens: the items that go out, and the note when every
+    place was asked before."""
+    it = lambda area, sev, path='a.ts', lo=10, hi=12: {'area': area, 'severity': sev, 'path': path,  # noqa: E731
+                                                         'line_start': lo, 'line_end': hi}
+    flagged = [{'id': 'F1', 'rule': 'sec-auth', 'path': 'c.ts', 'line': 5, 'control': 'who can sign in'}]
+    earlier = [('a.ts', 11, 11)]
+    first, c1 = graceful([it('other', 'medium'), it('other', 'low', 'b.ts'), it('security', 'low', 'b.ts'),
+                          it('other', 'low', 'c.ts', 4, 6)], flagged, earlier, False)
+    after, c2 = graceful([it('other', 'medium', 'b.ts'), it('other', 'high', 'b.ts'), it('patient data', 'medium', 'b.ts')],
+                         flagged, [], True)
+    checks = {
+        'R40: an ask where an earlier one stands is not posted again; a low-severity ask outside the big areas is not '
+        'raised; a big area or a control keeps it': [x['area'] + x['path'] for x in first] == ['securityb.ts', 'otherc.ts']
+        and c1 == {'repeat': 1, 'low': 1, 'after_answers': 0},
+        'R40 (decision-527cf053): after the author answered, only a big gap or a high-severity finding':
+        [x['area'] + x['severity'] for x in after] == ['otherhigh', 'patient datamedium'] and c2['after_answers'] == 1,
+        'R40: repeats() is an overlap of lines on the same path': repeats('a.ts', 1, 11, earlier) and
+        not repeats('a.ts', 12, 20, earlier) and not repeats('b.ts', 11, 11, earlier)}
+    diff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,3 @@\n x\n+send(contact.phone)\n y\n'
+    idx = pr_format.diff_index(diff)
+    pr = {'number': 1, 'headRefOid': 'a' * 40, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'commits': {'nodes': []}, 'title': 't'}
+    flagged = [{'id': 'F1', 'rule': 'r', 'label': 'a message sent to people', 'path': 'src/a.ts', 'line': 2}]
+    ok = lambda x, b, c: []  # noqa: E731
+    asked = []
+    answer = lambda prompt: asked.append(prompt) or (None, {})  # noqa: E731
+    ncfg = dict(cfg, judge_model='m', _earlier=[('src/a.ts', 2, 2)], _requested=False)
+    rv, body, comments, reasons, note = held_note(ncfg, 'o/r', pr, 'green', idx, flagged, [], 'Author', 'held-gate', ['R29'],
+                                                  {}, ok, answer)
+    checks['R40: the note posts nothing when every place was asked before and nobody requested the review'] = \
+        reasons == ['R33: nothing new to ask; the earlier asks stand'] and asked == []
+    rv, body, comments, reasons, note = held_note(dict(ncfg, _requested=True), 'o/r', pr, 'green', idx, flagged, [],
+                                                  'Author', 'held-gate', ['R29'], {}, ok, answer)
+    checks['R33: a PR that requests the reviewer still gets its note when every place was asked before'] = reasons == []
+    return checks
 
 
 def selftest_rerequest(cfg, tmp):

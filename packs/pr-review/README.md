@@ -431,6 +431,24 @@ review of ours (an approval, a comment, a change request, a fallback or the note
   `asked_again` and, past the rounds, `asked_capped`), and never when our last attempt on the head did not post
   (held, failed): a person's request after that is the mayor's to run by hand.
 
+**Graceful** (R40; decision-8541ef04, the reviewer, 2026-11-05: "let the reviewers be more graceful for normal
+mistakes. we had too many false positives. security flaws still need to be caught"). Sized by the review audit
+(gcs-y48: of 207 unique asks on 83 PRs, 111 were off; 76 of those the PR's own diff or text already answered; the
+note's questions at its largest unflagged hunks were off 47 times of 71; 148 of 209 repeated asks were off):
+- **Never twice**: an ask is not posted again where an earlier one of ours still stands on the PR (its thread not
+  outdated: the code there has not changed). The review's items and the fallback's places are both checked
+  (`graceful_dropped.repeat`, the note's `repeats`). When every place of the note was asked before, nothing is
+  posted, unless the PR requests the reviewer (R33).
+- **Not what the PR answers**: the style guide (R40) and the fallback's prompt say never to ask what the diff, the
+  description, the commit messages or the repository's docs settle, nor an ordinary slip or a style point.
+- **The note's size-picked places**: a place the note took only for its size (NOT FLAGGED) gets a question only
+  for a risk to security, patient data, audit logging or access, or an irreversible change or data loss;
+  otherwise it is skipped (`skipped`) and only linked among the other places.
+- **Severity**: a low-severity ask outside the big-gap areas (security, patient data, can't be undone, migration
+  order, compliance) is not raised, unless it sits on a control's hunk (`graceful_dropped.low`).
+- **After the author answered** (decision-527cf053): a follow-up on a PR we reviewed raises only a big gap or a
+  high-severity finding (`graceful_dropped.after_answers`), so it approves when nothing else is left (R27).
+
 **No product calls** (R39; decision-ea68ba75, the reviewer, 2026-11-05: "the review bot seemingly making a product
 decision is not ok"). The reviewer never states or recommends how the product should behave; it asks the author
 what was intended and cites the line or rule that raised it. One cheap answer (no tools, capture off,
