@@ -75,6 +75,8 @@ def config():
         'work': work,
         'keep_days': int(e('PR_REVIEW_KEEP_DAYS', '30')),  # whole reviews kept host-local (held, bench)
         'max_load': float(e('PR_REVIEW_MAX_LOAD', '15')),
+        # gcs-y48: R39's product-call count holds a review only when on (off since the red team's eval of 4b59f3a)
+        'r39_hold': e('PR_REVIEW_R39_HOLD', 'off') == 'on',
         'beads': e('PR_REVIEW_BEADS', 'on') == 'on',
         'slack_channel': e('PR_REVIEW_SLACK_CHANNEL', ''),
         'slack_env': e('PR_REVIEW_SLACK_ENV', '~/.config/gc/slack.env ~/.config/gc/slack2.env').split(),

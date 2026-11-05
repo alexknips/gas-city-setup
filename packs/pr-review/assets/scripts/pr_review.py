@@ -1361,8 +1361,10 @@ R39_WHY = ('R39: {n} sentence(s) state or recommend how the product should behav
 
 
 def product_reasons(cfg, body, comments, extra):
-    """decision-ea68ba75 (R39): [] when the review states or recommends no product behaviour (or the check is off or
-    did not answer, which the log counts), else the reason. Each text is checked once (its hash)."""
+    """decision-ea68ba75 (R39): the product-call count of a review, kept in the log (`product_calls`); a reason that
+    holds the review only with PR_REVIEW_R39_HOLD=on. Off by default since the red team's scored eval of 4b59f3a
+    (2026-11-05): when R39 was a review's only hold, the review fell to the note and 2 security catches were lost.
+    [] when the check is off, did not answer (counted) or found none. Each text is checked once (its hash)."""
     if not cfg.get('judge'):
         return []
     key = body_sha(body + ''.join(c.get('body') or '' for c in comments))
@@ -1376,6 +1378,9 @@ def product_reasons(cfg, body, comments, extra):
         elif n:
             extra['product_calls'] = extra.get('product_calls', 0) + n
     n = done[key]
+    if n and not cfg.get('r39_hold'):
+        extra['product_calls_not_held'] = extra.get('product_calls_not_held', 0) + 1
+        return []
     return [R39_WHY.format(n=n)] if n else []
 
 
@@ -2398,7 +2403,7 @@ def selftest_product():
     """decision-ea68ba75 (R39), the product-call check with its answer stubbed: off without the reader test; a count
     holds with the count in the reason; each text is asked once; a check that does not answer holds nothing and is
     counted."""
-    calls, answers = [], iter([2, 0, None])
+    calls, answers = [], iter([2, 0, None, 3])
     kept = pr_judge.product_calls
 
     def stub(cfg, body, comments):
@@ -2408,17 +2413,21 @@ def selftest_product():
     try:
         off = product_reasons({}, 'b', [], {})
         extra = {}
-        first = product_reasons({'judge': True}, 'You should charge the fee.', [], extra)
-        again = product_reasons({'judge': True}, 'You should charge the fee.', [], extra)
-        clean = product_reasons({'judge': True}, 'Which fee did you intend?', [{'body': 'x'}], extra)
-        failed = product_reasons({'judge': True}, 'other', [], extra)
+        first = product_reasons({'judge': True, 'r39_hold': True}, 'You should charge the fee.', [], extra)
+        again = product_reasons({'judge': True, 'r39_hold': True}, 'You should charge the fee.', [], extra)
+        clean = product_reasons({'judge': True, 'r39_hold': True}, 'Which fee did you intend?', [{'body': 'x'}], extra)
+        failed = product_reasons({'judge': True, 'r39_hold': True}, 'other', [], extra)
+        logged = {}
+        default = product_reasons({'judge': True}, 'You should pick plan B.', [], logged)
     finally:
         pr_judge.product_calls = kept
     return {'R39: off without the reader test, held with the count, asked once per text':
             off == [] and len(first) == 1 and first[0].startswith('R39: 2 ') and again == first and clean == [] and
-            len(calls) == 3 and extra.get('product_calls') == 2,
+            len(calls) == 4 and extra.get('product_calls') == 2,
             'R39: a check that does not answer holds nothing and is counted':
-            failed == [] and extra.get('product_check_failed') == 1}
+            failed == [] and extra.get('product_check_failed') == 1,
+            'R39 by default (since the red-team eval of 4b59f3a): counted in the log, never a hold':
+            default == [] and logged.get('product_calls') == 3 and logged.get('product_calls_not_held') == 1}
 
 
 def selftest_graceful(cfg, tmp):
