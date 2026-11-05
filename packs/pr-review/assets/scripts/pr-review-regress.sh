@@ -23,6 +23,9 @@ python3 "$here/pr_incremental.py" --selftest > /dev/null || { echo 'pr_increment
 python3 "$here/pr_feedback.py" --selftest > /dev/null || { echo 'pr_feedback selftest: FAIL'; rc=1; }
 # The benchmark's version changes with every file and setting that shapes a review (the mayor, 2026-10-31).
 python3 "$here/pr_bench.py" --selftest > /dev/null || { echo 'pr_bench selftest: FAIL'; rc=1; }
+# The review audit's zero-token parts and the channel reader's hook rule (gcs-y48, synthetic).
+python3 "$here/pr_audit.py" selftest > /dev/null || { echo 'pr_audit selftest: FAIL'; rc=1; }
+python3 "$here/pr_client_read.py" --selftest > /dev/null || { echo 'pr_client_read selftest: FAIL'; rc=1; }
 # Host-local: no public file names a town person or repository (skipped without the town overrides).
 python3 "$here/pr_hygiene.py" "$here/../.." || rc=1
 exit $rc

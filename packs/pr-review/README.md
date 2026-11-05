@@ -182,6 +182,12 @@ words are those kept at delivery, else the title's. No post when the list is emp
 tried again on later runs of the day, 3 times at most. The same runner and hook carry it; its text goes
 to the model between two marker lines, and the hook compares it up to line endings and blank lines.
 
+- **The reader** (decision-041014d6: "please make it possible to read the channel"): `pr_client_read.py`
+  starts the same restricted runner with only the channel and thread read tools allowed and every other
+  connector tool denied by name; its hook allows reads of PR_REVIEW_CLIENT_SLACK_READ_CONVERSATIONS only, at
+  most PR_REVIEW_CLIENT_SLACK_READ_CALLS calls, and refuses any post or workspace search. The messages it keeps
+  stay in PR_REVIEW_WORK_DIR (mode 600); it prints counts.
+
 ## What never leaves GitHub
 
 Pull requests can carry regulated data (health records, PHI) or code under SOC 2 controls. So the
@@ -832,6 +838,43 @@ with CI not green, on a changed head (all fail, R27), and a clean one (passes).
 
 The regression covers the gate and the renderer, not the model: it cannot show that a prompt change
 makes the model write better items. The feedback numbers measure that.
+
+## Review audit
+
+gcs-y48 (the reviewer, 2026-11-05: "full analysis: what questions were spot on and which were off. and why."):
+`pr_audit.py` goes through every review of ours on the configured repositories and what each PR's author did
+with each ask.
+
+- **collect** (zero tokens, read-only on GitHub): our reviews (the version marker tells them from the
+  reviewer's own), their inline asks with the author's replies, whether the thread was resolved and by whom,
+  whether its lines changed since (GitHub's outdated flag), the author's PR comments and the commits after our
+  first review, and the code around each ask at the reviewed commit. Each inline ask is joined to its posted
+  item (host-local copy) for its kind, severity, area, repository rule, money line and the static flags on its
+  lines. **Provenance**, what raised the ask, comes from that record, never from a model: `note` (the R33
+  fallback's floor, when the full review was held), `static:<rule>`, `money`, `repo-rule`, `model` (the
+  review model's own reading), or `unknown` (no posted copy: a later review of the same head replaced it).
+- **The channel**: `pr_client_read.py --messages` reads the client's review channel through its own isolated
+  runner (decision-041014d6, below) and keeps the messages about the PRs host-local.
+- **classify**: one headless answer per PR (no tools, no hooks, capture off) calls each ask `spot_on`, `off`
+  or `unclear`, says what the author did (`fixed`, `agreed`, `answered`, `pushed_back`, `resolved_silently`,
+  `ignored_merged`, `no_response_open`, `not_needed`) and, for an off one, why (`missing_repo_context`,
+  `misread_code`, `diff_already_answered`, `ordinary_slip`, `style_or_taste`, `rule_over_fires`, `other`),
+  whether it was misleading or only noise, and whether it is security-relevant. Asks in review bodies are
+  entries too (a review that asked something and has no inline ask must have body entries, or the answer is
+  asked again); a repeated ask points to the first (`dup_of`) and counts once. The human reviewer's own
+  judgments (`audit/notes.json`) settle the asks they name.
+- **Two readers**: the same pass with a second model (`--tag`); `totals --second` counts how often they agree,
+  and an ask they disagree on counts as `unclear`. The totals also check the verdicts against GitHub at zero
+  tokens (an ask called fixed with no later commit, an off ask whose lines changed since).
+- **propose / compose / post**: 3-5 reviewer changes from the off asks (printed with every word outside this
+  pack's own docs masked), the analysis for the client's channel in the reviewer's voice (held unless each
+  message is under 3400 characters, links only audited PRs and names no internal system), and its post through
+  the post runner.
+
+Blind spots: a model judges each ask, from the PR's text, the code around the ask, the repository's rules digest
+and the channel; it cannot see the author's intent beyond that, nor a reply given elsewhere. The audit's
+text never leaves the host: it is the repositories' and the client's own text, and only counts, rule ids and
+enums are printed, mailed or logged.
 
 ## Benchmark
 
