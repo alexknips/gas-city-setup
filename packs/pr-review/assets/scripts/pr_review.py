@@ -1296,6 +1296,29 @@ def control_waiver(rv, flagged, reasons):
                            pr_rules.controlled(flagged))
 
 
+R39_WHY = ('R39: {n} sentence(s) state or recommend how the product should behave; never decide product behaviour: '
+           'ask the author what was intended, and cite the line or the rule that raised it')
+
+
+def product_reasons(cfg, body, comments, extra):
+    """decision-ea68ba75 (R39): [] when the review states or recommends no product behaviour (or the check is off or
+    did not answer, which the log counts), else the reason. Each text is checked once (its hash)."""
+    if not cfg.get('judge'):
+        return []
+    key = body_sha(body + ''.join(c.get('body') or '' for c in comments))
+    done = extra.setdefault('product_checked', {})
+    if key not in done:
+        n, meta = pr_judge.product_calls(cfg, body, comments)
+        extra['judge_cost_usd'] = (extra.get('judge_cost_usd') or 0) + (meta.get('cost_usd') or 0)
+        done[key] = n
+        if n is None:
+            extra['product_check_failed'] = extra.get('product_check_failed', 0) + 1
+        elif n:
+            extra['product_calls'] = extra.get('product_calls', 0) + n
+    n = done[key]
+    return [R39_WHY.format(n=n)] if n else []
+
+
 def reader_reasons(scores, jm, risky):
     """The reader test's hold reasons (R26 below the bar, R31 risky cleared entries, R37 a behaviour change
     in the skip list): the same bar for an attempt and for a repaired review."""
@@ -1569,6 +1592,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 answered = [n - pr_format.first_item(rv) + 1 for n in jm.get('answered') or []]  # body no. -> item no.
                 extra['risky_cleared'] = len(risky)
                 reasons = reader_reasons(scores, jm, risky)
+                if not reasons and scores is not None:
+                    reasons = product_reasons(cfg, body, comments, extra)
                 extra['behaviour_in_skip'] = bool(jm.get('behaviour_in_skip'))
                 if reasons and scores is not None:
                     keep_reader(cfg, entry, pr['headRefOid'], attempt, scores, problems)
@@ -1676,6 +1701,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             return
         if reasons:  # the weekly split: held by wording or format reasons only, or by a content rule
             extra['held_by'] = 'format' if pr_format.fixable(reasons) else 'content'
+        if not reasons:
+            reasons = product_reasons(cfg, body, comments, extra)
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         # The mayor, 22:26Z: a review of a PR we reviewed before is never silent, and its fallback says what of
         # our earlier asks is still open (zero tokens: where their lines are now).
@@ -1689,7 +1716,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             # first one question per money place (R33, the mayor 21:39Z); without one that passes, line 2, the
             # stock money question and the facts line, with no model findings.
             def gated(x, b, c):
-                return pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c)
+                return pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c) or \
+                    product_reasons(cfg, b, c, extra)
             rv, body, comments, ameta = asked_fallback(cfg, repo, pr, ci, idx, pr_rules.controlled(flagged), money, author,
                                                        ruleset, since=fb_since)
             reasons, form = (gated(rv, body, comments), 'asked') if rv else (['R33: no question'], 'asked')
@@ -1713,8 +1741,8 @@ def model_review(cfg, key, entry, dry, rereview=False):
             codes = extra.get('held_gate') or extra['gate']
             rv, body, comments, reasons, note = held_note(
                 cfg, repo, pr, ci, idx, flagged, money, author, held, codes, ruleset,
-                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c),
-                since=fb_since)
+                lambda x, b, c: pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', [], c)
+                or product_reasons(cfg, b, c, extra), since=fb_since)
             extra.update(fallback=fallback, held=held, held_gate=codes, decisions=len(rv['decisions']),
                          author_decisions=len(rv['decisions']), items=len(rv['items']), cleared=0,
                          blockers=len(rv['blockers']), gate=sorted({r.split(':')[0] for r in reasons}), **note)
@@ -1890,6 +1918,7 @@ def selftest():
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
+    checks.update(selftest_product())
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
     checks.update(selftest_eval(tempfile.mkdtemp()))
@@ -2293,6 +2322,33 @@ def selftest_approved(tmp):
     return {'decision-527cf053: a queued review of an approved PR posts nothing and runs no model':
             '"posted": "skipped-approved"' in queued.getvalue(),
             'decision-527cf053: a review started by hand goes past the approval check': by_hand == 'ran'}
+
+
+def selftest_product():
+    """decision-ea68ba75 (R39), the product-call check with its answer stubbed: off without the reader test; a count
+    holds with the count in the reason; each text is asked once; a check that does not answer holds nothing and is
+    counted."""
+    calls, answers = [], iter([2, 0, None])
+    kept = pr_judge.product_calls
+
+    def stub(cfg, body, comments):
+        calls.append(body)
+        return next(answers), {'cost_usd': 0.01}
+    pr_judge.product_calls = stub
+    try:
+        off = product_reasons({}, 'b', [], {})
+        extra = {}
+        first = product_reasons({'judge': True}, 'You should charge the fee.', [], extra)
+        again = product_reasons({'judge': True}, 'You should charge the fee.', [], extra)
+        clean = product_reasons({'judge': True}, 'Which fee did you intend?', [{'body': 'x'}], extra)
+        failed = product_reasons({'judge': True}, 'other', [], extra)
+    finally:
+        pr_judge.product_calls = kept
+    return {'R39: off without the reader test, held with the count, asked once per text':
+            off == [] and len(first) == 1 and first[0].startswith('R39: 2 ') and again == first and clean == [] and
+            len(calls) == 3 and extra.get('product_calls') == 2,
+            'R39: a check that does not answer holds nothing and is counted':
+            failed == [] and extra.get('product_check_failed') == 1}
 
 
 def selftest_rerequest(cfg, tmp):

@@ -129,6 +129,25 @@ def ask(cfg, prompt, schema, model, max_turns, timeout=300):
     return so, meta
 
 
+PRODUCT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['product_calls'],
+                  'properties': {'product_calls': {'type': 'integer', 'minimum': 0}}}
+PRODUCT = """Count the sentences in this code review (its body and its inline comments) that state or recommend how the
+product should behave: what users, patients, customers or staff should see, get, pay or be able to do; which option
+or default to pick; a price, rule, wording or flow the product should have. A question to the author about what was
+intended is not one; neither is a code finding (a bug, a missing check, a security or patient-data risk, a test).
+Return only the count.
+
+{review}"""
+
+
+def product_calls(cfg, body, comments):
+    """decision-ea68ba75 (R39): how many sentences of a review state or recommend product behaviour, by one cheap
+    answer (no tools, capture off). (count or None when the check did not answer, meta)."""
+    so, meta = ask(cfg, PRODUCT.format(review=review_text(body, comments)), PRODUCT_SCHEMA, cfg['judge_model'],
+                   cfg['judge_max_turns'])
+    return (so['product_calls'] if so else None), meta
+
+
 def judge(cfg, body, comments, name, author):
     """(scores or None, problems, meta). Scores: {scan, markers, decisions, plain, length, useful};
     meta['risky_cleared']: the cleared entries (1 = first) the reader found risky without a reason (R31)."""

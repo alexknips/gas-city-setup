@@ -431,6 +431,14 @@ review of ours (an approval, a comment, a change request, a fallback or the note
   `asked_again` and, past the rounds, `asked_capped`), and never when our last attempt on the head did not post
   (held, failed): a person's request after that is the mayor's to run by hand.
 
+**No product calls** (R39; decision-ea68ba75, the reviewer, 2026-11-05: "the review bot seemingly making a product
+decision is not ok"). The reviewer never states or recommends how the product should behave; it asks the author
+what was intended and cites the line or rule that raised it. One cheap answer (no tools, capture off,
+`pr_judge.product_calls`) counts such sentences in every review that would go out: a full review with one is
+written again once with the reason, then held; a fallback with one falls to the next form of the ladder (the
+billing questions to the stock form, the note to its floor), whose words are the script's. A check that does not
+answer holds nothing and is counted (`product_check_failed`); `product_calls` counts what was found.
+
 **Approved stays approved** (decision-527cf053; the reviewer, 2026-11-05: approve once the author has addressed our
 asks; the mayor, 16:50Z: never a second approval, a re-review or a channel line on a PR the reviewer approved).
 When the reviewer's verdict on a PR is an approval (as GitHub counts it: their latest review that approves or

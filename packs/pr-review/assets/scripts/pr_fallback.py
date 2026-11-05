@@ -65,7 +65,8 @@ asks that control about this place, in plain words: who can now get through, see
 they could not before. Its reason says who could then reach which data or actions. For such a place this
 replaces the behaviour question above.
 
-Never a stock question that fits any pull request: never ask whether it was tested, who reviews it,
+Never say what the product should do or which behaviour is better: the behaviour is the author's decision, so
+ask which one they intend (R39). Never a stock question that fits any pull request: never ask whether it was tested, who reviews it,
 whether it is safe or correct in general, or for a sign-off. Use plain words a person who does not read
 code understands: no file, function or variable names, no code, no links. Give `n`, the place's number.
 {again}
