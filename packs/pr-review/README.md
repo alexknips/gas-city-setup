@@ -441,9 +441,10 @@ note's questions at its largest unflagged hunks were off 47 times of 71; 148 of 
   posted, unless the PR requests the reviewer (R33).
 - **Not what the PR answers**: the style guide (R40) and the fallback's prompt say never to ask what the diff, the
   description, the commit messages or the repository's docs settle, nor an ordinary slip or a style point.
-- **The note's size-picked places**: a place the note took only for its size (NOT FLAGGED) gets a question only
-  for a risk to security, patient data, audit logging or access, or an irreversible change or data loss;
-  otherwise it is skipped (`skipped`) and only linked among the other places.
+- **The note's size-picked places stay asked.** Letting the note skip a place it took only for its size was
+  replayed on the audit's labelled places: it skipped about a sixth to a half of the off ones, but in 2 of 3 runs
+  it also dropped 1 of the 3 real security catches there. Security flaws still need to be caught, so those places
+  are asked as before; only the line above (not what the PR answers) applies to them.
 - **Severity**: a low-severity ask outside the big-gap areas (security, patient data, can't be undone, migration
   order, compliance) is not raised, unless it sits on a control's hunk (`graceful_dropped.low`).
 - **After the author answered** (decision-527cf053): a follow-up on a PR we reviewed raises only a big gap or a

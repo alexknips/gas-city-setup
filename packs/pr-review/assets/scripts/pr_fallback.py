@@ -37,13 +37,12 @@ VERSIONS = 3  # wordings of each lead and question, best first: the model does n
 MAX_SUMMARY = 30  # words of the one "What it does" sentence
 MAX_PR_TEXT = 1500  # characters of the PR description the turn reads
 _WORDINGS = {'type': 'array', 'minItems': 1, 'maxItems': VERSIONS, 'items': {'type': 'string', 'maxLength': 200}}
-_ASKS = dict(_WORDINGS, minItems=0)  # a place marked NOT FLAGGED may get none (gcs-y48)
 SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['summary', 'places'], 'properties': {
     'summary': {'type': 'string', 'maxLength': 240},
     'places': {'type': 'array', 'items': {
-        'type': 'object', 'additionalProperties': False, 'required': ['n', 'skip', 'changes', 'questions', 'reason'],
-        'properties': {'n': {'type': 'integer', 'minimum': 1}, 'skip': {'type': 'boolean'}, 'changes': _WORDINGS,
-                       'questions': _ASKS, 'reason': {'type': 'string', 'maxLength': 240}}}}}}
+        'type': 'object', 'additionalProperties': False, 'required': ['n', 'changes', 'questions', 'reason'],
+        'properties': {'n': {'type': 'integer', 'minimum': 1}, 'changes': _WORDINGS, 'questions': _WORDINGS,
+                       'reason': {'type': 'string', 'maxLength': 240}}}}}}
 
 PROMPT = """Below are a pull request's title and description and {count} of its changed places. Its author will
 get one question about each place, so each question must be worth their time. Write:
@@ -62,10 +61,7 @@ get one question about each place, so each question must be worth their time. Wr
     the code assumes.
 
 Never ask what the place's own lines, the title, the description or the commit messages already answer: ask
-only about a case the code does not show. A place marked NOT FLAGGED was picked only for its size: give it a
-question only when its lines show a risk to security, patient data, audit logging or who can reach data, or a
-change that cannot be undone or loses data; otherwise set `skip` to true and give no question. Every other place
-has `skip` false.
+only about a case the code does not show.
 
 A place marked CONTROL changes who can reach data or actions, or where patient data goes. Its question
 asks that control about this place, in plain words: who can now get through, see, send or change what
@@ -148,8 +144,7 @@ def place_text(idx, n, p):
     text = '\n'.join(hunks[k]) if k is not None and k < len(hunks) else '(the change is outside the diff)'
     seen = f" (the rules noted: {p['what']})" if p.get('what') and p['what'] != pr_format.NOT_SUMMARIZED else ''
     control = f"\nCONTROL: {p['control']}" if p.get('control') else ''
-    fill = '\nNOT FLAGGED: no rule flagged this place; ask only for a risk named above' if p.get('fill') else ''
-    return f"PLACE {n} (new lines {p['line_start']}-{p['line_end']}){seen}:{control}{fill}\n{text[:MAX_HUNK_CHARS]}"
+    return f"PLACE {n} (new lines {p['line_start']}-{p['line_end']}){seen}:{control}\n{text[:MAX_HUNK_CHARS]}"
 
 
 def words(t):
@@ -210,9 +205,8 @@ def ask(cfg, idx, todo_places, answer=None, most=None, title='', description='')
     todo = todo_places[:most]
     answer = answer or (lambda prompt: pr_judge.ask(cfg, prompt, SCHEMA, cfg['judge_model'], cfg['judge_max_turns']))
     got, failed, short, meta, summary = {}, {}, {}, {'asked': len(todo), 'calls': 0, 'cost_usd': 0}, ''
-    skipped = set()
     for _ in range(TURNS):
-        need = [j for j in range(len(todo)) if j not in got and j not in skipped]
+        need = [j for j in range(len(todo)) if j not in got]
         if not need:
             break
         why = [WHY.get(c, c) for c in sorted({c for j in need for c in failed.get(j, [])})]
@@ -227,10 +221,6 @@ def ask(cfg, idx, todo_places, answer=None, most=None, title='', description='')
             summary = so['summary'].strip()
         by_n = {x.get('n'): x for x in (so or {}).get('places') or [] if isinstance(x, dict)}
         for n, j in enumerate(need, 1):
-            if todo[j].get('fill') and (by_n.get(n) or {}).get('skip'):  # gcs-y48: no big-gap risk at an unflagged place
-                skipped.add(j)
-                failed.pop(j, None)
-                continue
             a, bad, short[j] = pick(by_n.get(n), [got[k]['ask'] for k in sorted(got)])
             if bad:
                 failed[j] = bad
@@ -239,7 +229,7 @@ def ask(cfg, idx, todo_places, answer=None, most=None, title='', description='')
                 failed.pop(j, None)
     items = [got[j] for j in sorted(got)]
     others = [p for j, p in enumerate(todo) if j not in got] + list(todo_places[most:])
-    meta.update(kept=len(items), skipped=len(skipped), failed=sorted({c for w in failed.values() for c in w}),
+    meta.update(kept=len(items), failed=sorted({c for w in failed.values() for c in w}),
                 ask_words=[len(i['ask'].split()) for i in items], summary=bool(summary))
     return items, others, summary, meta
 
@@ -261,27 +251,6 @@ def pick(a, asked=()):
             return dict(a, change=lead, question=q), [], len(q.split())
         first = first or bad
     return None, first or ['none'], min((len(q.split()) for q in versions), default=0)
-
-
-def selftest_skip():
-    """gcs-y48: a NOT FLAGGED (fill) place answered `skip` is not asked and not asked again; any other place cannot
-    skip (it needs its question, or a second turn)."""
-    import pr_format as f
-    diff = ''.join(f'diff --git a/src/a{k}.ts b/src/a{k}.ts\n--- a/src/a{k}.ts\n+++ b/src/a{k}.ts\n'
-                   f'@@ -1,2 +1,3 @@\n x\n+send(contact.phone)\n y\n' for k in range(2))
-    idx = f.diff_index(diff)
-    todo = [{'path': 'src/a0.ts', 'line_start': 2, 'line_end': 2, 'hunk': 0, 'what': '', 'money': False, 'fill': True},
-            {'path': 'src/a1.ts', 'line_start': 2, 'line_end': 2, 'hunk': 0, 'what': 'flagged', 'money': False}]
-    prompts = []
-
-    def answer(prompt):
-        prompts.append(prompt)
-        return {'summary': '', 'places': [{'n': 1, 'skip': True, 'changes': [], 'questions': [], 'reason': ''},
-                                          {'n': 2, 'skip': True, 'changes': [], 'questions': [], 'reason': ''}]}, {}
-    items, others, _, meta = ask({'judge_model': 'm', 'judge_max_turns': 2}, idx, todo, answer)
-    return {'a NOT FLAGGED place that needs no question is skipped, never asked again; another place cannot skip':
-            items == [] and meta['skipped'] == 1 and len(prompts) == 2 and 'NOT FLAGGED' in prompts[0] and
-            'PLACE 1' in prompts[1] and prompts[1].count('PLACE ') == 1 and len(others) == 2}
 
 
 def selftest():
@@ -362,11 +331,9 @@ def selftest():
     none, rest, _, m2 = ask({}, idx, ps, lambda p: (None, {'cost_usd': 0}))
     checks['no answer: no items, every place is another place, two calls'] = none == [] and len(rest) == 5 and \
         m2['calls'] == 2 and m2['failed'] == ['none']
-    checks.update(selftest_skip())
     fills = places(idx, [], [], fill=True)
-    checks['gcs-y48: the fill places are marked NOT FLAGGED; the prompt says what may be asked there'] = \
-        bool(fills) and all(p.get('fill') for p in fills) and 'NOT FLAGGED' in place_text(idx, 1, fills[0]) and \
-        'A place marked NOT FLAGGED' in PROMPT and 'already answer' in PROMPT
+    checks['gcs-y48: the size-picked places are still asked (marked fill); the prompt asks nothing the PR answers'] = \
+        bool(fills) and all(p.get('fill') for p in fills) and 'already answer' in PROMPT and 'skip' not in PROMPT
     for k, v in checks.items():
         print('ok  ' if v else 'FAIL', k)
     return all(checks.values())
