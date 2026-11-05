@@ -431,6 +431,14 @@ review of ours (an approval, a comment, a change request, a fallback or the note
   `asked_again` and, past the rounds, `asked_capped`), and never when our last attempt on the head did not post
   (held, failed): a person's request after that is the mayor's to run by hand.
 
+**Approved stays approved** (decision-527cf053; the reviewer, 2026-11-05: approve once the author has addressed our
+asks; the mayor, 16:50Z: never a second approval, a re-review or a channel line on a PR the reviewer approved).
+When the reviewer's verdict on a PR is an approval (as GitHub counts it: their latest review that approves or
+requests changes; a comment does not change it, a dismissed review no longer counts), the sweep queues nothing
+for it and takes a queued follow-up out of the queue (`approved` in its counts), and the run finishes a queued
+review of it without a model run or a post (`skipped-approved`). A review started by hand (`--pr`, `--rereview`,
+`--no-deliver`, `--redeliver`) still runs. A push that dismisses a stale approval ends it: the push follow-up runs.
+
 **Drafts** (gcs-g9e; the reviewer, 2026-11-04: "let's post on drafts", decision-9fa387eb). A draft that requests
 the reviewer is reviewed like any requested PR (the queue, the review, its client line with readiness "Draft");
 the sweep counts it as `draft_requested`. Any other draft is skipped and not recorded, so a reviewed draft

@@ -1435,6 +1435,10 @@ def ci_escalation(cfg, key, entry, dry, rereview=False):
     if pr['state'] != 'OPEN':
         finish(cfg, key, entry, 'closed', {'model': False})
         return
+    if not cfg.get('by_hand') and not cfg.get('eval') and pr_rules.approved_by(pr, cfg.get('reviewer')):
+        # decision-527cf053: the reviewer's verdict is an approval; no queued review posts over it
+        finish(cfg, key, entry, entry.get('outcome') or 'approved', {'model': False, 'posted': 'skipped-approved'})
+        return
     if pr['headRefOid'] in (entry.get('review_heads') or []) and not rereview:  # R18: reviewed already
         finish(cfg, key, entry, entry.get('outcome') or 'skipped', {'model': False, 'posted': 'skipped-same-head'})
         return
@@ -1885,6 +1889,7 @@ def selftest():
     checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
     checks.update(selftest_eval(tempfile.mkdtemp()))
@@ -2253,6 +2258,43 @@ def selftest_eval(tmp):
     return checks
 
 
+def selftest_approved(tmp):
+    """decision-527cf053, ci_escalation with GitHub stubbed: a queued review of a PR whose reviewer verdict is an
+    approval finishes without a model run or a post; a review started by hand goes past that check."""
+    import contextlib
+    import io
+
+    class Past(Exception):
+        pass
+    pr = {'number': 3, 'url': 'https://github.com/o/r/pull/3', 'headRefOid': 'a' * 40, 'state': 'OPEN', 'isDraft': False,
+          'headRefName': 'topic', 'title': 'T', 'body': '', 'baseRefName': 'main', 'commits': {'nodes': []},
+          'reviews': {'nodes': [{'author': {'login': 'rev'}, 'state': 'APPROVED'}, {'author': {'login': 'rev'}, 'state': 'COMMENTED'}]}}
+    names = ('get_pr', 'load_rules', 'areas', 'pr_files')
+    kept = {n: getattr(pr_rules, n) for n in names}
+
+    def stop(*a):
+        raise Past()
+    pr_rules.get_pr, pr_rules.load_rules, pr_rules.areas, pr_rules.pr_files = \
+        (lambda repo, n: dict(pr)), (lambda p: {'select_areas': []}), (lambda r: {}), stop
+    cfg = {'reviewer': 'rev', 'rules': '', 'state': tmp, 'city': tmp, 'beads': False, 'dry_run': True}
+    entry = {'repo': 'o/r', 'number': 3, 'url': pr['url'], 'rig': 'r', 'followup': 'push', 'review_heads': ['b' * 40]}
+    queued, by_hand = io.StringIO(), 'skipped'
+    try:
+        with contextlib.redirect_stdout(queued):
+            ci_escalation(cfg, 'o/r#3', entry, False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            try:
+                ci_escalation(dict(cfg, by_hand=True), 'o/r#3', entry, False, rereview=True)
+            except Past:
+                by_hand = 'ran'
+    finally:
+        for n, f in kept.items():
+            setattr(pr_rules, n, f)
+    return {'decision-527cf053: a queued review of an approved PR posts nothing and runs no model':
+            '"posted": "skipped-approved"' in queued.getvalue(),
+            'decision-527cf053: a review started by hand goes past the approval check': by_hand == 'ran'}
+
+
 def selftest_rerequest(cfg, tmp):
     """gcs-b3f, deliver() with GitHub stubbed: a re-review someone asked for posts a NEW review (only a submitted
     review clears the request) and cuts the old one to a pointer; so does a --rereview by hand on a PR that
@@ -2488,6 +2530,7 @@ def main():
         return 0 if (fair_selftest() and selftest()) else 1
     cfg = pr_state.config()
     cfg['dry_run'] = a.dry_run
+    cfg['by_hand'] = bool(a.pr or a.rereview or a.no_deliver or a.redeliver)  # a review someone started by hand
     target = a.eval or a.pr or a.rereview or a.followup
     if target and (a.eval or pr_rules.eval_case(pr_rules.get_pr(target.rsplit('#', 1)[0], int(target.rsplit('#', 1)[1])))):
         # gcs-71c: an eval PR never enters the live queue or state, whichever way it is started

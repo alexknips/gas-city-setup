@@ -219,6 +219,14 @@ def sweep(cfg, dry):
             if pr_rules.draft_skipped(True, asked):  # gcs-g9e: only a draft that requests the reviewer is reviewed
                 continue
             counts['draft_requested'] += 1
+        if pr_rules.approved_by(pr, cfg['reviewer']):  # decision-527cf053: approved stays approved, nothing queued
+            counts['approved'] += 1
+            if old.get('status') in ('queued', 'waiting-ci') and not dry:
+                e = dict(old, status='done', outcome=old.get('outcome') or 'approved')
+                for k in ('followup', 'answers_pending'):
+                    e.pop(k, None)
+                record_one(cfg, beads, key, e, old, counts)
+            continue
         if pr_rules.eval_case(pr):  # gcs-71c: a red team's test PR is reviewed by hand only, in draft or not
             counts['eval'] += 1
             continue
@@ -492,7 +500,7 @@ def selftest():
     fails += selftest_followups()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {20 - len(fails)} of 20')
+    print(f'pr_sweep selftest: {21 - len(fails)} of 21')
     return 1 if fails else 0
 
 
@@ -517,7 +525,10 @@ def selftest_followups():
            11: {'head': a40, 'ci': 'pending', 'requested': True, 'asked': ago(1)},  # its CI re-runs
            # gcs-g9e: a draft that does not request the reviewer (12), a red team's test draft that does (13)
            12: {'head': a40, 'ci': 'green', 'draft': True},
-           13: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True, 'branch': 'review-test/c2'}}
+           13: {'head': a40, 'ci': 'green', 'requested': True, 'draft': True, 'branch': 'review-test/c2'},
+           # decision-527cf053: the reviewer approved (14: a push follow-up was queued; 15: a PR we never saw)
+           14: {'head': b40, 'ci': 'green', 'requested': True, 'approved': True},
+           15: {'head': a40, 'ci': 'green', 'requested': True, 'approved': True}}
 
     def fake(n):
         p = prs[n]
@@ -525,7 +536,10 @@ def selftest_followups():
                 'headRefOid': p['head'], 'updatedAt': now, 'mergeable': 'MERGEABLE', 'createdAt': now, 'mergedAt': None,
                 'baseRefName': 'main', 'headRefName': p.get('branch') or f'topic-{n}',
                 'timelineItems': {'nodes': [{'createdAt': p['asked'], 'requestedReviewer': {'login': 'Rev'}}]
-                                  if p.get('asked') else []}}
+                                  if p.get('asked') else []},
+                'reviews': {'nodes': [{'author': {'login': 'rev'}, 'state': 'CHANGES_REQUESTED'},
+                                      {'author': {'login': 'Rev'}, 'state': 'APPROVED'},
+                                      {'author': {'login': 'rev'}, 'state': 'COMMENTED'}] if p.get('approved') else []}}
 
     def fake_record(cfg, repo, pr, files, ruleset, area_of, heads):
         p = prs[pr['number']]
@@ -567,7 +581,9 @@ def selftest_followups():
                              'o/r#10': dict(delivered, number=10, url='https://github.com/o/r/pull/10',
                                             asked_rounds={a40: 3}),
                              'o/r#11': dict(delivered, number=11, url='https://github.com/o/r/pull/11', head_seen_at=ago(2),
-                                             delivered_at=ago(1.5), head_reviewed_at=ago(1.5))}
+                                             delivered_at=ago(1.5), head_reviewed_at=ago(1.5)),
+                             'o/r#14': dict(reviewed, number=14, url='https://github.com/o/r/pull/14', status='queued',
+                                            queued_at=ago(0.2), followup='push')}
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 sweep(cfg, False)
@@ -622,6 +638,9 @@ def selftest_followups():
     if not (p11.get('status') == 'waiting-ci' and p11.get('followup') == 'asked' and p11b.get('status') == 'queued'
             and p11b.get('followup') == 'asked' and p11b.get('asked_rounds') == {a40: 1}):
         fails.append('gcs-b3f: a re-review waits for CI with its mark, then is queued as one')
+    if (first.get('o/r#14') or {}).get('status') != 'done' or (first.get('o/r#14') or {}).get('followup') or \
+            'o/r#15' in third or not counts or counts[0].get('approved') != 2:
+        fails.append('decision-527cf053: an approved PR leaves the queue and is never queued (a comment after it changes nothing)')
     if not counts or counts[0].get('asked_again') != 2 or counts[0].get('asked_capped') != 1 or \
             counts[0].get('draft_requested') != 2 or counts[0].get('draft') != 3:
         fails.append('gcs-b3f: the sweep counts re-reviews, used-up rounds and drafts that request the reviewer')

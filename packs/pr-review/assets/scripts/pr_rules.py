@@ -44,6 +44,7 @@ PR_FIELDS = """
   headRefOid baseRefName baseRefOid mergeable
   mergeCommit { oid parents(first: 1) { nodes { oid } } }
   reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } }
+  reviews(last: 50) { nodes { author { login } state } }
   timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) {
     nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
   commits(last: 1) { nodes { commit { oid statusCheckRollup { state
@@ -302,6 +303,18 @@ def requested_now(pr, reviewer):
     """The reviewer's review is requested and not yet given (a submitted review clears the request)."""
     return reviewer.lower() in [((n.get('requestedReviewer') or {}).get('login') or '').lower()
                                 for n in pr['reviewRequests']['nodes']]
+
+
+def approved_by(pr, reviewer):
+    """decision-527cf053 (the reviewer, 2026-11-05: approve once the author has addressed our asks; the mayor, 16:50Z:
+    never a second approval, a re-review or a channel line on a PR the reviewer approved): the reviewer's standing
+    verdict on the PR is an approval. As GitHub counts it: the latest of their reviews that approves or requests
+    changes; a comment does not change it, and a dismissed review (a push can dismiss a stale approval) no longer
+    counts. Ours and the reviewer's own are the same login."""
+    who = (reviewer or '').lower()
+    states = [n.get('state') for n in ((pr or {}).get('reviews') or {}).get('nodes') or []
+              if ((n.get('author') or {}).get('login') or '').lower() == who and n.get('state') in ('APPROVED', 'CHANGES_REQUESTED')]
+    return bool(who) and bool(states) and states[-1] == 'APPROVED'
 
 
 def asked_again(old, head, asked):

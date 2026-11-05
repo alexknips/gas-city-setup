@@ -1,0 +1,21 @@
+{
+ "expect": "pass",
+ "rule": "sweep",
+ "route": "approved_by",
+ "want": true,
+ "args": {
+  "pr": {
+   "reviews": {
+    "nodes": [
+     {
+      "author": {
+       "login": "rev"
+      },
+      "state": "APPROVED"
+     }
+    ]
+   }
+  },
+  "reviewer": "Rev"
+ }
+}

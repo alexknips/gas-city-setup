@@ -946,6 +946,20 @@ for name, want, url in (('renamed-repository-takes-the-new-name', 'example/new-n
     CASES[f'case-rn-{name}'] = {'expect': 'pass', 'rule': 'rest', 'route': 'canonical_repo', 'want': want,
                                 'args': {'repo': 'example/repo', 'url': url}}
 
+# decision-527cf053 (the reviewer, 2026-11-05; the mayor 16:50Z): approved stays approved. The reviewer's verdict, as
+# GitHub counts it: the latest review that approves or requests changes; a comment does not change it, a dismissed
+# review no longer counts.
+REV = lambda *states, who='rev': {'reviews': {'nodes': [{'author': {'login': who}, 'state': s} for s in states]}}  # noqa: E731
+for name, want, pr in (('approved', True, REV('APPROVED')),
+                       ('approved-then-a-comment', True, REV('APPROVED', 'COMMENTED')),
+                       ('approved-then-changes-requested', False, REV('APPROVED', 'CHANGES_REQUESTED')),
+                       ('changes-requested-then-approved', True, REV('CHANGES_REQUESTED', 'COMMENTED', 'APPROVED')),
+                       ('approval-dismissed-by-a-push', False, REV('CHANGES_REQUESTED', 'DISMISSED')),
+                       ('someone-else-approved', False, REV('APPROVED', who='other')),
+                       ('no-review', False, REV())):
+    CASES[f'case-ap-{name}'] = {'expect': 'pass', 'rule': 'sweep', 'route': 'approved_by', 'want': want,
+                                'args': {'pr': pr, 'reviewer': 'Rev'}}
+
 if __name__ == '__main__':
     out = os.path.join(HERE, 'fixtures')
     os.makedirs(out, exist_ok=True)
