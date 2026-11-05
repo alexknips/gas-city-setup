@@ -1373,6 +1373,7 @@ def product_reasons(cfg, body, comments, extra):
         n, meta = pr_judge.product_calls(cfg, body, comments)
         extra['judge_cost_usd'] = (extra.get('judge_cost_usd') or 0) + (meta.get('cost_usd') or 0)
         done[key] = n
+        extra.setdefault('product_entries', {})[key] = meta.get('entries') or []
         if n is None:
             extra['product_check_failed'] = extra.get('product_check_failed', 0) + 1
         elif n:
@@ -1382,6 +1383,41 @@ def product_reasons(cfg, body, comments, extra):
         extra['product_calls_not_held'] = extra.get('product_calls_not_held', 0) + 1
         return []
     return [R39_WHY.format(n=n)] if n else []
+
+
+def r31_questions(cfg, rv, risky, risky_q, flagged, extra):
+    """R31: the cleared entries the reader still finds risky become questions for the author; gcs-y48 (rt-13): they go
+    through the same R40 filter as the model's items (never twice, no low-severity ask outside the big-gap areas
+    unless on a control's hunk, after the author's answers only a big gap)."""
+    asked = [question_from(c, risky_q.get(j)) for j, c in enumerate(rv['cleared'], 1) if j in risky]
+    asked, dropped = graceful(asked, flagged, cfg.get('_earlier') or [], cfg.get('_after_answers'))
+    if any(dropped.values()):
+        extra['graceful_dropped_r31'] = {k: v for k, v in dropped.items() if v}
+    return asked
+
+
+def catches(rv, flagged):
+    """gcs-y48 (the red team's eval of 4b59f3a): the review's items that are catches: high severity in a big-gap area
+    (security, patient data, can't be undone, migration order, compliance), or any item on a control's hunk."""
+    return [i for i in rv.get('items') or [] if (i.get('severity') == 'high' and i.get('area') in BIG_AREAS)
+            or on_control(i, flagged)]
+
+
+def exempt(rv, flagged):
+    """Security and control findings: items in a big-gap area or on a control's hunk, at any severity. They are code
+    findings, never product calls, and an R39 cut never removes them (the mayor, gc-wisp-ff5z11)."""
+    return [i for i in rv.get('items') or [] if i.get('area') in BIG_AREAS or on_control(i, flagged)]
+
+
+def product_cut(rv, entries, flagged):
+    """The review's decisions and items without the numbered entries that hold a product call, except security and
+    control findings. Returns (decisions, items, how many were cut)."""
+    first = pr_format.first_item(rv)
+    keep = exempt(rv, flagged)
+    number = {id(x): k for k, x in enumerate(pr_format.split(rv.get('decisions') or [])[1], 1)}  # the author's, numbered
+    decisions = [x for x in rv.get('decisions') or [] if number.get(id(x)) not in entries]
+    items = [x for k, x in enumerate(rv.get('items') or [], first) if k not in entries or x in keep]
+    return decisions, items, len(rv.get('decisions') or []) + len(rv.get('items') or []) - len(decisions) - len(items)
 
 
 def reader_reasons(scores, jm, risky):
@@ -1696,7 +1732,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             # R31: what the reader still finds risky after the second answer is not cleared; it becomes a
             # question for the author. A behaviour change the reader still finds in the skip list means no
             # approval (R37). Either way the PR is not approved.
-            asked = [question_from(c, risky_q.get(j)) for j, c in enumerate(rv['cleared'], 1) if j in risky]
+            asked = r31_questions(cfg, rv, risky, risky_q, flagged, extra)
             rv = assemble(cfg, repo, pr, ci, decisions, (items + asked)[:pr_format.MAX_ITEMS],
                           [c for j, c in enumerate(model['cleared'], 1) if j not in risky], model,
                           flagged, flags_cut, money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
@@ -1777,6 +1813,30 @@ def model_review(cfg, key, entry, dry, rereview=False):
             extra['held_by'] = 'format' if pr_format.fixable(reasons) else 'content'
         if not reasons:
             reasons = product_reasons(cfg, body, comments, extra)
+            key = body_sha(body + ''.join(c.get('body') or '' for c in comments))
+            found = (extra.get('product_checked') or {}).get(key)
+            if found and (not reasons or catches(rv, flagged)):
+                # gcs-y48 (the red team's eval of 4b59f3a; the mayor, gc-wisp-ff5z11): R39 never sends a review to the
+                # note. The entries the check names are cut, except security and control findings, and the review
+                # goes out (with PR_REVIEW_R39_HOLD=on, a review that carries a catch is still cut, never held).
+                ents = set((extra.get('product_entries') or {}).get(key) or [])
+                decisions_c, items_c, n_cut = product_cut(rv, ents, flagged)
+                rv_c = assemble(cfg, repo, pr, ci, decisions_c, items_c, rv.get('cleared') or [], model, flagged, flags_cut,
+                                money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
+                                conflicts=conflicts)
+                rv_c['approve'] = False
+                if rv.get('since'):
+                    rv_c['since'] = rv['since']
+                body_c = pr_format.render(repo, pr, rv_c, NAME, author)
+                comments_c = pr_format.inline_comments(rv_c['items'], author, cfg.get('voice'), pr_format.first_item(rv_c))
+                links_c = [(x.get('link') or {}).get('path') for x in rv_c['decisions'] if (x.get('link') or {}).get('kind') == 'code']
+                gate_c = pr_format.gate(rv_c, idx, body_c, tree_lines(tree, links_c), pr.get('body') or '', flagged, comments_c)
+                if n_cut and not gate_c:
+                    rv, body, comments = rv_c, body_c, comments_c
+                left = product_reasons(dict(cfg, r39_hold=True), body, comments, extra) if n_cut and not gate_c else [True]
+                extra.update(r39_cut=n_cut if n_cut and not gate_c else 0, r39_exempt=len(exempt(rv, flagged)),
+                             product_calls_sent=bool(left))
+                reasons = []
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
         # The mayor, 22:26Z: a review of a PR we reviewed before is never silent, and its fallback says what of
         # our earlier asks is still open (zero tokens: where their lines are now).
@@ -1993,6 +2053,7 @@ def selftest():
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
+    checks.update(selftest_r39_catch())
     checks.update(selftest_graceful(cfg, tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
@@ -2465,6 +2526,33 @@ def selftest_graceful(cfg, tmp):
                                                   'Author', 'held-gate', ['R29'], {}, ok, answer)
     checks['R33: a PR that requests the reviewer still gets its note when every place was asked before'] = reasons == []
     return checks
+
+
+def selftest_r39_catch():
+    """gcs-y48 (the red team's eval of 4b59f3a), zero tokens: what a catch is; the cut keeps every catch and drops only
+    the entries that hold a product call; R31's questions go through R40's filter."""
+    flagged = [{'id': 'F1', 'rule': 'sec-auth', 'path': 'c.ts', 'line': 5, 'control': 'who can sign in'}]
+    it = lambda sev, area, path='a.ts', lo=1, hi=2: {'severity': sev, 'area': area, 'path': path,  # noqa: E731
+                                                   'line_start': lo, 'line_end': hi, 'kind': 'question'}
+    rv = {'decisions': [{'actors': ['author'], 'q': 1}, {'actors': ['author'], 'q': 2}],
+          'items': [it('high', 'security'), it('medium', 'other'), it('low', 'other', 'c.ts', 4, 6), it('medium', 'security')]}
+    got = catches(rv, flagged)
+    first = pr_format.first_item(rv)
+    entries = {1, first, first + 1, first + 3}  # decision 1, the high security item, the medium other item, medium security
+    decisions, items, n = product_cut(rv, entries, flagged)
+    exempted = exempt(rv, flagged)
+    asked = r31_questions({'_earlier': []}, {'cleared': [{'path': 'a.ts', 'line_start': 1, 'line_end': 1, 'why': 'w', 'change': 'Sends it'},
+                                                         {'path': 'c.ts', 'line_start': 5, 'line_end': 5, 'why': 'w', 'change': 'Signs in'}]},
+                          {1, 2}, {}, flagged, extra := {})
+    return {
+        'gcs-y48: a catch is a high item in a big-gap area or any item on a control\'s hunk':
+            [(x['severity'], x['area']) for x in got] == [('high', 'security'), ('low', 'other')],
+        'gcs-y48 (B): the R39 cut drops only the entries with a product call, never a security or control finding':
+            len(decisions) == 1 and decisions[0]['q'] == 2 and [(x['severity'], x['area']) for x in items] ==
+            [('high', 'security'), ('low', 'other'), ('medium', 'security')] and n == 2 and
+            [(x['severity'], x['area']) for x in exempted] == [('high', 'security'), ('low', 'other'), ('medium', 'security')],
+        'gcs-y48 (rt-13): R31\'s questions go through R40: a low ask outside the big areas is dropped, one on a control stays':
+            [q.get('path') for q in asked] == ['c.ts'] and extra.get('graceful_dropped_r31') == {'low': 1}}
 
 
 def selftest_rerequest(cfg, tmp):

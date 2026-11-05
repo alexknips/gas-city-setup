@@ -449,15 +449,20 @@ note's questions at its largest unflagged hunks were off 47 times of 71; 148 of 
   order, compliance) is not raised, unless it sits on a control's hunk (`graceful_dropped.low`).
 - **After the author answered** (decision-527cf053): a follow-up on a PR we reviewed raises only a big gap or a
   high-severity finding (`graceful_dropped.after_answers`), so it approves when nothing else is left (R27).
+  R31's questions (a cleared entry the reader finds risky) go through the same filter (`graceful_dropped_r31`).
 
 **No product calls** (R39; decision-ea68ba75, the reviewer, 2026-11-05: "the review bot seemingly making a product
 decision is not ok"). The reviewer never states or recommends how the product should behave; it asks the author
 what was intended and cites the line or rule that raised it: the style guide says so in every review prompt. One
 cheap answer (no tools, capture off, `pr_judge.product_calls`) counts such sentences in every review that would go
-out, for the log (`product_calls`, `product_calls_not_held`; a check that does not answer: `product_check_failed`).
-The count holds a review only with `PR_REVIEW_R39_HOLD=on` (then a full review with one is written again once, then
-held, and a fallback falls to the next form). It is off by default: in the red team's scored eval of 4b59f3a
-(2026-11-05) the hold sent reviews whose only hold was R39 to the note, and 2 security catches were lost.
+out and names the numbered entries that hold them (`product_calls`; a check that does not answer:
+`product_check_failed`). R39 never holds a review and never sends one to the note: in the red team's scored eval of
+4b59f3a (2026-11-05) that hold sent reviews whose only hold was R39 to the note, and 2 security catches were lost.
+Instead the entries it names are cut from the review before it goes out (`r39_cut`), except security and control
+findings (an item in a big-gap area or on a control's hunk: a code finding, `r39_exempt`); a cut review never
+approves, and when the cut fails the gate the review goes out uncut. A product call outside the numbered entries
+cannot be cut and is counted (`product_calls_sent`). `PR_REVIEW_R39_HOLD=on` brings back the old hold (a full review
+with one written again once, then held).
 
 **Approved stays approved** (decision-527cf053; the reviewer, 2026-11-05: approve once the author has addressed our
 asks; the mayor, 16:50Z: never a second approval, a re-review or a channel line on a PR the reviewer approved).

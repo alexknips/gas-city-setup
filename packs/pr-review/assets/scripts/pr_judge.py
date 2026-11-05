@@ -129,22 +129,27 @@ def ask(cfg, prompt, schema, model, max_turns, timeout=300):
     return so, meta
 
 
-PRODUCT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['product_calls'],
-                  'properties': {'product_calls': {'type': 'integer', 'minimum': 0}}}
+PRODUCT_SCHEMA = {'type': 'object', 'additionalProperties': False, 'required': ['product_calls', 'entries'],
+                  'properties': {'product_calls': {'type': 'integer', 'minimum': 0},
+                                 'entries': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0}}}}
 PRODUCT = """Count the sentences in this code review (its body and its inline comments) that state or recommend how the
 product should behave: what users, patients, customers or staff should see, get, pay or be able to do; which option
 or default to pick; a price, rule, wording or flow the product should have. A question to the author about what was
 intended is not one; neither is a code finding (a bug, a missing check, a security or patient-data risk, a test).
-Return only the count.
+Return the count, and in `entries` the number of each numbered entry ("1.", "2.", ...) that holds one (0 for one
+outside the numbered entries).
 
 {review}"""
 
 
 def product_calls(cfg, body, comments):
     """decision-ea68ba75 (R39): how many sentences of a review state or recommend product behaviour, by one cheap
-    answer (no tools, capture off). (count or None when the check did not answer, meta)."""
+    answer (no tools, capture off). (count or None when the check did not answer, meta with `entries`: the body
+    numbers of the entries that hold them, 0 = outside the numbered entries)."""
     so, meta = ask(cfg, PRODUCT.format(review=review_text(body, comments)), PRODUCT_SCHEMA, cfg['judge_model'],
                    cfg['judge_max_turns'])
+    if so:
+        meta['entries'] = sorted({n for n in so.get('entries') or [] if isinstance(n, int) and n >= 0})
     return (so['product_calls'] if so else None), meta
 
 
