@@ -1385,28 +1385,63 @@ def product_reasons(cfg, body, comments, extra):
     return [R39_WHY.format(n=n)] if n else []
 
 
-def keep_catch(cand, flagged, idx, regated):
-    """gcs-y48 (the red team's run of A, rt-07; the mayor, gc-wisp-drsasd): a held review that carries a catch (a high
-    item in a big-gap area, or an item on a control's hunk) never falls to the note, whatever held it. A repair aimed
-    at its reasons first (repair(): a cleared entry outside its flag's hunk dropped, an uncovered flagged hunk asked
-    about); then it goes out with the catch, never approving. `cand`: (rv, body, comments, reasons); `regated(rv)` ->
-    (body, comments, reasons). None when there is no catch, or a reason is R38 (disclosure): the fallback then; a body
-    that matches a secret's shape is still held by the caller. Returns (rv, body, comments, log fields)."""
-    if not cand[3] or not catches(cand[0], flagged) or any(r.startswith('R38') for r in cand[3]):
+def big_catches(rv):
+    """gcs-y48 (C; the red team's eval of 80d8694, rt-13): the catches that keep a held review from the note: high
+    severity in a big-gap area. An item on a control's hunk alone is not one; the note asks the control (gcs-9j8)."""
+    return [i for i in rv.get('items') or [] if i.get('severity') == 'high' and i.get('area') in BIG_AREAS]
+
+
+def catch_only(rv, flagged, idx, earlier=()):
+    """gcs-y48 (C; rt-35, rt-07): a held review cut to what needs no reader test: its big catches, its items on a
+    control's hunk, and a control's own question on a hunk no kept item sits on (never silent on a control, as the
+    note; R21: each place once; R40: never where an earlier ask of ours stands); the rules' own decisions (the
+    not-checked one), the summary and the status line. No cleared entry, no author decision, no other item, nothing
+    "Safe to skip"; never approving. Returns (rv, counts of what was cut)."""
+    items = rv.get('items') or []
+    big = big_catches(rv)
+    kept = big + [i for i in items if on_control(i, flagged) and not any(i is b for b in big)]
+    ctl = pr_rules.controlled(flagged) if idx is not None else []
+    qs = [(f, pr_format.flag_question(f, idx)) for f in ctl]
+    rules = {f.get('rule') for f, q in qs if repeats(q['path'], q['line_start'], q['line_end'], earlier)}  # R40: asked
+    asked = 0
+    for f, q in qs:
+        if pr_rules.covers(kept, [f]) or f.get('rule') in rules or any(
+                k.get('path') == q['path'] and k['line_start'] <= q['line_end'] and q['line_start'] <= k['line_end'] for k in kept):
+            continue  # R21: a rule's question once, at its first hunk no kept item sits on
+        kept.append(q)
+        rules.add(f.get('rule'))
+        asked += 1
+    kept = kept[:pr_format.MAX_ITEMS]
+    mine, theirs = pr_format.split(rv.get('decisions') or [])
+    out = dict(rv, items=kept, cleared=[], decisions=mine, skip=[], answers=None, approve=False)
+    out['outcome'] = pr_format.decide(mine, kept, rv.get('blockers') or [])
+    return out, {'items': sum(1 for i in items if not any(i is k for k in kept)), 'cleared': len(rv.get('cleared') or []),
+                 'decisions': len(theirs), 'skip': len(rv.get('skip') or []), 'controls_asked': asked}
+
+
+def keep_catch(cand, flagged, idx, regated, earlier=()):
+    """gcs-y48 (the red team's runs of A and B: rt-07, rt-35, rt-13; the mayor, gc-wisp-drsasd, gc-wisp-qrs2ta): a
+    held review that carries a big catch (a high item in a big-gap area) never falls to the note, whatever held it.
+    What held it was never cleared by the gate and the reader together, so only its catch_only() part goes out: never
+    a cleared entry or an item nobody re-checked, never approving. The cut entries' own format fixes (a "?", a
+    citation the digest does not hold) are made; nothing cut is added back. `cand`: (rv, body, comments, reasons);
+    `regated(rv)` -> (body, comments, reasons). None when there is no big catch, or a reason is R38 (disclosure): the
+    fallback then; a body that matches a secret's shape is still held by the caller. `earlier`: the places our asks
+    still stand on (R40). Returns (rv, body, comments, log fields)."""
+    if not cand[3] or not big_catches(cand[0]) or any(r.startswith('R38') for r in cand[3]):
         return None
-    rv_k, fixed = pr_format.repair(cand[0], cand[3], flagged, idx)
+    rv_k, cut = catch_only(cand[0], flagged, idx, earlier)
     body_k, comments_k, left = regated(rv_k)
-    if fixed and left and pr_format.format_only(left):  # a dropped entry can leave its flag uncovered
-        rv_k, more = pr_format.repair(rv_k, left, flagged, idx)
-        fixed = sorted(set(fixed) | set(more))
+    own = [r for r in left if not r.startswith('R19') and any(p.match(r) for p in pr_format.REPAIRABLE.values())]
+    fixed = []
+    if own:
+        rv_k, fixed = pr_format.repair(rv_k, own)
         body_k, comments_k, left = regated(rv_k)
-    if len(left) <= len(cand[3]) and catches(rv_k, flagged):
-        rv, body, comments = rv_k, body_k, comments_k
-    else:
-        rv, body, comments, left = cand[0], cand[1], cand[2], cand[3]
-    return dict(rv, approve=False), body, comments, {
+    if any(r.startswith('R38') for r in left):
+        return None
+    return dict(rv_k, approve=False), body_k, comments_k, {
         'catch_kept': sorted({r.split(':')[0] for r in cand[3]}), 'catch_repaired': fixed,
-        'catch_left': sorted({r.split(':')[0] for r in left})}
+        'catch_left': sorted({r.split(':')[0] for r in left}), 'catch_cut': {k: v for k, v in cut.items() if v}}
 
 
 def r31_questions(cfg, rv, risky, risky_q, flagged, extra):
@@ -1427,20 +1462,39 @@ def catches(rv, flagged):
             or on_control(i, flagged)]
 
 
-def exempt(rv, flagged):
-    """Security and control findings: items in a big-gap area or on a control's hunk, at any severity. They are code
-    findings, never product calls, and an R39 cut never removes them (the mayor, gc-wisp-ff5z11)."""
-    return [i for i in rv.get('items') or [] if i.get('area') in BIG_AREAS or on_control(i, flagged)]
+def on_flag(x, flagged, idx=None):
+    """gcs-y48 (C): whether an item, or a decision's code link, sits on a flagged hunk: its lines cover the flag's line,
+    or, given the diff, overlap the changed lines of the flag's hunk."""
+    at = x if 'line_start' in x else (x.get('link') or {})
+    if at is not x and at.get('kind') != 'code':
+        return False
+    lo = at.get('line_start') or 0
+    hi = at.get('line_end') or lo
+    for f in flagged or []:
+        if f.get('path') != at.get('path') or not f.get('line'):
+            continue
+        r = pr_format.changed_range(idx, f['path'], f['line']) if idx is not None else {'line_start': f['line'], 'line_end': f['line']}
+        if lo <= r['line_end'] and r['line_start'] <= hi:
+            return True
+    return False
 
 
-def product_cut(rv, entries, flagged):
+def exempt(rv, flagged, idx=None):
+    """Security and control findings, at any severity: the author's decisions and the items in a big-gap area or on a
+    flagged hunk (gcs-y48 C, rt-36: a gap the model put in a decision is the same finding). They are code findings,
+    never product calls, and an R39 cut never removes them (the mayor, gc-wisp-ff5z11, gc-wisp-qrs2ta)."""
+    return [x for x in pr_format.split(rv.get('decisions') or [])[1] + (rv.get('items') or [])
+            if x.get('area') in BIG_AREAS or on_flag(x, flagged, idx)]
+
+
+def product_cut(rv, entries, flagged, idx=None):
     """The review's decisions and items without the numbered entries that hold a product call, except security and
     control findings. Returns (decisions, items, how many were cut)."""
     first = pr_format.first_item(rv)
-    keep = exempt(rv, flagged)
+    keep = {id(x) for x in exempt(rv, flagged, idx)}
     number = {id(x): k for k, x in enumerate(pr_format.split(rv.get('decisions') or [])[1], 1)}  # the author's, numbered
-    decisions = [x for x in rv.get('decisions') or [] if number.get(id(x)) not in entries]
-    items = [x for k, x in enumerate(rv.get('items') or [], first) if k not in entries or x in keep]
+    decisions = [x for x in rv.get('decisions') or [] if number.get(id(x)) not in entries or id(x) in keep]
+    items = [x for k, x in enumerate(rv.get('items') or [], first) if k not in entries or id(x) in keep]
     return decisions, items, len(rv.get('decisions') or []) + len(rv.get('items') or []) - len(decisions) - len(items)
 
 
@@ -1820,7 +1874,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 c = pr_format.inline_comments(x['items'], author, cfg.get('voice'), pr_format.first_item(x))
                 ln = [(d.get('link') or {}).get('path') for d in x['decisions'] if (d.get('link') or {}).get('kind') == 'code']
                 return b, c, pr_format.gate(x, idx, b, tree_lines(tree, ln), pr.get('body') or '', flagged, c)
-            kept = keep_catch(cand, flagged, idx, regated)
+            kept = keep_catch(cand, flagged, idx, regated, cfg.get('_earlier') or [])
             if kept:
                 rv, body, comments, log = kept
                 extra.update(log)
@@ -1855,7 +1909,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 # note. The entries the check names are cut, except security and control findings, and the review
                 # goes out (with PR_REVIEW_R39_HOLD=on, a review that carries a catch is still cut, never held).
                 ents = set((extra.get('product_entries') or {}).get(key) or [])
-                decisions_c, items_c, n_cut = product_cut(rv, ents, flagged)
+                decisions_c, items_c, n_cut = product_cut(rv, ents, flagged, idx)
                 rv_c = assemble(cfg, repo, pr, ci, decisions_c, items_c, rv.get('cleared') or [], model, flagged, flags_cut,
                                 money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
                                 conflicts=conflicts)
@@ -1869,7 +1923,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 if n_cut and not gate_c:
                     rv, body, comments = rv_c, body_c, comments_c
                 left = product_reasons(dict(cfg, r39_hold=True), body, comments, extra) if n_cut and not gate_c else [True]
-                extra.update(r39_cut=n_cut if n_cut and not gate_c else 0, r39_exempt=len(exempt(rv, flagged)),
+                extra.update(r39_cut=n_cut if n_cut and not gate_c else 0, r39_exempt=len(exempt(rv, flagged, idx)),
                              product_calls_sent=bool(left))
                 reasons = []
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
@@ -2580,7 +2634,20 @@ def selftest_r39_catch():
     asked = r31_questions({'_earlier': []}, {'cleared': [{'path': 'a.ts', 'line_start': 1, 'line_end': 1, 'why': 'w', 'change': 'Sends it'},
                                                          {'path': 'c.ts', 'line_start': 5, 'line_end': 5, 'why': 'w', 'change': 'Signs in'}]},
                           {1, 2}, {}, flagged, extra := {})
+    # rt-36 (the red team's eval of 80d8694): the check names a decision that holds the planted gap
+    diff = 'diff --git a/c.ts b/c.ts\n--- a/c.ts\n+++ b/c.ts\n@@ -1,2 +1,4 @@\n x\n+a()\n+b()\n y\n'
+    idx = pr_format.diff_index(diff)
+    flags2 = [{'id': 'F1', 'rule': 'r', 'path': 'c.ts', 'line': 2}]
+    rv2 = {'items': [], 'decisions': [{'actors': ['author'], 'q': 'big', 'area': 'patient data', 'link': {'kind': 'description'}},
+                                      {'actors': ['author'], 'q': 'hunk', 'area': 'other',
+                                       'link': {'kind': 'code', 'path': 'c.ts', 'line_start': 3, 'line_end': 3}},
+                                      {'actors': ['author'], 'q': 'plain', 'area': 'product',
+                                       'link': {'kind': 'code', 'path': 'c.ts', 'line_start': 9, 'line_end': 9}}]}
+    d2, i2, n2 = product_cut(rv2, {1, 2, 3}, flags2, idx)
+    d3, _, n3 = product_cut(rv2, {1, 2, 3}, flags2)  # without the diff: the flag's own line only
     return {
+        'gcs-y48 (C, rt-36): the R39 cut never removes a decision in a big-gap area or linked to a flagged hunk':
+            [x['q'] for x in d2] == ['big', 'hunk'] and n2 == 1 and [x['q'] for x in d3] == ['big'] and n3 == 2,
         'gcs-y48: a catch is a high item in a big-gap area or any item on a control\'s hunk':
             [(x['severity'], x['area']) for x in got] == [('high', 'security'), ('low', 'other')],
         'gcs-y48 (B): the R39 cut drops only the entries with a product call, never a security or control finding':
@@ -2592,37 +2659,110 @@ def selftest_r39_catch():
 
 
 def selftest_keep_catch():
-    """gcs-y48 (rt-07), zero tokens: a held review that carries a catch is repaired (a cleared entry outside its hunk
-    dropped, the flag it left uncovered asked about) and goes out, never approving; one with no catch, or held by
-    R38, returns None (the fallback, as before)."""
+    """gcs-y48 (rt-07, rt-35, rt-13; the red team's runs of A and B), zero tokens: a held review that carries a big catch
+    goes out as its catch only (no cleared entry, not even one on the catch's own lines; no author decision, no other
+    item, nothing "Safe to skip"; a control no kept item covers asked by its own question), never approving; an item
+    on a control's hunk alone is no catch; R38, before or after the cut, is the fallback."""
     diff = ('diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,4 @@\n x\n'
-            '+log(patient.name)\n+send(patient.phone)\n y\n')
+            '+log(patient.name)\n+send(patient.phone)\n y\n@@ -10,2 +12,3 @@\n p\n+read(patient.chart)\n q\n'
+            '@@ -20,2 +23,3 @@\n m\n+read(patient.notes)\n n\n')
     idx = pr_format.diff_index(diff)
-    flagged = [{'id': 'F1', 'rule': 'phi-logs', 'label': 'a log call that passes patient data', 'path': 'src/a.ts', 'line': 2}]
+    flagged = [{'id': 'F1', 'rule': 'phi-logs', 'label': 'a log call that passes patient data', 'path': 'src/a.ts', 'line': 3},
+               {'id': 'F2', 'rule': 'phi-access', 'label': 'a read of patient data', 'path': 'src/a.ts', 'line': 13,
+                'control': 'who may read this patient data', 'area': 'A1'},
+               {'id': 'F3', 'rule': 'phi-audit', 'label': 'an audit entry', 'path': 'src/a.ts', 'line': 2,
+                'control': 'what audits this read', 'area': 'A1'},  # on the catch's own hunk: asked there already
+               {'id': 'F4', 'rule': 'phi-access', 'label': 'a read of patient data', 'path': 'src/a.ts', 'line': 24,
+                'control': 'who may read this patient data', 'area': 'A1'}]  # F2's rule again: its question once
     catch = {'path': 'src/a.ts', 'side': 'new', 'line_start': 3, 'line_end': 3, 'kind': 'change', 'severity': 'high',
              'area': 'patient data', 'change': 'Sends the phone number', 'why': 'w', 'ask': 'a', 'confidence': 9}
-    rv = {'outcome': 'changes', 'items': [catch], 'decisions': [], 'blockers': [], 'approve': True,
-          'cleared': [{'flag': 'F1', 'path': 'src/a.ts', 'line_start': 1, 'line_end': 1, 'change': 'c', 'why': 'w'}]}
-    held = ['R19: cleared entry 1 range L1-L1 is not inside the hunk of line 2 in src/a.ts']
+    other = dict(catch, kind='question', severity='medium', area='product', change='Changes the text', line_start=4, line_end=4)
+    rv = {'outcome': 'changes', 'items': [catch, other], 'blockers': [], 'approve': True, 'summary': 's',
+          'decisions': [{'actors': ['author', 'author'], 'area': 'other', 'question': 'q?'}],
+          'skip': [{'paths': ['src/b.ts']}],
+          'cleared': [{'flag': 'F1', 'path': 'src/a.ts', 'line_start': 3, 'line_end': 3, 'change': 'c', 'why': 'w'}]}
+    held = ['R37: a change in product behaviour sits in "Safe to skip"; give it its own linked line']
     calls = []
 
     def regated(x):
-        calls.append(len(x['items']))
-        return 'body', [], [] if any(i.get('change') == pr_format.FLAG_CHANGE for i in x['items']) else \
-            ['R19: flag F1 (a log call that passes patient data, src/a.ts line 2) is neither cleared nor an item or a decision']
+        calls.append([i['change'] for i in x['items']])
+        return 'body', [], []
     got = keep_catch((rv, 'old body', [], held), flagged, idx, regated)
-    plain = dict(rv, items=[dict(catch, severity='low', area='other')])
-    none = keep_catch((plain, 'b', [], held), flagged, idx, regated)
+    again = keep_catch((rv, 'old body', [], held), flagged, idx, regated, [('src/a.ts', 13, 13)])  # R40: asked before
+    # rt-13: a held review whose only item is a medium security question on a control's hunk: no big catch
+    ctl_only = dict(rv, items=[dict(catch, kind='question', severity='medium', area='security', line_start=13, line_end=13)])
+    none = keep_catch((ctl_only, 'b', [], ['R29: item 1 change does not lead with what the PR changed']), flagged, idx, regated)
     r38 = keep_catch((rv, 'b', [], held + ["R38: the reviewer's voice never says 'automated review'"]), flagged, idx, regated)
+    r38_after = keep_catch((rv, 'b', [], held), flagged, idx,
+                           lambda x: ('b', [], ["R38: the reviewer's voice never says 'automated review'"]))
     wording = ['R29: item 1 change does not lead with what the PR changed']  # nothing repair() fixes
-    stuck = keep_catch((dict(rv, cleared=[]), 'held body', [], wording), flagged, idx, lambda x: ('b', [], list(wording)))
-    return {'gcs-y48 (rt-07): a held review with a catch is repaired (R19: the entry dropped, the flag asked) and goes '
-            'out, never approving': bool(got) and got[0]['approve'] is False and got[0]['cleared'] == [] and
-            [i['change'] for i in got[0]['items']] == ['Sends the phone number', pr_format.FLAG_CHANGE] and
-            got[3]['catch_repaired'] == ['R19'] and got[3]['catch_left'] == [] and calls == [1, 2],
-            'gcs-y48: no catch, or a disclosure (R38): the fallback, as before': none is None and r38 is None,
+    stuck = keep_catch((rv, 'held body', [], wording), flagged, idx, lambda x: ('b', [], list(wording)))
+    seen = []
+
+    def no_mark(x):
+        seen.append(x['items'][0]['ask'])
+        return 'b', [], [] if x['items'][0]['ask'].endswith('?') else \
+            ['R13: item 1 is a question but its ask does not end with a question mark']
+    marked = keep_catch((dict(rv, items=[dict(catch, kind='question', ask='Who reads it')]), 'b', [], held), flagged, idx, no_mark)
+    return {'gcs-y48 (rt-35, rt-07): a held review with a big catch goes out as its catch only (no cleared entry, even '
+            'on its own lines; no author decision, no other item, nothing safe to skip), the uncovered control asked, '
+            'never approving': bool(got) and got[0]['approve'] is False and got[0]['cleared'] == [] and
+            got[0]['decisions'] == [] and got[0]['skip'] == [] and got[0]['outcome'] == 'changes' and
+            calls[0] == ['Sends the phone number', 'Changes a read of patient data'] and
+            got[0]['items'][1]['why'] == pr_format.FLAG_WHY and got[0]['items'][1]['severity'] == 'medium' and
+            got[3]['catch_cut'] == {'items': 1, 'cleared': 1, 'decisions': 1, 'skip': 1, 'controls_asked': 1} and
+            got[3]['catch_kept'] == ['R37'] and got[3]['catch_left'] == [] and got[0]['items'][1]['line_start'] == 13,
+            'gcs-y48: a control is asked once per place: not on the catch\'s hunk, not where an earlier ask stands (R40)':
+            [i['change'] for i in again[0]['items']] == ['Sends the phone number'] and
+            again[3]['catch_cut'].get('controls_asked') is None,
+            'gcs-y48 (rt-13): an item on a control\'s hunk alone is no catch: the note, as on A': none is None,
+            'gcs-y48: a disclosure (R38), held or after the cut: the fallback': r38 is None and r38_after is None,
             'gcs-y48: a catch held by what no repair fixes still goes out with it, never approving':
-            bool(stuck) and stuck[0]['approve'] is False and stuck[3]['catch_left'] == ['R29'] and stuck[3]['catch_repaired'] == []}
+            bool(stuck) and stuck[0]['approve'] is False and stuck[3]['catch_left'] == ['R29'] and stuck[3]['catch_repaired'] == [],
+            'gcs-y48: the catch\'s own format fix is made (R13), nothing cut comes back':
+            bool(marked) and seen == ['Who reads it', 'Who reads it?'] and marked[3]['catch_repaired'] == ['R13'] and
+            marked[0]['cleared'] == [] and marked[3]['catch_left'] == []}
+
+
+def regress_keep(d):
+    """gcs-y48 (C): the host-local held reviews of the red team's runs (real rows from feedback/held.jsonl; they hold
+    the repositories' text, so they stay on the host) through keep_catch() ("kind": "keep") or product_cut() ("kind":
+    "cut", every numbered entry named). Each case's `expect` must hold. Prints file names and ok/FAIL only; returns
+    the number of mismatches (0 when the directory is missing)."""
+    if not os.path.isdir(d):
+        return 0
+    bad = total = 0
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith('.json'):
+            continue
+        fx, total = json.load(open(os.path.join(d, fn))), total + 1
+        rv, flagged, exp = fx['rv'], fx.get('flagged') or [], fx['expect']
+        idx = pr_format.diff_index(fx.get('diff') or '')
+        if fx['kind'] == 'cut':
+            n = len(pr_format.split(rv.get('decisions') or [])[1]) + len(rv.get('items') or [])
+            _, _, n_cut = product_cut(rv, set(range(1, n + 1)), flagged, idx)
+            ok = n_cut == exp['n_cut']
+        else:
+            pr = {'number': 1, 'state': 'OPEN', 'mergeable': 'MERGEABLE', 'url': 'https://github.com/example/repo/pull/1',
+                  'headRefOid': fx.get('head') or 'a' * 40}
+
+            def regated(x):
+                b = pr_format.render('example/repo', pr, x, 'Reviewer', 'Author')
+                c = pr_format.inline_comments(x['items'], 'Author', x.get('voice'), pr_format.first_item(x))
+                return b, c, pr_format.gate(x, idx, b, None, fx.get('pr_text') or '', flagged, c)
+            got = keep_catch((rv, fx.get('body') or '', [], fx['reasons']), flagged, idx, regated)
+            if not exp['keep']:
+                ok = got is None
+            else:
+                out = got[0] if got else {}
+                stock = [i for i in out.get('items') or [] if i.get('why') == pr_format.FLAG_WHY]
+                ok = bool(got) and out['approve'] is False and out['cleared'] == [] and out['skip'] == [] and \
+                    pr_format.split(out['decisions'])[1] == [] and len(big_catches(out)) == exp['big_catches'] and \
+                    all(i in big_catches(out) or on_control(i, flagged) or i in stock for i in out['items'])
+        bad += not ok
+        print('ok  ' if ok else 'FAIL', fn)
+    print(f'{total - bad} of {total} keep cases as expected')
+    return bad
 
 
 def selftest_rerequest(cfg, tmp):
@@ -2855,7 +2995,10 @@ def main():
     ap.add_argument('--eval', metavar='REPO#N', help='review an eval PR by hand, outside the live queue (gcs-71c)')
     ap.add_argument('--eval-run', metavar='NAME', help="the eval rows' file name (default: the pack's commit)")
     ap.add_argument('--selftest', action='store_true', help='the note and its floor on synthetic data')
+    ap.add_argument('--regress-keep', metavar='DIR', help='the host-local held reviews through keep_catch() (gcs-y48)')
     a = ap.parse_args()
+    if a.regress_keep:
+        return 1 if regress_keep(a.regress_keep) else 0
     if a.selftest:
         return 0 if (fair_selftest() and selftest()) else 1
     cfg = pr_state.config()

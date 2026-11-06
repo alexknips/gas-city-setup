@@ -8,6 +8,9 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 python3 "$here/pr_format.py" --regress "$here/../../tests/fixtures" "${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression"
 rc=$?
+# Host-local held reviews of the red team's runs through keep_catch() and the R39 cut (gcs-y48; skipped when absent).
+python3 "$here/pr_review.py" --regress-keep "${PR_REVIEW_WORK_DIR:-/var/tmp/gc-pr-review}/regression/keep" | grep -v '^ok  '
+[ "${PIPESTATUS[0]}" = 0 ] || { echo 'pr_review keep cases: FAIL'; rc=1; }
 # The restamp's shapes and its PR list (synthetic; decision-ed7320b7); the sweep's bead closing.
 python3 "$here/pr_restamp.py" --selftest > /dev/null || { echo 'pr_restamp selftest: FAIL'; rc=1; }
 python3 "$here/pr_sweep.py" --selftest > /dev/null || { echo 'pr_sweep selftest: FAIL'; rc=1; }

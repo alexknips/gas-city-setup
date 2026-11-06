@@ -675,6 +675,13 @@ FLAG_WHY = 'The rules flagged this place and the review gave no reason it is saf
 CONTROL_AREAS = {'A1': 'patient data', 'A2': 'security'}
 
 
+def flag_title(label):
+    """gcs-y48 (C): a flag question's lead: "Changes <the rule's label>" when that is 3-6 plain words (R29), so two
+    flag questions read apart (R21); else the stock lead."""
+    title = f'Changes {label or ""}'.strip()
+    return title if 3 <= len(title.split()) <= 6 and re.fullmatch(r"[A-Za-z' -]+", title) else FLAG_CHANGE
+
+
 def flag_question(f, idx):
     """gcs-y48 (rt-07): a flagged hunk the review neither cleared nor asked about, as a question for the author on its
     changed lines: a control's own question (medium, its area), else what makes the rule's finding safe (low)."""
@@ -683,7 +690,8 @@ def flag_question(f, idx):
     ask = (ctl[0].upper() + ctl[1:] + '?') if ctl else f"What makes the {f.get('label') or 'flagged change'} safe on these lines?"
     return {'path': f['path'], 'side': 'new', 'line_start': r['line_start'], 'line_end': min(r['line_end'], r['line_start'] + 39),
             'kind': 'question', 'severity': 'medium' if ctl else 'low',
-            'area': CONTROL_AREAS.get(f.get('area'), 'security') if ctl else 'other', 'change': FLAG_CHANGE,
+            'area': CONTROL_AREAS.get(f.get('area'), 'security') if ctl else 'other',
+            'change': flag_title(f.get('label')),
             'why': FLAG_WHY, 'ask': ask, 'rule': '', 'verified': '', 'confidence': 8}
 
 
