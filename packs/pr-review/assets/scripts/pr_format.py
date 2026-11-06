@@ -655,6 +655,11 @@ REPAIRABLE = {
     # reader hold (2026-10-30, 3 of 3 such holds); dropped, never one that names a wrong flag.
     'R19': re.compile(r"^R19: cleared entry (\d+) names flag (?:''|None), which is not one of the flagged hunks$"),
     'R36': re.compile(r'^R36: cleared entry (\d+) repeats cleared entry \d+$'),
+    # gcs-y48 (rt-07): a cleared entry outside its flag's hunk is dropped; a flagged hunk neither cleared nor an item
+    # becomes a question for the author on its hunk (repair() needs the flags and the diff for that one).
+    'R19r': re.compile(r'^R19: cleared entry (\d+) (?:range L\d+-L\d+ is not inside the hunk of line \d+ in .+|'
+                       r'must name .+ and a line range inside the hunk of line \d+)$'),
+    'R19f': re.compile(r'^R19: flag (\S+) \(.*\) is neither cleared nor an item or a decision$'),
     'R37': re.compile(r"^R37: (decision|item|cleared entry) (\d+) cites rule .+, which is not in the repository's digest$"),
 }
 REPAIR_GROUP = {'decision': 'decisions', 'item': 'items', 'cleared entry': 'cleared'}
@@ -665,14 +670,43 @@ def format_only(reasons):
     return bool(reasons) and all(any(p.match(r) for p in REPAIRABLE.values()) for r in reasons)
 
 
-def repair(rv, reasons):
+FLAG_CHANGE = 'Changes a flagged place'
+FLAG_WHY = 'The rules flagged this place and the review gave no reason it is safe.'
+CONTROL_AREAS = {'A1': 'patient data', 'A2': 'security'}
+
+
+def flag_question(f, idx):
+    """gcs-y48 (rt-07): a flagged hunk the review neither cleared nor asked about, as a question for the author on its
+    changed lines: a control's own question (medium, its area), else what makes the rule's finding safe (low)."""
+    r = changed_range(idx, f['path'], f['line'])
+    ctl = (f.get('control') or '').strip().rstrip('?')
+    ask = (ctl[0].upper() + ctl[1:] + '?') if ctl else f"What makes the {f.get('label') or 'flagged change'} safe on these lines?"
+    return {'path': f['path'], 'side': 'new', 'line_start': r['line_start'], 'line_end': min(r['line_end'], r['line_start'] + 39),
+            'kind': 'question', 'severity': 'medium' if ctl else 'low',
+            'area': CONTROL_AREAS.get(f.get('area'), 'security') if ctl else 'other', 'change': FLAG_CHANGE,
+            'why': FLAG_WHY, 'ask': ask, 'rule': '', 'verified': '', 'confidence': 8}
+
+
+def repair(rv, reasons, flagged=(), idx=None):
     """The review with what format_only() reasons name made right from its own parts: a question's ask ends
     in "?" (R13), a cleared entry that names no flag (R19) or repeats an earlier one (R36) is dropped, the
-    citation of a rule the digest does not hold is dropped (R37). The caller gates the result again.
-    Returns (rv, rule ids)."""
+    citation of a rule the digest does not hold is dropped (R37); gcs-y48 (rt-07): a cleared entry outside its
+    flag's hunk is dropped, and, given the flags and the diff, a flagged hunk neither cleared nor an item
+    becomes a question on its lines. The caller gates the result again. Returns (rv, rule ids)."""
     rv = dict(rv, **{g: [dict(x) for x in rv.get(g) or []] for g in REPAIR_GROUP.values()})
     drop, fixed = set(), set()
+    by_id = {f['id']: f for f in flagged or []}
     for r in reasons:
+        m19r, m19f = REPAIRABLE['R19r'].match(r), REPAIRABLE['R19f'].match(r)
+        if m19r:
+            drop.add(int(m19r.group(1)) - 1)
+            fixed.add('R19')
+            continue
+        if m19f:
+            if idx is not None and m19f.group(1) in by_id:
+                rv['items'].append(flag_question(by_id[m19f.group(1)], idx))
+                fixed.add('R19')
+            continue
         m13, m19, m36, m37 = (REPAIRABLE[k].match(r) for k in ('R13', 'R19', 'R36', 'R37'))
         if m13:
             it = rv['items'][int(m13.group(1)) - 1]
@@ -685,6 +719,9 @@ def repair(rv, reasons):
             rv[REPAIR_GROUP[m37.group(1)]][int(m37.group(2)) - 1]['rule'] = ''
             fixed.add('R37')
     rv['cleared'] = [c for j, c in enumerate(rv['cleared']) if j not in drop]
+    if any(REPAIRABLE['R19f'].match(r) for r in reasons) and 'R19' in fixed:  # a new question: the outcome follows it
+        rv['outcome'] = decide(rv.get('decisions') or [], rv['items'], rv.get('blockers') or [])
+        rv['approve'] = False
     return rv, sorted(fixed)
 
 
@@ -1572,10 +1609,10 @@ def regress(dirs):
                     if fixable(first):  # `rewrite`: the narrow turn's answer, {entry id: {field: text}}
                         answer = [dict(v, id=k) for k, v in (fx.get('rewrite') or {}).items()]
                         rv = apply_rewrite(rv, rewrite_asks(rv, first), answer)[0]
-                        rv, fixed = repair(rv, first)
+                        rv, fixed = repair(rv, first, fx.get('flagged', []), idx)
                         again = gated(rv)
                         if format_only(again):
-                            rv, more = repair(rv, again)
+                            rv, more = repair(rv, again, fx.get('flagged', []), idx)
                             fixed = sorted(set(fixed) | set(more))
                     body = render('example/repo', pr, rv, 'Reviewer', 'Author')
                 if 'line2' in fx and body.splitlines()[1] != fx['line2']:

@@ -691,11 +691,19 @@ CASES = {
         'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG], 'repair': [],
         'items': [dict(QUESTION, change='patient data')],
         'rewrite': {'item 1': {'change': 'Reminder text names the patient'}}, **SKIP},
-    'case119-no-rewrite-with-a-content-reason': {
-        'expect': 'fail', 'expect_reasons': ['R19', 'R29'], 'only_reasons': ['R19', 'R29'], **LOW, 'repair': [],
+    # gcs-y48 (rt-07; the mayor, 2026-11-06): a flagged hunk neither cleared nor an item was a content reason that
+    # sent the review to the fallback with no repair; repair() now asks about it, so the review goes out.
+    'case119-uncovered-flag-becomes-a-question': {
+        'expect': 'pass', **LOW, 'outcome': 'questions', 'repair': ['R19'],
         'flagged': [FLAG, dict(FLAG, id='F2', path='test/notify.test.ts', line=2)],
         'cleared': [dict(CLEARED, change='sendReminder now uses SMS')],
         'rewrite': {'cleared entry 1': {'change': 'Reminder now sent by SMS'}}},
+    'case-rp-cleared-entry-outside-its-hunk-dropped-then-asked': {
+        'expect': 'pass', **LOW, 'outcome': 'questions', 'repair': ['R19'],
+        'cleared': [dict(CLEARED, line_start=1, line_end=1)]},
+    'case-rp-uncovered-flag-without-the-diff-stays-held': {
+        'expect': 'fail', 'expect_reasons': ['R19'], 'only_reasons': ['R19'], **LOW,
+        'flagged': [FLAG, dict(FLAG, id='F2', path='src/other.ts', line=40)]},
     'case120-rewrite-answer-beyond-the-ask-is-ignored': {
         'expect': 'pass', 'outcome': 'questions', 'derived': True, 'diff': DIFF, 'flagged': [FLAG], 'repair': [],
         'items': [dict(QUESTION, change='patient data')],

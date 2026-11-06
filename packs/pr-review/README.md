@@ -464,6 +464,13 @@ approves, and when the cut fails the gate the review goes out uncut. A product c
 cannot be cut and is counted (`product_calls_sent`). `PR_REVIEW_R39_HOLD=on` brings back the old hold (a full review
 with one written again once, then held).
 
+**A catch never falls to the note** (gcs-y48; the red team's run of 58882e0: rt-07 lost). A held review that carries
+a catch (a high item in a big-gap area, or an item on a control's hunk) never falls to the note, whatever rule held
+it: a repair aimed at its reasons first (`repair()` also drops a cleared entry outside its flag's hunk and asks
+about a flagged hunk the review neither cleared nor asked about), then it goes out with the catch, never
+approving (`catch_kept`, `catch_repaired`, `catch_left`). A body that matches a secret's shape is still held; a
+disclosure (R38) falls back. The note stays for held reviews with no catch.
+
 **Approved stays approved** (decision-527cf053; the reviewer, 2026-11-05: approve once the author has addressed our
 asks; the mayor, 16:50Z: never a second approval, a re-review or a channel line on a PR the reviewer approved).
 When the reviewer's verdict on a PR is an approval (as GitHub counts it: their latest review that approves or

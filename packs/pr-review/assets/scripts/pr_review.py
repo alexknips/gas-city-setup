@@ -1385,6 +1385,30 @@ def product_reasons(cfg, body, comments, extra):
     return [R39_WHY.format(n=n)] if n else []
 
 
+def keep_catch(cand, flagged, idx, regated):
+    """gcs-y48 (the red team's run of A, rt-07; the mayor, gc-wisp-drsasd): a held review that carries a catch (a high
+    item in a big-gap area, or an item on a control's hunk) never falls to the note, whatever held it. A repair aimed
+    at its reasons first (repair(): a cleared entry outside its flag's hunk dropped, an uncovered flagged hunk asked
+    about); then it goes out with the catch, never approving. `cand`: (rv, body, comments, reasons); `regated(rv)` ->
+    (body, comments, reasons). None when there is no catch, or a reason is R38 (disclosure): the fallback then; a body
+    that matches a secret's shape is still held by the caller. Returns (rv, body, comments, log fields)."""
+    if not cand[3] or not catches(cand[0], flagged) or any(r.startswith('R38') for r in cand[3]):
+        return None
+    rv_k, fixed = pr_format.repair(cand[0], cand[3], flagged, idx)
+    body_k, comments_k, left = regated(rv_k)
+    if fixed and left and pr_format.format_only(left):  # a dropped entry can leave its flag uncovered
+        rv_k, more = pr_format.repair(rv_k, left, flagged, idx)
+        fixed = sorted(set(fixed) | set(more))
+        body_k, comments_k, left = regated(rv_k)
+    if len(left) <= len(cand[3]) and catches(rv_k, flagged):
+        rv, body, comments = rv_k, body_k, comments_k
+    else:
+        rv, body, comments, left = cand[0], cand[1], cand[2], cand[3]
+    return dict(rv, approve=False), body, comments, {
+        'catch_kept': sorted({r.split(':')[0] for r in cand[3]}), 'catch_repaired': fixed,
+        'catch_left': sorted({r.split(':')[0] for r in left})}
+
+
 def r31_questions(cfg, rv, risky, risky_q, flagged, extra):
     """R31: the cleared entries the reader still finds risky become questions for the author; gcs-y48 (rt-13): they go
     through the same R40 filter as the model's items (never twice, no low-severity ask outside the big-gap areas
@@ -1764,10 +1788,10 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra.update(rewrite_cost_usd=wm.get('cost_usd') or 0, rewrite_turns=wm.get('turns'),
                              rewrite_asked=wm.get('asked', 0), rewritten=wm.get('rewritten', 0),
                              **({'rewrite_error': wm['error']} if wm.get('error') else {}))
-            rv_r, fixed = pr_format.repair(rv_r, reasons)
+            rv_r, fixed = pr_format.repair(rv_r, reasons, flagged, idx)
             body_r, comments_r, again = gated(rv_r)
             if pr_format.format_only(again):  # a rewrite can leave what the script fixes (a missing "?")
-                rv_r, more = pr_format.repair(rv_r, again)
+                rv_r, more = pr_format.repair(rv_r, again, flagged, idx)
                 fixed = sorted(set(fixed) | set(more))
                 body_r, comments_r, again = gated(rv_r)
             extra['repaired'] = fixed
@@ -1790,6 +1814,17 @@ def model_review(cfg, key, entry, dry, rereview=False):
             rv, body, comments, reasons = cand[0], cand[1], cand[2], []
             rv['approve'] = False
             extra.update(control_waived=waived, held_useful=extra.get('judge'))
+        if reasons:
+            def regated(x):
+                b = pr_format.render(repo, pr, x, NAME, author)
+                c = pr_format.inline_comments(x['items'], author, cfg.get('voice'), pr_format.first_item(x))
+                ln = [(d.get('link') or {}).get('path') for d in x['decisions'] if (d.get('link') or {}).get('kind') == 'code']
+                return b, c, pr_format.gate(x, idx, b, tree_lines(tree, ln), pr.get('body') or '', flagged, c)
+            kept = keep_catch(cand, flagged, idx, regated)
+            if kept:
+                rv, body, comments, log = kept
+                extra.update(log)
+                reasons = []
         # Enum values, counts and rule ids only, so the log can say why reviews end where they do.
         extra.update(decisions=len(rv['decisions']), author_decisions=len(pr_format.split(rv['decisions'])[1]),
                      items=len(rv['items']), cleared=len(rv['cleared']),
@@ -2054,6 +2089,7 @@ def selftest():
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
     checks.update(selftest_r39_catch())
+    checks.update(selftest_keep_catch())
     checks.update(selftest_graceful(cfg, tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
@@ -2553,6 +2589,40 @@ def selftest_r39_catch():
             [(x['severity'], x['area']) for x in exempted] == [('high', 'security'), ('low', 'other'), ('medium', 'security')],
         'gcs-y48 (rt-13): R31\'s questions go through R40: a low ask outside the big areas is dropped, one on a control stays':
             [q.get('path') for q in asked] == ['c.ts'] and extra.get('graceful_dropped_r31') == {'low': 1}}
+
+
+def selftest_keep_catch():
+    """gcs-y48 (rt-07), zero tokens: a held review that carries a catch is repaired (a cleared entry outside its hunk
+    dropped, the flag it left uncovered asked about) and goes out, never approving; one with no catch, or held by
+    R38, returns None (the fallback, as before)."""
+    diff = ('diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,4 @@\n x\n'
+            '+log(patient.name)\n+send(patient.phone)\n y\n')
+    idx = pr_format.diff_index(diff)
+    flagged = [{'id': 'F1', 'rule': 'phi-logs', 'label': 'a log call that passes patient data', 'path': 'src/a.ts', 'line': 2}]
+    catch = {'path': 'src/a.ts', 'side': 'new', 'line_start': 3, 'line_end': 3, 'kind': 'change', 'severity': 'high',
+             'area': 'patient data', 'change': 'Sends the phone number', 'why': 'w', 'ask': 'a', 'confidence': 9}
+    rv = {'outcome': 'changes', 'items': [catch], 'decisions': [], 'blockers': [], 'approve': True,
+          'cleared': [{'flag': 'F1', 'path': 'src/a.ts', 'line_start': 1, 'line_end': 1, 'change': 'c', 'why': 'w'}]}
+    held = ['R19: cleared entry 1 range L1-L1 is not inside the hunk of line 2 in src/a.ts']
+    calls = []
+
+    def regated(x):
+        calls.append(len(x['items']))
+        return 'body', [], [] if any(i.get('change') == pr_format.FLAG_CHANGE for i in x['items']) else \
+            ['R19: flag F1 (a log call that passes patient data, src/a.ts line 2) is neither cleared nor an item or a decision']
+    got = keep_catch((rv, 'old body', [], held), flagged, idx, regated)
+    plain = dict(rv, items=[dict(catch, severity='low', area='other')])
+    none = keep_catch((plain, 'b', [], held), flagged, idx, regated)
+    r38 = keep_catch((rv, 'b', [], held + ["R38: the reviewer's voice never says 'automated review'"]), flagged, idx, regated)
+    wording = ['R29: item 1 change does not lead with what the PR changed']  # nothing repair() fixes
+    stuck = keep_catch((dict(rv, cleared=[]), 'held body', [], wording), flagged, idx, lambda x: ('b', [], list(wording)))
+    return {'gcs-y48 (rt-07): a held review with a catch is repaired (R19: the entry dropped, the flag asked) and goes '
+            'out, never approving': bool(got) and got[0]['approve'] is False and got[0]['cleared'] == [] and
+            [i['change'] for i in got[0]['items']] == ['Sends the phone number', pr_format.FLAG_CHANGE] and
+            got[3]['catch_repaired'] == ['R19'] and got[3]['catch_left'] == [] and calls == [1, 2],
+            'gcs-y48: no catch, or a disclosure (R38): the fallback, as before': none is None and r38 is None,
+            'gcs-y48: a catch held by what no repair fixes still goes out with it, never approving':
+            bool(stuck) and stuck[0]['approve'] is False and stuck[3]['catch_left'] == ['R29'] and stuck[3]['catch_repaired'] == []}
 
 
 def selftest_rerequest(cfg, tmp):
