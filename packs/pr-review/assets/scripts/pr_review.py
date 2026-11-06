@@ -1902,13 +1902,15 @@ def model_review(cfg, key, entry, dry, rereview=False):
             extra['held_by'] = 'format' if pr_format.fixable(reasons) else 'content'
         if not reasons:
             reasons = product_reasons(cfg, body, comments, extra)
-            key = body_sha(body + ''.join(c.get('body') or '' for c in comments))
-            found = (extra.get('product_checked') or {}).get(key)
+            # gcs-y48 C' (the red team, gc-wisp-beo8el): the text's hash has its own name; `key` stays the PR's
+            # repo#N, which deliver() and finish() store the state under.
+            bkey = body_sha(body + ''.join(c.get('body') or '' for c in comments))
+            found = (extra.get('product_checked') or {}).get(bkey)
             if found and (not reasons or catches(rv, flagged)):
                 # gcs-y48 (the red team's eval of 4b59f3a; the mayor, gc-wisp-ff5z11): R39 never sends a review to the
                 # note. The entries the check names are cut, except security and control findings, and the review
                 # goes out (with PR_REVIEW_R39_HOLD=on, a review that carries a catch is still cut, never held).
-                ents = set((extra.get('product_entries') or {}).get(key) or [])
+                ents = set((extra.get('product_entries') or {}).get(bkey) or [])
                 decisions_c, items_c, n_cut = product_cut(rv, ents, flagged, idx)
                 rv_c = assemble(cfg, repo, pr, ci, decisions_c, items_c, rv.get('cleared') or [], model, flagged, flags_cut,
                                 money, ruleset, author, model=True, idx=idx, digest=digest, money_info=money_info,
@@ -2140,6 +2142,7 @@ def selftest():
     checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_state_key(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
     checks.update(selftest_r39_catch())
@@ -2807,6 +2810,104 @@ def selftest_rerequest(cfg, tmp):
         'gcs-b3f: a re-review someone asked for posts a new review and cuts the old one to a pointer':
             runs['asked'] == ['post', 'edit 4'],
         'gcs-b3f: so does a re-review by hand on a PR that requests the reviewer': runs['by hand'] == ['post', 'edit 4'],
+    }
+
+
+def key_rebinds(paths):
+    """gcs-y48 C': the functions that take a `key` parameter and bind the name `key` again in their own body
+    (an assignment, a loop, a `with` or a walrus; nested functions and comprehensions are their own scopes)."""
+    import ast
+    own = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp,
+           ast.GeneratorExp)
+
+    def binds(node):
+        for c in ast.iter_child_nodes(node):
+            if isinstance(c, own):
+                continue
+            if isinstance(c, ast.Name) and c.id == 'key' and isinstance(c.ctx, (ast.Store, ast.Del)):
+                yield c.lineno
+            yield from binds(c)
+
+    out = []
+    for p in paths:
+        for f in ast.walk(ast.parse(open(p).read(), p)):
+            if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                    'key' in [a.arg for a in f.args.posonlyargs + f.args.args + f.args.kwonlyargs]:
+                out += [f'{os.path.basename(p)}:{n} {f.name}' for n in binds(f)]
+    return out
+
+
+def selftest_state_key(cfg, tmp):
+    """gcs-y48 C' (the red team, gc-wisp-beo8el: C's R39 block rebound model_review's `key` to the review's text
+    hash), model_review() end to end with GitHub, the model, the mirror and Slack stubbed and the real deliver()
+    and finish(): after a delivered review the PR's state is under its repo#N key (done, the head reviewed), the
+    client's entry is asked for under it, and no other key is written; no function of the pack rebinds `key`."""
+    import contextlib
+    import glob
+    import io
+    url, head = 'https://github.com/o/r/pull/9', '9' * 40
+    pr = {'number': 9, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE',
+          'baseRefName': 'main', 'headRefName': 'topic', 'title': 'T', 'body': 'B', 'author': {'login': 'Author'},
+          'commits': {'nodes': []}}
+    rv = {'outcome': 'questions', 'approve': False, 'request_changes': False, 'decisions': [], 'items': [], 'cleared': [],
+          'blockers': [], 'gaps': [], 'summary': '', 'skip': [], 'not_checked': [], 'rules': {}, 'rules_sha': ''}
+    model = {'decisions': [], 'items': [], 'cleared': [], 'not_checked_lines': [], 'checks': {}, 'summary': 'S'}
+    seen = []
+    scfg = dict(cfg, state=tmp, city=tmp, work=tmp, beads=False, mode='live', slack_channel='', slack_env=[],
+                client_slack='on', reviewer='rev', request_changes=False, judge=False, rules='', context=False,
+                incremental=False, suggestions=False)
+    g = globals()
+    names = ('prepare', 'run_model', 'build_prompt', 'conflict_files', 'git', 'cleanup', 'flags_for', 'assemble',
+             'tree_lines', 'leaks', 'post_review', 'update_review', 'dismiss_stale', 'repoint', 'ours_on_head')
+    saved = {k: g[k] for k in names}
+    mods = [(pr_rules, 'load_rules'), (pr_rules, 'areas'), (pr_rules, 'get_pr'), (pr_rules, 'unmarked'),
+            (pr_rules, 'pr_files'), (pr_rules, 'base_for'), (pr_rules, 'branch_oid'), (pr_rules, 'evaluate'),
+            (pr_rules, 'ci_state'), (pr_digest, 'get'), (pr_digest, 'prompt_block'), (pr_format, 'render'),
+            (pr_format, 'inline_comments'), (pr_format, 'gate'), (pr_format, 'gate_delivery'), (pr_state, 'slack_token'),
+            (pr_state, 'slack_call'), (pr_state, 'keep_posted'), (pr_client_slack, 'posted_on'),
+            (pr_client_slack, 'sent_reviews'), (pr_client_slack, 'deliver_entry'), (pr_client_slack, 'record_post')]
+    kept = [getattr(m, n) for m, n in mods]
+    entry = {'repo': 'o/r', 'number': 9, 'url': url, 'rig': 'r', 'status': 'reviewing', 'tier': 0, 'rules': ['requested']}
+    with pr_state.locked(tmp) as st:
+        st['prs'] = {'o/r#9': dict(entry)}
+    try:
+        g.update(prepare=lambda c, repo, p, run_id: (None, tmp, tmp, '', '', [], False), run_model=lambda *a, **k: (
+            dict(model), {'cost_usd': 0}), build_prompt=lambda *a, **k: 'p', conflict_files=lambda *a: [],
+            git=lambda *a, **k: 'f' * 40, cleanup=lambda *a: None, flags_for=lambda *a: ([], 0, []),
+            assemble=lambda *a, **k: dict(rv), tree_lines=lambda *a: {}, leaks=lambda texts: False,
+            post_review=lambda *a, **k: ('ok', f'{url}#pullrequestreview-7', 'COMMENTED', 7),
+            update_review=lambda *a: ('ok', f'{url}#pullrequestreview-7', 'COMMENTED', 7),
+            dismiss_stale=lambda *a, **k: (0, 0), repoint=lambda *a, **k: (0, 0), ours_on_head=lambda *a: 1)
+        pr_rules.load_rules, pr_rules.areas = (lambda p: {}), (lambda r: {})
+        pr_rules.get_pr, pr_rules.unmarked = (lambda repo, n: dict(pr)), (lambda p: dict(p))
+        pr_rules.pr_files, pr_rules.base_for, pr_rules.branch_oid = (lambda *a: []), (lambda *a: 'f' * 40), (lambda *a: 'f' * 40)
+        pr_rules.evaluate, pr_rules.ci_state = (lambda *a: {'requested': ['rev']}), (lambda p: 'green')
+        pr_digest.get, pr_digest.prompt_block = (lambda *a: ('', {})), (lambda d: '')
+        pr_format.render, pr_format.inline_comments = (lambda *a, **k: 'body'), (lambda *a, **k: [])
+        pr_format.gate, pr_format.gate_delivery = (lambda *a, **k: []), (lambda *a, **k: [])
+        pr_state.slack_token = pr_state.slack_call = lambda *a, **k: {}
+        pr_state.keep_posted = lambda *a, **k: None
+        pr_client_slack.posted_on, pr_client_slack.sent_reviews = (lambda *a, **k: False), (lambda *a: {})
+        pr_client_slack.deliver_entry = lambda c, k, e, *a, **kw: seen.append(k) or ('ok', {'ts': '1.0'})
+        pr_client_slack.record_post = lambda *a, **k: {}
+        with contextlib.redirect_stdout(io.StringIO()):
+            model_review(scfg, 'o/r#9', dict(entry), False)
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    with pr_state.locked(tmp) as st:
+        prs = dict(st['prs'])
+    e = prs.get('o/r#9') or {}
+    here = os.path.dirname(os.path.abspath(__file__))
+    rebinds = key_rebinds(sorted(glob.glob(os.path.join(here, 'pr_*.py'))))
+    return {
+        "gcs-y48 C': after a delivered review the state has the PR under repo#N only, done, the head reviewed":
+            sorted(prs) == ['o/r#9'] and e.get('status') == 'done' and e.get('review_heads') == [head] and
+            e.get('review_id') == 7 and e.get('event') == 'COMMENT',
+        "gcs-y48 C': the client's entry is asked for under repo#N": seen == ['o/r#9'],
+        "gcs-y48 C': no function of the pack binds its `key` parameter again" + (f' ({rebinds})' if rebinds else ''):
+            not rebinds,
     }
 
 
