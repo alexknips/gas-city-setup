@@ -626,7 +626,10 @@ dismissal message cannot be edited.
 Other outcomes on a bead: `no-rule` (not selected), `over-cap`, `closed` (merged or closed before its
 review was delivered, R15; the sweep closes the bead on `no-rule` and `closed`, and before v5.8 it never
 closed an existing one: `pr_sweep.py --close-terminal [--apply]` closes those, and a second bead of one PR,
-counts only), `held-gate` (the gate or the reader test failed twice; nothing delivered),
+counts only; since gcs-pw4 any PR's bead also ends with the PR: the sweep reads a done PR that left the open
+list again, one GraphQL query per 50 PRs and at most half its time budget, until GitHub says merged or closed,
+then records that `state` and closes the bead with the outcome kept as the reason; before, a PR with a review
+outcome kept `OPEN` and an open bead after its merge), `held-gate` (the gate or the reader test failed twice; nothing delivered),
 `held-secret` (the text held a credential shape). Neither is silent on a PR that requests the
 reviewer: it gets the short note (`not-reviewed`, logged `fallback: not-reviewed`, R33). A PR that
 touches a not-checked area whose review the reader test held twice gets the minimal review first,
