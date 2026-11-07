@@ -374,17 +374,25 @@ def word_of(rv):
     is their question to the author."""
     if rv.get('approve'):
         return VOICE_APPROVED if voiced(rv) else APPROVED
-    if rv['outcome'] == 'changes' and not rv.get('request_changes'):
+    if rv['outcome'] == 'changes' and not requests_changes(rv):
         return SUGGESTED
     return (VOICE_WORDS if voiced(rv) else WORDS)[rv['outcome']]
 
 
+def requests_changes(rv):
+    """R35: a review of changes requests them formally when the reviewer allows it, never from a fallback (gcs-ilx;
+    the reviewer 2026-11-07 14:00Z: real issues only): the note, the minimal not-checked review and the asked fallback are
+    low-confidence runs that did not re-check the code, so they comment, even on a merge conflict or red CI."""
+    return rv['outcome'] == 'changes' and bool(rv.get('request_changes')) and not rv.get('fallback')
+
+
 def event_of(rv):
     """The review's GitHub event: APPROVE under the bar (R27), REQUEST_CHANGES for changes when the reviewer
-    allows it (R35), else COMMENT (questions, escalations, low risk without approval, the R33 note)."""
+    allows it and the review is no fallback (R35, requests_changes), else COMMENT (questions, escalations, low
+    risk without approval, the R33 note and every other fallback)."""
     if rv.get('approve'):
         return 'APPROVE'
-    if rv['outcome'] == 'changes' and rv.get('request_changes'):
+    if requests_changes(rv):
         return 'REQUEST_CHANGES'
     return 'COMMENT'
 

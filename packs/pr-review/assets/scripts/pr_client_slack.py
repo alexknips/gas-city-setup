@@ -254,15 +254,28 @@ def open_part(review):
         ([f"{review['flagged']} flagged"] if review.get('flagged') else [])
 
 
-def entry_text(url, words, review, facts):
+def status_word(review):
+    """Line 1's status: our review's word for a full review, else Waiting for review (the full review is still
+    owed; a fallback never requests changes, gcs-ilx)."""
+    if review.get('kind') == 'full':
+        return client_word(review.get('outcome'), review.get('approved'), review.get('event'))
+    return WAITING
+
+
+FOLLOW_PUSH = 'follow-up after a push'
+FOLLOW = 'follow-up'
+
+
+def entry_text(url, words, review, facts, follow=''):
     """The PR's two lines. `review`: kind full / fallback / held / None (nothing of ours on the head), with
-    outcome, approved, event, confidence and the flag counts; `facts`: pr_facts. Confidence shows for what
-    we delivered or held on the head (a fallback or a held run is low) and is left out when nothing of ours
-    is on it; the open asks and the flag count show for a delivered review only."""
+    outcome, approved, event, confidence and the flag counts; `facts`: pr_facts; `follow`: what makes this a
+    later line on the PR (gcs-ilx: FOLLOW_PUSH or FOLLOW), after its words. Confidence shows for what we
+    delivered or held on the head (a fallback or a held run is low) and is left out when nothing of ours is on
+    it; the open asks and the flag count show for a delivered review only."""
     kind = review.get('kind')
-    status = client_word(review.get('outcome'), review.get('approved'), review.get('event')) if kind == 'full' else WAITING
+    status = status_word(review)
     conf = review.get('confidence') if kind == 'full' else ('low' if kind else '')
-    line1 = SEP.join(x for x in (url, words, conf and f'{conf} confidence', status) if x)
+    line1 = SEP.join(x for x in (url, words, follow, conf and f'{conf} confidence', status) if x)
     size = f"+{facts.get('added', 0)}/-{facts.get('removed', 0)}"
     files = f" in {facts.get('files', 0)} file{'' if facts.get('files') == 1 else 's'}"
     parts = [readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN'),
@@ -305,8 +318,7 @@ def pr_facts(cfg, repo, number, pr=None):
 
 def facts_log(facts, review, words, how):
     """The entry as the log and the dry run keep it: enums and counts only, never the words."""
-    return {'pr': facts.get('url'), 'status': client_word(review.get('outcome'), review.get('approved'), review.get('event'))
-            if review.get('kind') == 'full' else WAITING, 'confidence': review.get('confidence') if review.get('kind') == 'full'
+    return {'pr': facts.get('url'), 'status': status_word(review), 'confidence': review.get('confidence') if review.get('kind') == 'full'
             else ('low' if review.get('kind') else None),
             'readiness': readiness(facts.get('mergeable'), facts.get('ci'), ours_of(review), facts.get('state', 'OPEN'),
                                    facts.get('draft')),
@@ -580,12 +592,13 @@ def record_post(e, head, status, ts, ready=None):
     return dict(list(posts.items())[-20:])
 
 
-def send_entry(cfg, key, e, review, facts, words, how, kind='review', runner=run_claude):
+def send_entry(cfg, key, e, review, facts, words, how, kind='review', runner=run_claude, follow=''):
     """Post one entry and log it: enums, counts and the message's ts, never the words. Returns (status, meta)."""
-    status, meta = post(cfg, cfg['client_slack_channel'], entry_text(facts['url'], words, review, facts), runner)
+    status, meta = post(cfg, cfg['client_slack_channel'], entry_text(facts['url'], words, review, facts, follow), runner)
     rec = {'run': 'client-slack', 'kind': kind, 'status': status, 'channel': cfg['client_slack_channel'],
            **({'review': e['review_url']} if kind == 'review' and e.get('review_url') else {}),
            'head': (facts.get('head') or '')[:10], **facts_log(facts, review, words, how),
+           **({'follow': 'push' if follow == FOLLOW_PUSH else 'same-head'} if follow else {}),
            **{k: meta[k] for k in ('turns', 'calls', 'refused', 'denials', 'ts', 'permalink', 'shape') if meta.get(k)}}
     pr_state.log(cfg['state'], rec)
     return status, dict(meta, log=rec)
@@ -600,10 +613,24 @@ def deliver_entry(cfg, key, e, review, pr=None, summary='', turn=None, runner=ru
     if cfg['client_slack_repos'] and e['repo'] not in cfg['client_slack_repos']:
         return 'not-this-repo', {}
     facts = facts_of(cfg, e['repo'], e['number'], pr)
-    words, how, wmeta = words_for(summary, facts['title'], turn)
-    keep_words(cfg, key, facts['head'], words, how)
-    status, meta = send_entry(cfg, key, e, review, facts, words, how, 'review', runner)
+    follow, kept = follow_of(e, facts['head']), stored_words(cfg).get(key) or {}
+    if follow and kept.get('words'):  # gcs-ilx: a later line keeps the PR's first words, no new title
+        words, how, wmeta = kept['words'], 'kept', {}
+    else:
+        words, how, wmeta = words_for(summary, facts['title'], turn)
+        keep_words(cfg, key, facts['head'], words, how)
+    status, meta = send_entry(cfg, key, e, review, facts, words, how, 'review', runner, follow)
     return status, dict(meta, words_from=how, words_cost_usd=wmeta.get('cost_usd') or 0)
+
+
+def follow_of(e, head):
+    """gcs-ilx (the mayor, gc-wisp-zt7tn5): what makes this line a later one on the PR, from the entry's record of
+    client posts: FOLLOW_PUSH when an earlier head has a line and this head has none (a review after the author
+    pushed), FOLLOW when this head has a line already (its status moved, decision-57b6d9bb), '' for the first."""
+    posts = e.get('client_posts') or {}
+    if head in posts:
+        return FOLLOW
+    return FOLLOW_PUSH if posts else ''
 
 
 FULL = ('low-risk', 'questions', 'changes', 'escalate')  # outcomes of a full review (not a note or a hold)
@@ -944,6 +971,22 @@ def selftest():
         '"ts": "1793385205.766639"' in logged and '"confidence": "high"' in logged and '"words": 4' in logged
     checks['the words are kept host-local for the queue, mode 600'] = \
         stored_words(cfg)['o/r#1']['words'] == 'Retries failed upload jobs' and os.stat(words_path(cfg)).st_mode & 0o777 == 0o600
+    # gcs-ilx (the mayor, gc-wisp-zt7tn5, from a push follow-up's line): a later line keeps the PR's first words and
+    # says what it is.
+    fx2 = lambda cfg, repo, n, pr=None: dict(facts, url=f'https://github.com/{repo}/pull/{n}', head='b' * 40)  # noqa: E731
+    pushed = deliver_entry(cfg, 'o/r#1', dict(e, client_posts={head: {'status': 'ok'}}), full, None,
+                           'Adds a new cache to the profile page', turn, echo(res('{"ts": "1793385205.766640"}')), fx2)
+    line_push = [x for x in stub.seen['prompt'].splitlines() if x.startswith(pr_url)][:1]
+    logged = open(os.path.join(tmp, 'pr-review.jsonl')).read().splitlines()[-1]
+    again = deliver_entry(cfg, 'o/r#1', dict(e, client_posts={head: {'status': 'ok'}}), full, None, 'Other words here',
+                          turn, echo(res('{"ts": "1793385205.766641"}')), fx)
+    line_again = [x for x in stub.seen['prompt'].splitlines() if x.startswith(pr_url)][:1]
+    checks['gcs-ilx: a line after a push keeps the PR\'s first words and says it is a follow-up after a push'] = \
+        pushed[0] == 'ok' and line_push == [f'{pr_url} · Retries failed upload jobs · {FOLLOW_PUSH} · high confidence · '
+                                            'Approved'] and '"follow": "push"' in logged and '"words_from": "kept"' in logged \
+        and stored_words(cfg)['o/r#1']['head'] == head and follow_of(e, head) == ''
+    checks['gcs-ilx: a second line on the same head (its status moved) keeps the words and says follow-up'] = \
+        again[0] == 'ok' and line_again == [f'{pr_url} · Retries failed upload jobs · {FOLLOW} · high confidence · Approved']
     init = {'tools': ['mcp__x_Slack__send', 'mcp__x_Slack__read'], 'servers': [('x Slack', 'connected')]}
     probe = lambda cfg, e, p, restricted, a, d=(): (  # noqa: E731
         {'tools': [t for t in init['tools'] if t not in d]} if restricted else {'tools': []}, [], {}, {})

@@ -2269,8 +2269,10 @@ def selftest_asked(cfg, idx, flagged, pr, ruleset, real):
         {'name': 'unit', 'conclusion': 'FAILURE'}]}}}}]})
     rv, body, comments, meta = asked_fallback(dict(cfg, request_changes=True), 'o/r', red, 'red', idx, flagged, money,
                                               'Author', ruleset, answer=stub)
-    checks['the money review asks about its money places only, the CI blocker said once, no scope sentence'] = \
-        rv['outcome'] == 'changes' and pr_format.event_of(rv) == 'REQUEST_CHANGES' and \
+    # gcs-ilx: a fallback never requests changes, even with the reviewer's request_changes on and a red CI blocker
+    checks['the money review asks about its money places only, the CI blocker said once, no scope sentence, '
+           'and comments (gcs-ilx: no fallback requests changes)'] = \
+        rv['outcome'] == 'changes' and pr_format.event_of(rv) == 'COMMENT' and \
         pr_format.gate(rv, idx, body, None, '', [], comments) == [] and [i['path'] for i in rv['items']] == \
         ['src/a0.ts', 'src/a1.ts', 'src/a2.ts'] and 'CI red' not in body and 'outside this review' not in body and \
         '- Billing, plans, credits or pricing: [`a3.ts` L2]' in body and meta['kept'] == 3
