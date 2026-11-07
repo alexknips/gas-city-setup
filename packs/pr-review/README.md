@@ -47,6 +47,9 @@ Set in the city's `[[orders.overrides]]` env, on **both** orders (they share the
 | `PR_REVIEW` | `off` | Master switch. `on` runs the orders; `off` makes every fire exit at once. |
 | `PR_REVIEW_MODE` | `shadow` | `shadow`: the Slack words say what the review would do. `live` (only on the reviewer's word, with a bot identity) is not built yet. |
 | `PR_REVIEW_POST` | `all` | `approve`: the stopgap (gcs-b0b; the mayor, decision-27473469, until each item is verified): only an approval posts. Questions, change requests, every fallback and the follow-up's cap line are computed and logged with their outcome (`posted: withheld`, `intended_event`) but go to neither GitHub nor Slack; our change request from an earlier head is dismissed. Eval runs ignore it. A head reviewed while withheld is not reviewed again unless asked again or pushed. |
+| `PR_REVIEW_VERIFY` | `off` | `on`: each point a review would post is checked against the repository at the head before it posts ([Verify before posting](#verify-before-posting)); only REAL points post, a review with none posts only at the approval bar, a fallback with none posts nothing. |
+| `PR_REVIEW_VERIFY_MODEL` | `claude-opus-5-5` | The verifier's model (capture off, read-only tools in the worktree at the head). |
+| `PR_REVIEW_VERIFY_MAX_TURNS` | `40` | The verifier's turn bound (no dollar limit; the run logs `verify_cost_usd` and `verify_turns`). |
 | `PR_REVIEW_REQUEST_CHANGES` | `off` | `on`: a `changes` outcome is a SUBMITTED REQUEST_CHANGES review that says "Changes requested" (R35), and a newer review of ours dismisses our earlier ones so a later COMMENT does not leave them blocking; `off`: a COMMENT review that says "Changes suggested". A fallback (the note, the minimal not-checked review, the asked fallback) never requests changes, even with `on` and a merge conflict or red CI as its blocker: it comments and says "Changes suggested" (gcs-ilx). Only on the reviewer's word. |
 | `PR_REVIEW_APPROVE` | `off` | `on`: a low-risk PR that meets the bar (R27) gets a SUBMITTED APPROVE review; `off`: a COMMENT review that says "Low risk". Only on the reviewer's word: SOC 2 reads an approval as human review. |
 | `PR_REVIEW_JUDGE` | `on` | The reader test (R26): a second model scores each review before delivery and holds it below markers 4 or useful 3; the feedback order scores delivered reviews that have no scores yet. |
@@ -416,6 +419,39 @@ PR's text can sway the review; it cannot act.
 - It withholds the whole review text if it contains a credential from this host (`gh` token, Slack
   tokens, Claude and Loomtracer credentials) or a secret or SSN shape. The PR then escalates with a
   note to review it by hand.
+
+## Verify before posting
+
+`PR_REVIEW_VERIFY=on` (gcs-z3j; the mayor, decision-27473469, after a precision audit found 10 of 92 posted
+points real): after the gate and the reader test, and after the fallback is chosen, each point the review would post
+is checked against the repository by a separate model (`pr_verify.py`; `PR_REVIEW_VERIFY_MODEL`, Opus by default),
+in the same sandbox as the review: the worktree at the head under review, Read, Grep and Glob only, capture off, no
+settings or MCP servers, bounded by `PR_REVIEW_VERIFY_MAX_TURNS`. Its points are every item and every decision the
+model made (the script's own decisions, such as the not-checked area's, stay as they are); it reads them and the diff
+from the run's own directory (mode 600, removed with the run). It reads them twice, two independent runs
+(decision-b84b12fb: one reading flips verdicts), and a point posts only when both readings keep it (REAL in both:
+REAL at the lower severity; REAL or PLAUSIBLE-high in both: a question; `verify_disagree` counts the rest). Each
+reading rates each point on the precision audit's rubric:
+
+- **REAL** (the code at this commit has the problem, or breaks a rule the repository writes down): it posts, marked
+  `checked` with the verifier's severity.
+- **PLAUSIBLE** (a fair concern the code neither confirms nor rules out): it posts only at high severity, as a
+  question for the author.
+- **NOT_AN_ISSUE** or **GENERIC**: dropped, and logged by verdict and rule id (`verify_dropped`, `verify_dropped_rules`).
+
+What is left is assembled again and goes through the gate (a format reason is repaired). A review with no point
+left posts only when it meets the approval bar (R27) as it stands, and an approval goes through the readings too
+(1b; the mayor, gc-wisp-rdwakv): each reading also lists up to three REAL issues of high or medium severity that no
+point raises (`missed`, in the review's own item fields), and when both readings name one in the same file there is
+no approval: the first reading's issues post instead, marked REAL (`verify_missed`; a wording reason the gate finds
+in them gets the narrow rewrite turn). A review that misses the bar, and every fallback with no point left, posts
+nothing, and neither calls the verifier when it has no point at all: the run is finished with its outcome and `posted: withheld` (`withheld: verify-nothing-left`,
+`verify-gate` when what is left fails the gate, `verify-error` when the verifier does not answer), shows in our own
+queue as not reviewed, and our change request from an earlier head is dismissed. This replaces R33's never-silent
+note for that case. A formal REQUEST_CHANGES (R35) then rests only on a REAL change of medium or high severity
+(`pr_verify.rc_ok`), never on a fallback, a blocker or a PLAUSIBLE point. A follow-up's asks are checked the same
+way, and its thread replies go out only with its review. The verifier is not part of the benchmark's collected review
+(the bench scores the review as it stands); the eval runs (`--eval`) go through it.
 
 ## Follow-ups
 

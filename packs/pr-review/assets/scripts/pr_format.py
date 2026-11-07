@@ -24,6 +24,7 @@ import re
 import sys
 
 import pr_incremental
+import pr_verify
 
 AREAS = ['patient data', 'security', "can't be undone", 'migration order', 'behaviour patients notice',
          'product', 'compliance', 'other']
@@ -382,8 +383,9 @@ def word_of(rv):
 def requests_changes(rv):
     """R35: a review of changes requests them formally when the reviewer allows it, never from a fallback (gcs-ilx;
     the reviewer 2026-11-07 14:00Z: real issues only): the note, the minimal not-checked review and the asked fallback are
-    low-confidence runs that did not re-check the code, so they comment, even on a merge conflict or red CI."""
-    return rv['outcome'] == 'changes' and bool(rv.get('request_changes')) and not rv.get('fallback')
+    low-confidence runs that did not re-check the code, so they comment, even on a merge conflict or red CI. Once
+    verified (gcs-z3j), only a REAL change of medium or high severity at the head rests one (pr_verify.rc_ok)."""
+    return rv['outcome'] == 'changes' and bool(rv.get('request_changes')) and not rv.get('fallback') and pr_verify.rc_ok(rv)
 
 
 def event_of(rv):

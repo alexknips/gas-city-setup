@@ -55,6 +55,7 @@ import pr_judge  # noqa: E402
 import pr_money  # noqa: E402
 import pr_rules  # noqa: E402
 import pr_state  # noqa: E402
+import pr_verify  # noqa: E402
 
 HERE = pr_state.HERE
 UPSTREAM = os.path.join(HERE, '..', 'upstream', 'security-review.md')
@@ -600,6 +601,107 @@ DISMISSAL_VOICE = 'Replaced by a newer review.'
 STALE = {'disclose': 'This automated review was of an earlier commit.', 'reviewer': 'This review was of an earlier commit.'}  # decision-ed7320b7
 
 
+def bar_holds(cfg, pr, rv, flagged, idx):
+    """R27 as it stands, for a review the verifier left without a point: an approval or nothing."""
+    return rv['outcome'] == 'low-risk' and bool(cfg.get('approve')) and not pr_format.open_gaps(rv) and \
+        not pr_format.gate_approve(rv, pr, pr['headRefOid'], flagged, idx)
+
+
+def verify_readings(cfg, tree, diff, pts, extra):
+    """Two independent readings of the verifier (decision-b84b12fb: one reading flips verdicts), each in run_model's
+    sandbox: the worktree at the head, Read/Grep/Glob, capture off; the diff in the run's own directory (mode 600),
+    the points in the prompt itself. Returns (a, b), or None when either does not answer."""
+    side = os.path.join(os.path.dirname(tree), 'verify')
+    os.makedirs(side, mode=0o700, exist_ok=True)
+    with os.fdopen(os.open(os.path.join(side, 'diff.patch'), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as f:
+        f.write(diff or '')
+    vcfg, sch = dict(cfg, model=cfg['verify_model'], effort=None), pr_verify.schema(SCHEMA['properties']['items']['items'])
+    prompt = pr_verify.PROMPT.format(side=side, points=pr_verify.points_md(pts) or '(none)\n')
+    got, cost, turns, secs = [], 0, [], 0
+    for _ in range(2):
+        answer, meta = run_model(vcfg, tree, side, prompt, sch, cfg['verify_max_turns'])
+        cost, secs = cost + (meta.get('cost_usd') or 0), secs + (meta.get('secs') or 0)
+        turns.append(meta.get('turns'))
+        if answer is None:
+            extra.update(verify_cost_usd=cost, verify_turns=turns, verify_secs=secs,
+                         verify_error=meta.get('error') or 'no-answer', withheld='verify-error')
+            return None
+        got.append(answer)
+    extra.update(verify_cost_usd=cost, verify_turns=turns, verify_secs=secs)
+    return tuple(got)
+
+
+def verify_review(cfg, pr, rv, flagged, idx, tree, diff, extra, regated):
+    """gcs-z3j (the mayor, decision-27473469 and gc-wisp-rdwakv): what of the review posts once each of its points is
+    checked against the repository at the head, by two readings of a separate model that must agree (pr_verify).
+    Returns (rv, body, comments) to deliver, or None: nothing posts (withheld).
+
+    A point posts only when both readings keep it. With none left, a review posts only at the approval bar (R27), and
+    then only when the two readings do not both find a high or medium issue it missed in the same file: if they do,
+    that issue posts instead of the approval (1b). A fallback with no point left posts nothing (this replaces R33's
+    never-silent for that case: the reviewer's instruction comes first). A verifier that does not answer posts
+    nothing either."""
+    pts = pr_verify.points(rv)
+    extra['verify_points'] = len(pts)
+    rv = dict(rv, verified=True)
+    if not pts:
+        rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
+        if rv.get('fallback') or not bar_holds(cfg, pr, rv, flagged, idx):  # nothing to check, nothing to post
+            extra['withheld'] = 'verify-nothing-left'
+            return None
+    readings = verify_readings(cfg, tree, diff, pts, extra)
+    if readings is None:
+        return None
+    a, b = readings
+    if pts:
+        verdicts, disagree = pr_verify.combine(a, b, pts)
+        rv, log = pr_verify.apply(rv, pts, verdicts)
+        extra.update(verify_kept=log['kept'], verify_asked=log['asked'], verify_dropped=log['dropped'],
+                     verify_dropped_rules=log['dropped_rules'], verify_unanswered=log['unanswered'],
+                     verify_disagree=disagree)
+    rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
+    missed = []
+    if pr_verify.survivors(rv):
+        rv['approve'] = False
+    elif rv.get('fallback'):
+        extra['withheld'] = 'verify-nothing-left'
+        return None
+    else:
+        rv['approve'] = bar_holds(cfg, pr, rv, flagged, idx)
+        if not rv['approve']:
+            extra['withheld'] = 'verify-nothing-left'
+            return None
+        missed = pr_verify.confirmed_missed(a, b)
+        extra['verify_missed'] = len(missed)
+        if missed:  # 1b: no approval; the issue both readings found posts instead
+            rv = dict(rv, items=missed[:pr_format.MAX_ITEMS], approve=False)
+            rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
+    body, comments, reasons = regated(rv)
+    if missed and any(pr_format.WORDING_RE.match(r) for r in reasons):  # the verifier's own words: the narrow turn
+        rv, wm = rewrite(cfg, rv, reasons, idx)
+        extra['verify_rewrite_cost_usd'] = wm.get('cost_usd') or 0
+        body, comments, reasons = regated(rv)
+    if pr_format.format_only(reasons):
+        rv, _ = pr_format.repair(rv, reasons, flagged, idx)
+        body, comments, reasons = regated(rv)
+    if reasons:  # what is left no longer passes the gate (a flag an item covered): nothing posts
+        extra.update(withheld='verify-missed-gate' if missed else 'verify-gate',
+                     verify_gate=sorted({r.split(':')[0] for r in reasons}))
+        return None
+    return rv, body, comments
+
+
+def finish_withheld(cfg, key, entry, repo, head, outcome, extra):
+    """gcs-z3j: a review that posts nothing (verification left nothing): finished with its outcome, posted=withheld;
+    our change request from an earlier head is dismissed, as in the stopgap (never in an eval or a dry run)."""
+    if entry.get('rc_live') and entry.get('event') == 'REQUEST_CHANGES' and head not in (entry.get('review_heads') or []) \
+            and not cfg.get('no_deliver') and not cfg.get('eval') and not cfg.get('dry_run'):
+        extra['rc_lifted'], extra['rc_lift_failed'] = dismiss_stale(repo, entry['number'], 0, cfg['reviewer'],
+                                                                    cfg.get('voice'), STALE)
+        extra['rc_live'] = bool(extra['rc_lift_failed'])
+    finish(cfg, key, dict(entry, head=head), outcome, {**extra, 'posted': 'withheld'})
+
+
 def withheld(cfg, event):
     """gcs-b0b, the stopgap (PR_REVIEW_POST=approve): whether a review with this GitHub event stays unposted. Only an
     approval posts; questions, change requests, every fallback and the follow-up's lines do not. An eval run (the red
@@ -920,7 +1022,7 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
                           'prompt_chars': len(prompt)}))
         return
     run_id = f"{repo.replace('/', '__')}-{n}-{head[:10]}-followup"
-    mirror = None
+    mirror, tree = None, None
     try:
         if answer:
             so, meta = answer(prompt)
@@ -936,7 +1038,8 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
             return
         ci = pr_rules.ci_state(pr)
         rv, replies = rebuild(cfg, repo, pr, ci, res, so.get('calls') or [], asks, author)
-        idx = pr_format.diff_index(pr_diff(repo, n))
+        fdiff = pr_diff(repo, n)
+        idx = pr_format.diff_index(fdiff)
         flagged = [] if res.get('fallback') else res.get('flagged') or []
         if rv['outcome'] == 'low-risk' and cfg['approve'] and not rv['fallback']:
             rv['approve'] = not pr_format.gate_approve(rv, pr, head, flagged, idx)
@@ -949,6 +1052,19 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
         if reasons:
             finish(cfg, key, entry, 'held-gate', extra)
             return
+        if cfg.get('verify'):  # gcs-z3j: the follow-up's asks are checked too; its replies go only with a review
+            if tree is None:  # a stand-in answer (no worktree to check against): nothing posts
+                finish_withheld(cfg, key, entry, repo, head, rv['outcome'], {**extra, 'withheld': 'verify-no-tree'})
+                return
+
+            def fu_gated(x):
+                b = pr_format.render(repo, pr, x, NAME, author)
+                return b, [], pr_format.gate(x, idx, b, None, pr.get('body') or '', flagged, None)
+            got = verify_review(cfg, pr, rv, flagged, idx, tree, fdiff, extra, fu_gated)
+            if got is None:
+                finish_withheld(cfg, key, entry, repo, head, rv['outcome'], extra)
+                return
+            rv, body, _ = got
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
         result.update(rule_ids=res.get('rule_ids') or [], flagged=res.get('flagged') or [], rules=rv['rules'],
                       rules_sha=rv['rules_sha'], **({'fallback': True, 'others': rv['others']} if rv['fallback'] else {}))
@@ -2005,6 +2121,18 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 extra['rc_live'] = bool(extra['rc_lift_failed'])
             finish(cfg, key, dict(entry, head=pr['headRefOid']), held, extra)
             return
+        if cfg.get('verify'):  # gcs-z3j: each point checked against the repository before anything posts
+            fb_flags = [] if rv.get('fallback') else flagged
+
+            def verify_gated(x):
+                b = pr_format.render(repo, pr, x, NAME, author)
+                c = pr_format.inline_comments(x['items'], author, cfg.get('voice'), pr_format.first_item(x))
+                return b, c, pr_format.gate(x, idx, b, tree_lines(tree, linked_paths(x)), pr.get('body') or '', fb_flags, c)
+            got = verify_review(cfg, pr, rv, fb_flags, idx, tree, diff, extra, verify_gated)
+            if got is None:
+                finish_withheld(cfg, key, entry, repo, pr['headRefOid'], rv['outcome'], extra)
+                return
+            rv, body, comments = got
         result = {k: rv[k] for k in ('outcome', 'decisions', 'items', 'cleared', 'blockers', 'summary', 'skip', 'not_checked')}
         result.update(rule_ids=rule_ids(hits), flagged=flagged if rv['outcome'] != 'not-reviewed' else [],
                       rules=rv.get('rules') or {}, rules_sha=rv.get('rules_sha') or '')
@@ -2164,6 +2292,7 @@ def selftest():
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_withheld(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_verify(cfg, tempfile.mkdtemp()))
     checks.update(selftest_state_key(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
@@ -3011,6 +3140,180 @@ def selftest_state_key(cfg, tmp):
         "gcs-y48 C': no function of the pack binds its `key` parameter again" + (f' ({rebinds})' if rebinds else ''):
             not rebinds,
     }
+
+
+def selftest_verify(cfg, tmp):
+    """gcs-z3j, zero tokens: model_review() end to end with the review model and the verifier stubbed (as in
+    selftest_state_key): a point the verifier finds REAL posts, marked; one it finds NOT_AN_ISSUE leaves nothing, so
+    nothing posts and the run is withheld; a verifier that does not answer posts nothing. verify_review() alone: with
+    no point left a review posts only at the approval bar, a fallback never; what is left must pass the gate (a
+    format reason is repaired); a PLAUSIBLE high change goes out as a question and requests no changes."""
+    import contextlib
+    import io
+    url, head = 'https://github.com/o/r/pull/9', '9' * 40
+    pr = {'number': 9, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'isDraft': False, 'mergeable': 'MERGEABLE',
+          'baseRefName': 'main', 'headRefName': 'topic', 'title': 'T', 'body': 'B', 'author': {'login': 'Author'},
+          'commits': {'nodes': []}}
+    item = {'path': 'a.ts', 'line_start': 3, 'line_end': 3, 'kind': 'change', 'severity': 'high', 'area': 'security',
+            'change': 'Sends the name', 'why': 'w', 'ask': 'Drop it', 'rule': 'r1', 'confidence': 9}
+    rv = {'outcome': 'changes', 'approve': False, 'request_changes': True, 'decisions': [], 'items': [item], 'cleared': [],
+          'blockers': [], 'gaps': [], 'summary': '', 'skip': [], 'not_checked': [], 'rules': {}, 'rules_sha': ''}
+    model = {'decisions': [], 'items': [], 'cleared': [], 'not_checked_lines': [], 'checks': {}, 'summary': 'S'}
+    g = globals()
+    names = ('prepare', 'run_model', 'build_prompt', 'conflict_files', 'git', 'cleanup', 'flags_for', 'assemble',
+             'tree_lines', 'leaks', 'post_review', 'update_review', 'dismiss_stale', 'repoint', 'ours_on_head', 'rewrite')
+    saved = {k: g[k] for k in names}
+    mods = [(pr_rules, 'load_rules'), (pr_rules, 'areas'), (pr_rules, 'get_pr'), (pr_rules, 'unmarked'),
+            (pr_rules, 'pr_files'), (pr_rules, 'base_for'), (pr_rules, 'branch_oid'), (pr_rules, 'evaluate'),
+            (pr_rules, 'ci_state'), (pr_digest, 'get'), (pr_digest, 'prompt_block'), (pr_format, 'render'),
+            (pr_format, 'inline_comments'), (pr_format, 'gate'), (pr_format, 'gate_delivery'), (pr_format, 'gate_approve'),
+            (pr_format, 'open_gaps'), (pr_state, 'slack_token'), (pr_state, 'slack_call'), (pr_state, 'keep_posted'),
+            (pr_client_slack, 'posted_on'), (pr_client_slack, 'sent_reviews'), (pr_client_slack, 'deliver_entry'),
+            (pr_client_slack, 'record_post')]
+    kept = [getattr(m, n) for m, n in mods]
+    posts, answers = [], {}
+
+    def stub_model(c, tree, ctx, prompt, answer_schema=None, max_turns=None):
+        if answer_schema is not None and 'missed' in (answer_schema.get('properties') or {}):
+            answers['side'] = ctx
+            answers.setdefault('prompts', []).append(prompt)
+            q = answers.get('queue')
+            return (q.pop(0) if q else answers.get('next')), {'cost_usd': 0.3, 'turns': 7}
+        return dict(model), {'cost_usd': 0}
+    runs = {}
+    try:
+        g.update(prepare=lambda c, repo, p, run_id: (None, os.path.join(tmp, 'tree'), tmp, 'diff', '', [], False),
+                 run_model=stub_model, build_prompt=lambda *a, **k: 'p', conflict_files=lambda *a: [],
+                 git=lambda *a, **k: 'f' * 40, cleanup=lambda *a: None, flags_for=lambda *a: ([], 0, []),
+                 assemble=lambda *a, **k: dict(rv), tree_lines=lambda *a: {}, leaks=lambda texts: False,
+                 post_review=lambda *a, **k: posts.append(a[-1] if len(a) > 4 else k.get('event')) or
+                 ('ok', f'{url}#pullrequestreview-7', 'COMMENTED', 7),
+                 update_review=lambda *a: ('ok', f'{url}#pullrequestreview-7', 'COMMENTED', 7),
+                 dismiss_stale=lambda *a, **k: (0, 0), repoint=lambda *a, **k: (0, 0), ours_on_head=lambda *a: 1)
+        pr_rules.load_rules, pr_rules.areas = (lambda p: {}), (lambda r: {})
+        pr_rules.get_pr, pr_rules.unmarked = (lambda repo, n: dict(pr)), (lambda p: dict(p))
+        pr_rules.pr_files, pr_rules.base_for, pr_rules.branch_oid = (lambda *a: []), (lambda *a: 'f' * 40), (lambda *a: 'f' * 40)
+        pr_rules.evaluate, pr_rules.ci_state = (lambda *a: {'requested': ['rev']}), (lambda p: 'green')
+        pr_digest.get, pr_digest.prompt_block = (lambda *a: ('', {})), (lambda d: '')
+        pr_format.render, pr_format.inline_comments = (lambda *a, **k: 'body'), (lambda *a, **k: [])
+        pr_format.gate, pr_format.gate_delivery = (lambda *a, **k: []), (lambda *a, **k: [])
+        pr_format.gate_approve, pr_format.open_gaps = (lambda *a, **k: []), (lambda rv: [])
+        pr_state.slack_token = pr_state.slack_call = lambda *a, **k: {}
+        pr_state.keep_posted = lambda *a, **k: None
+        pr_client_slack.posted_on, pr_client_slack.sent_reviews = (lambda *a, **k: False), (lambda *a: {})
+        pr_client_slack.deliver_entry = lambda *a, **kw: ('ok', {'ts': '1.0'})
+        pr_client_slack.record_post = lambda *a, **k: {}
+        real_v = {'points': [{'n': 1, 'verdict': 'REAL', 'severity': 'high'}], 'missed': []}
+        nai_v = {'points': [{'n': 1, 'verdict': 'NOT_AN_ISSUE', 'severity': 'none'}], 'missed': []}
+        for name, ans, queue in (('real', real_v, None), ('not an issue', nai_v, None), ('no answer', None, None),
+                                 ('disagree', None, [real_v, nai_v])):
+            answers['queue'] = list(queue) if queue else None
+            d = os.path.join(tmp, name.replace(' ', '-'))
+            os.makedirs(d)
+            scfg = dict(cfg, state=d, city=d, work=d, beads=False, mode='live', slack_channel='', slack_env=[],
+                        client_slack='on', reviewer='rev', request_changes=True, judge=False, rules='', context=False,
+                        incremental=False, suggestions=False, verify=True, verify_model='opus', verify_max_turns=40)
+            entry = {'repo': 'o/r', 'number': 9, 'url': url, 'rig': 'r', 'status': 'reviewing', 'tier': 0, 'rules': ['requested']}
+            with pr_state.locked(d) as st:
+                st['prs'] = {'o/r#9': dict(entry)}
+            posts.clear()
+            answers['next'] = ans
+            with contextlib.redirect_stdout(io.StringIO()):
+                model_review(scfg, 'o/r#9', dict(entry), False)
+            with pr_state.locked(d) as st:
+                runs[name] = (list(posts), dict(st['prs'].get('o/r#9') or {}))
+        side = answers.get('side') or ''
+        side_files = sorted(os.listdir(side)) if os.path.isdir(side) else []
+        side_mode = oct(os.stat(os.path.join(side, 'diff.patch')).st_mode & 0o777) if 'diff.patch' in side_files else ''
+        # verify_review() alone, the review model and the gate stubbed
+        regated = lambda x: ('b', [], [])  # noqa: E731
+        vcfg = dict(cfg, verify=True, verify_model='opus', verify_max_turns=40, approve=True)
+        tree = os.path.join(tmp, 'tree2')
+        answers['next'] = {'points': [{'n': 1, 'verdict': 'NOT_AN_ISSUE', 'severity': 'none'}]}
+        approval = verify_review(vcfg, pr, dict(rv, outcome='questions', items=[dict(item, kind='question')]), [], None,
+                                 tree, 'd', ex1 := {}, regated)
+        # 1b: the approval goes through the readings too; an issue both find in the same file posts instead
+        miss = lambda path: {'path': path, 'line_start': 2, 'line_end': 3, 'kind': 'change', 'severity': 'high',  # noqa: E731
+                             'area': 'security', 'change': 'Logs the token', 'why': 'w', 'ask': 'Drop it'}
+        q_rv = dict(rv, outcome='questions', items=[dict(item, kind='question')])
+        answers['next'] = {'points': nai_v['points'], 'missed': [miss('a.ts')]}
+        caught = verify_review(vcfg, pr, dict(q_rv), [], None, tree, 'd', ex5 := {}, regated)
+        answers['queue'] = [{'points': nai_v['points'], 'missed': [miss('a.ts')]},
+                            {'points': nai_v['points'], 'missed': [miss('b.ts')]}]
+        unconfirmed = verify_review(vcfg, pr, dict(q_rv), [], None, tree, 'd', ex6 := {}, regated)
+        answers['next'], calls = {'points': nai_v['points'], 'missed': [miss('a.ts')]}, []
+        g['rewrite'] = lambda c, x, reasons, i: calls.append(len(reasons)) or (x, {'cost_usd': 0.01})
+        worded = verify_review(vcfg, pr, dict(q_rv), [], None, tree, 'd', ex7 := {},
+                               lambda x: ('b', [], [] if calls else ['R29: item 1 does not lead with what the PR changed']))
+        answers['next'] = nai_v
+        # a fallback with no point is withheld even where the approval bar would hold (it never approves)
+        fb = verify_review(vcfg, pr, dict(rv, items=[], fallback=True), [], None, tree, 'd', ex3 := {}, regated)
+        answers['next'] = nai_v  # a fallback whose points are all dropped: withheld too, never an approval
+        fb2 = verify_review(vcfg, pr, dict(q_rv, fallback=True), [], None, tree, 'd', ex8 := {}, regated)
+        pr_format.gate_approve = lambda *a, **k: ['R27: CI is not green']
+        no_bar = verify_review(vcfg, pr, dict(rv), [], None, tree, 'd', ex2 := {}, regated)
+        answers['next'] = {'points': [{'n': 1, 'verdict': 'REAL', 'severity': 'medium'}]}
+        r19 = verify_review(vcfg, pr, dict(rv), [], None, tree, 'd', ex4 := {},
+                            lambda x: ('b', [], ['R19: flag F1 (x) is neither cleared nor an item or a decision']))
+        seen = []
+
+        def no_mark(x):
+            seen.append(x['items'][0]['ask'])
+            return 'b', [], [] if x['items'][0]['ask'].endswith('?') else \
+                ['R13: item 1 is a question but its ask does not end with a question mark']
+        answers['next'] = {'points': [{'n': 1, 'verdict': 'PLAUSIBLE', 'severity': 'high'}]}
+        plaus = verify_review(vcfg, pr, dict(rv), [], None, tree, 'd', {}, regated)
+        answers['next'] = {'points': [{'n': 1, 'verdict': 'REAL', 'severity': 'low'}]}
+        low = verify_review(vcfg, pr, dict(rv), [], None, tree, 'd', {}, regated)
+        answers['next'] = {'points': [{'n': 1, 'verdict': 'REAL', 'severity': 'high'}]}  # kept as written, no "?"
+        marked = verify_review(vcfg, pr, dict(rv, items=[dict(item, kind='question', ask='Who reads it')], outcome='questions'),
+                               [], None, tree, 'd', {}, no_mark)
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    real_posts, real_e = runs['real']
+    nai_posts, nai_e = runs['not an issue']
+    na_posts, na_e = runs['no answer']
+    dis_posts, dis_e = runs['disagree']
+    return {
+        'gcs-z3j: two readings must agree: REAL in one and NOT_AN_ISSUE in the other posts nothing':
+            dis_posts == [] and dis_e.get('verify_disagree') == 1 and dis_e.get('verify_dropped') == {'NOT_AN_ISSUE': 1}
+            and dis_e.get('posted') == 'withheld',
+        '1b: an issue both readings find in the same file posts instead of the approval, marked REAL':
+            bool(caught) and caught[0]['approve'] is False and caught[0]['outcome'] == 'changes' and
+            [(i['path'], i['checked']) for i in caught[0]['items']] == [('a.ts', 'REAL')] and ex5.get('verify_missed') == 1,
+        '1b: issues the readings find in different files do not stop the approval':
+            bool(unconfirmed) and unconfirmed[0]['approve'] is True and unconfirmed[0]['items'] == [] and
+            ex6.get('verify_missed') == 0,
+        '1b: a missed issue\'s wording the gate fails gets the narrow rewrite turn, then posts':
+            bool(worded) and calls == [1] and ex7.get('verify_rewrite_cost_usd') == 0.01,
+        'gcs-z3j: a point the verifier finds REAL posts, marked, and its change request stands (REAL, high)':
+            real_posts == ['REQUEST_CHANGES'] and real_e.get('review_id') == 7 and real_e.get('verify_kept') == 1 and
+            real_e.get('verify_points') == 1 and real_e.get('event') == 'REQUEST_CHANGES',
+        'gcs-z3j: a point found NOT_AN_ISSUE leaves nothing: nothing posts, the run is withheld with its counts':
+            nai_posts == [] and nai_e.get('posted') == 'withheld' and nai_e.get('withheld') == 'verify-nothing-left' and
+            nai_e.get('verify_dropped') == {'NOT_AN_ISSUE': 1} and nai_e.get('verify_dropped_rules') == ['r1'] and
+            not nai_e.get('review_id'),
+        'gcs-z3j: a verifier that does not answer posts nothing': na_posts == [] and na_e.get('withheld') == 'verify-error',
+        'gcs-z3j: the verifier reads the diff from the run\'s own directory (mode 600) and gets the points in its prompt':
+            side_files == ['diff.patch'] and side_mode == '0o600' and any('----- BEGIN POINTS -----\n1. [change] a.ts L3-L3: Sends the name' in p for p in answers.get('prompts', [])),
+        'gcs-z3j: with no point left a review posts only at the approval bar; a fallback never':
+            bool(approval) and approval[0]['approve'] is True and approval[0]['items'] == [] and no_bar is None and
+            ex2.get('withheld') == 'verify-nothing-left' and fb is None and ex3.get('withheld') == 'verify-nothing-left' and
+            fb2 is None and ex8.get('withheld') == 'verify-nothing-left' and ex8.get('verify_points') == 1,
+        'gcs-z3j: what is left must pass the gate (a flag only a dropped item covered): nothing posts':
+            r19 is None and ex4.get('withheld') == 'verify-gate' and ex4.get('verify_gate') == ['R19'],
+        'gcs-z3j: a PLAUSIBLE high change goes out as a question and requests no changes':
+            bool(plaus) and plaus[0]['items'][0]['kind'] == 'question' and plaus[0]['outcome'] == 'questions' and
+            pr_format.event_of(plaus[0]) == 'COMMENT',
+        'gcs-z3j: a REAL change of low severity is posted as a change but requests no changes (R35)':
+            bool(low) and low[0]['outcome'] == 'changes' and pr_format.event_of(low[0]) == 'COMMENT' and
+            pr_format.word_of(low[0]) == pr_format.SUGGESTED,
+        'gcs-z3j: a format reason left after the verifier is the script\'s fix (R13)':
+            bool(marked) and seen == ['Who reads it', 'Who reads it?'],
+        'gcs-z3j: the run logs the verifier\'s cost and turns': real_e.get('verify_cost_usd') == 0.6 and
+            real_e.get('verify_turns') == [7, 7] and ex1.get('verify_points') == 1}
 
 
 def selftest_renamed():
