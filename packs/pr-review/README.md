@@ -743,9 +743,19 @@ opened, his thumbs on the Slack link. Not review volume.
    bar" is 0 unless the reader did not run). The PR's state entry is not a source: each run's fields merge
    into it, so after a fallback its `judge` is the held attempt's and after a run that skipped the reader
    an earlier run's (in week 44 that put 12 of 31 delivered reviews on the wrong scores, and all of the
-   card's "below the bar"). Blind spots, shown as "posted unscored": a fallback whose run already read a
-   repaired review (one extra reader call per run at most), a run that posted without the reader, and a
-   review no run row names. The audit does not read those whose entry still carries an older score.
+   card's "below the bar"). A review posted outside a review run (a by-hand pass) has no run row. It is
+   counted apart as "posted outside a review run" and scored only by an audit that read that review id,
+   because the audit fetches the body by its id (in week 45, 21 such approvals were read and 20 were below
+   the bar). Blind spots, shown as "posted unscored": a fallback whose run already read a repaired review
+   (one extra reader call per run at most), a run that posted without the reader, and a review no run row
+   names that the audit has not read. The audit does not read those whose entry still carries an older
+   score. Nor does it see an edit made by hand after it read a review.
+   A review counts as delivered when its entry has a delivery time. Its outcome is the one recorded by
+   the last run that posted it, because a later run on the closed PR, or the sweep, writes `closed` over
+   the entry's own outcome while the review stays on the PR (in week 45, 23 of 74 delivered reviews had
+   dropped off the card that way). Such an entry with no run row counts as delivered, outcome unknown.
+   The feedback capture itself still skips entries marked `closed` (their thumbs and decisions are not
+   read after the close).
    `pr_feedback.py --summary` prints the weeks' numbers and the card, writing nothing.
 4. **Regression set**. Every thumbs-down or reply drops a candidate case (the delivered text and the
    feedback) into `PR_REVIEW_WORK_DIR/regression/inbox`. The weekly quality review triages each one: a

@@ -108,16 +108,8 @@ def week_of(iso):
     return f'{y}-W{w:02d}'
 
 
-def posted_scores(st, state_dir):
-    """The reader test's scores of the body each delivered review posted: {state key: (kind, scores or None)}.
-
-    The entry's own `judge` cannot say it: each run's fields merge into the PR's entry, so after a fallback
-    it holds the held attempt's scores, and after a run that never reached the reader an earlier run's
-    (gcs-6aq: 12 of 31 delivered entries in week 44, all 9 of the card's "below the bar"). So each review is
-    matched by its review_id to the last run in the log that posted or updated it. Kind is 'fallback' when
-    that run fell back, else 'review' ('unmatched' when no run row names the review). The scores are the
-    audit's when it read that review after that run, else the run's own reader test of what it posted (a
-    fallback's log-only `fallback_judge`, a review's `judge`), else None: posted unscored."""
+def posting_rows(state_dir):
+    """{review_id: the last review-run row in the log that posted or updated that review}."""
     last = {}
     path = os.path.join(state_dir, 'pr-review.jsonl')
     for line in open(path) if os.path.exists(path) else []:
@@ -127,13 +119,47 @@ def posted_scores(st, state_dir):
             continue
         if r.get('run') == 'review' and r.get('review_id') and r.get('posted') in ('ok', 'updated'):
             last[r['review_id']] = r
+    return last
+
+
+def delivered_outcome(e, row):
+    """The outcome of the review an entry delivered ('unknown' when nothing says it any more), or None when
+    the entry delivered none. The entry's own outcome is its LAST run's: a later run on the closed PR, or the
+    sweep, writes 'closed' over it while the posted review stays on the PR (gcs-2zb: 23 of 74 delivered in
+    week 45 were gone from the card). So: the outcome of the last run that posted the entry's review, else
+    the entry's own when it is a delivered one, else 'unknown' for an entry that has a posted review id."""
+    if not e.get('delivered_at'):
+        return None
+    if row and row.get('outcome') in DELIVERED:
+        return row['outcome']
+    if e.get('outcome') in DELIVERED:
+        return e['outcome']
+    return 'unknown' if e.get('review_id') else None
+
+
+def posted_scores(st, state_dir, last=None):
+    """The reader test's scores of the body each delivered review posted: {state key: (kind, scores or None)}.
+
+    The entry's own `judge` cannot say it: each run's fields merge into the PR's entry, so after a fallback
+    it holds the held attempt's scores, and after a run that never reached the reader an earlier run's
+    (gcs-6aq: 12 of 31 delivered entries in week 44, all 9 of the card's "below the bar"). So each review is
+    matched by its review_id to the last run in the log that posted or updated it. Kind is 'fallback' when
+    that run fell back, else 'review' ('unmatched' when no run row names the review). The scores are the
+    audit's when it read that review after that run, else the run's own reader test of what it posted (a
+    fallback's log-only `fallback_judge`, a review's `judge`), else None: posted unscored.
+    A review posted outside a review run (a by-hand pass; gcs-2zb: 30 of 51 in week 45) has no run row: it
+    is 'outside', scored only by an audit that read that review id (the audit fetches the body by its id),
+    else unmatched and unscored."""
+    last = posting_rows(state_dir) if last is None else last
     out = {}
     for key, e in st['prs'].items():
-        if not (e.get('delivered_at') and e.get('outcome') in DELIVERED):
-            continue
         row = last.get(e.get('review_id'))
+        if delivered_outcome(e, row) is None:
+            continue
         if row is None:
-            out[key] = ('unmatched', None)
+            s = e.get('judge') if e.get('review_id') and e.get('judge_review') == e['review_id'] else None
+            ok = isinstance(s, dict) and all(isinstance(s.get(d), int) for d in pr_judge.BAR)
+            out[key] = ('outside', s) if ok else ('unmatched', None)
             continue
         kind = 'fallback' if row.get('fallback') else 'review'
         audited = e.get('judge') if (e.get('review_id') and e.get('judge_review') == e['review_id']
@@ -149,13 +175,15 @@ def summarize(st, state_dir, weeks=2):
     was posted (posted_scores), full reviews and fallbacks apart."""
     rows, mins = collections.defaultdict(collections.Counter), collections.defaultdict(list)
     judged = collections.defaultdict(lambda: collections.defaultdict(list))
-    scored = posted_scores(st, state_dir)
+    last = posting_rows(state_dir)
+    scored = posted_scores(st, state_dir, last)
     for key, e in st['prs'].items():
-        if e.get('delivered_at') and e.get('outcome') in DELIVERED:
+        outcome = delivered_outcome(e, last.get(e.get('review_id')))
+        if outcome is not None:
             w = week_of(e['delivered_at'])
             c = rows[w]
             c['delivered'] += 1
-            c['outcome_' + e['outcome']] += 1
+            c['outcome_' + outcome] += 1
             if e.get('fb_thumbs'):
                 c['thumbs_' + e['fb_thumbs']] += 1
             c['replies'] += 1 if e.get('fb_replies') else 0
@@ -168,6 +196,9 @@ def summarize(st, state_dir, weeks=2):
             kind, s = scored.get(key, ('unmatched', None))  # R26: the reader test of the posted body
             if s is None:
                 c['reader_unscored'] += 1
+            elif kind == 'outside':  # never through the gate or the reader before posting: kept apart
+                c['outside_judged'] += 1
+                c['outside_below_bar'] += 1 if pr_judge.below_bar(s) else 0
             elif kind == 'fallback':
                 c['fallback_judged'] += 1
                 c['fallback_below_bar'] += 1 if pr_judge.below_bar(s) else 0
@@ -239,7 +270,9 @@ def panel(cfg, summary, now):
                       f"{c.get('fallback_judged', 0)} read"
                       + (f", median useful {c['median_fallback_useful']:g}" if c.get('fallback_judged') else '')
                       + f", {c.get('fallback_below_bar', 0)} below the bar; "
-                        f"{c.get('reader_unscored', 0)} posted unscored"],
+                      + (f"posted outside a review run: {c['outside_judged']} read, "
+                         f"{c.get('outside_below_bar', 0)} below the bar; " if c.get('outside_judged') else '')
+                      + f"{c.get('reader_unscored', 0)} posted unscored"],
                      [f"{c.get('fallback', 0)} / {c.get('model_runs', 0)}",
                       f"review runs that ended in a fallback ({c.get('fallback_format', 0)} held by format reasons only, "
                       f"{c.get('fallback_content', 0)} by a content rule, {c.get('fallback_unsplit', 0)} before the split; "
@@ -373,6 +406,7 @@ def selftest():
         {'run': 'review', 'at': '2026-10-28T08:00:00Z', 'review_id': 6, 'posted': 'ok', 'judge': good},
         {'run': 'review', 'at': t, 'review_id': 6, 'posted': 'updated', 'fallback': 'not-reviewed'},
         {'run': 'review', 'at': t, 'outcome': 'held-gate', 'judge': low},  # posted nothing
+        {'run': 'review', 'at': t, 'review_id': 11, 'posted': 'ok', 'outcome': 'escalate', 'judge': good},
     ]
 
     def entry(rid, outcome='questions', **kw):
@@ -385,7 +419,12 @@ def selftest():
         'o/r#5': entry(5, judge=good, judge_review=5, judge_at='2026-10-28T11:00:00Z'),
         'o/r#6': entry(6, judge=low, judge_review=6, judge_at='2026-10-28T09:00:00Z'),
         'o/r#7': entry(7, judge=good),  # no run row names review 7
+        'o/r#9': entry(9, 'low-risk', judge=low, judge_review=9, judge_at=t),  # posted by hand, read by the audit
+        'o/r#10': entry(10, 'low-risk', judge=good, judge_review=99),  # by hand; the score is of another review
         'o/r#8': {'outcome': 'held-gate', 'judge': low},  # never delivered
+        'o/r#11': entry(11, 'closed'),  # review 11 posted 'escalate', then a later run found the PR closed
+        'o/r#12': entry(12, 'closed', approved=True),  # posted by hand, then closed by the sweep
+        'o/r#13': {'delivered_at': t, 'outcome': 'closed'},  # no review id: nothing says a review was posted
     }}
     d = tempfile.mkdtemp(prefix='pr-feedback-selftest-')
     with open(os.path.join(d, 'pr-review.jsonl'), 'w') as f:
@@ -401,12 +440,24 @@ def selftest():
         'the audit\'s scores of the posted review count': got['o/r#5'] == ('review', good),
         'an audit before an update in place does not count': got['o/r#6'] == ('fallback', None),
         'a review no run names is unscored': got['o/r#7'] == ('unmatched', None),
-        'only delivered reviews are scored': 'o/r#8' not in got,
-        'the week: 2 full reviews read, none below the bar': (c.get('judged'), c.get('judge_below_bar')) == (2, 0),
-        'the week: 1 fallback read, 4 posted unscored': (c.get('fallback_judged'), c.get('reader_unscored')) == (1, 4),
+        'a review posted outside a run keeps the audit\'s score of its own id': got['o/r#9'] == ('outside', low),
+        'another review\'s score never stands for one posted outside a run': got['o/r#10'] == ('unmatched', None),
+        'the week: 1 posted outside a run read, 1 below the bar': (c.get('outside_judged'),
+                                                                   c.get('outside_below_bar')) == (1, 1),
+        'only delivered reviews are scored': 'o/r#8' not in got and 'o/r#13' not in got,
+        'a later close keeps the posted review and its run\'s scores': got['o/r#11'] == ('review', good),
+        'a later close keeps a review posted by hand': got['o/r#12'] == ('unmatched', None),
+        'a later close keeps the outcome of the run that posted': (c.get('outcome_escalate'), c.get('outcome_closed'),
+                                                                   c.get('outcome_unknown')) == (1, None, 1),
+        'the week: 11 delivered, 1 approved': (c.get('delivered'), c.get('approved')) == (11, 1),
+        'the week: 3 full reviews read, none below the bar': (c.get('judged'), c.get('judge_below_bar')) == (3, 0),
+        'the week: 1 fallback read, 6 posted unscored': (c.get('fallback_judged'), c.get('reader_unscored')) == (1, 6),
         'the medians are of the full reviews': (c.get('median_useful'), c.get('median_markers')) == (3, 4),
-        'the card names the split and the unscored': card[0] == '3 / 4' and 'over 2 full reviews' in card[1]
-        and 'fallbacks: 1 read, median useful 3' in card[1] and '4 posted unscored' in card[1],
+        'the card names the split and the unscored': card[0] == '3 / 4' and 'over 3 full reviews' in card[1]
+        and 'fallbacks: 1 read, median useful 3' in card[1] and '6 posted unscored' in card[1]
+        and 'posted outside a review run: 1 read, 1 below the bar; 6 posted unscored' in card[1],
+        'a week with none posted outside a run reads as before': 'outside' not in panel(
+            {'mode': 'shadow'}, {week_of(t): dict(c, outside_judged=0)}, pr_state.parse(t))['rows'][6][1],
     }
     print(json.dumps({'selftest': 'pr_feedback', 'checks': checks}, indent=1))
     return 0 if all(checks.values()) else 1
