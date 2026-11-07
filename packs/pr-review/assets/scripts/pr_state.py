@@ -112,6 +112,9 @@ def config():
         'sweep_budget_s': int(e('PR_REVIEW_SWEEP_BUDGET_S', '240')),
         'approve': e('PR_REVIEW_APPROVE', 'off') == 'on',
         'request_changes': e('PR_REVIEW_REQUEST_CHANGES', 'off') == 'on',
+        # gcs-b0b (the mayor, decision-27473469): 'approve' posts only approvals; every other review is computed and
+        # logged, never posted. Any other value posts as before.
+        'post': 'approve' if e('PR_REVIEW_POST', 'all') == 'approve' else 'all',
         'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
         'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
         'judge_max_turns': int(e('PR_REVIEW_JUDGE_MAX_TURNS', '6')),

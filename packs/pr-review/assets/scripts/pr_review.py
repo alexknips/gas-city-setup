@@ -600,6 +600,13 @@ DISMISSAL_VOICE = 'Replaced by a newer review.'
 STALE = {'disclose': 'This automated review was of an earlier commit.', 'reviewer': 'This review was of an earlier commit.'}  # decision-ed7320b7
 
 
+def withheld(cfg, event):
+    """gcs-b0b, the stopgap (PR_REVIEW_POST=approve): whether a review with this GitHub event stays unposted. Only an
+    approval posts; questions, change requests, every fallback and the follow-up's lines do not. An eval run (the red
+    team's) is never withheld, so its scoring does not move with the knob."""
+    return cfg.get('post') == 'approve' and event != 'APPROVE' and not cfg.get('eval')
+
+
 def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose', message=None):
     """R35, R31: our newest review is our only live verdict on a PR. A later COMMENT review would leave an
     earlier REQUEST_CHANGES blocking, or an earlier APPROVE standing after the review found a question, so
@@ -692,6 +699,17 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
             finish(cfg, key, entry, 'requeued', {**extra, 'note': 'the approval bar failed at posting',
                                                  'gate': sorted({r.split(':')[0] for r in why})})
             return
+    if withheld(cfg, intended):
+        # gcs-b0b, the stopgap (the mayor, decision-27473469: only approvals post until each item is verified): the
+        # review is computed and logged with its outcome, and nothing goes to GitHub or Slack. Our change request
+        # from an earlier head does not stay up on code that has since changed (the mayor, 2026-10-30).
+        if entry.get('rc_live') and entry.get('event') == 'REQUEST_CHANGES' and head not in heads:
+            extra['rc_lifted'], extra['rc_lift_failed'] = dismiss_stale(repo, n, 0, cfg['reviewer'], cfg.get('voice'), STALE)
+            extra['rc_live'] = bool(extra['rc_lift_failed'])
+        finish(cfg, key, dict(entry, head=head), rv['outcome'],
+               {**extra, 'posted': 'withheld', 'intended_event': intended, 'inline': len(comments),
+                **({'fallback_withheld': True} if rv.get('fallback') else {})})
+        return None
     old_id = entry.get('review_id') if rereview and head in heads else None
     old_event = entry.get('event') or ('APPROVE' if entry.get('approved') else 'COMMENT')
     # gcs-b3f: only a submitted review clears a request; an edit in place would leave it standing
@@ -871,6 +889,9 @@ def answer_review(cfg, key, entry, dry=False, answer=None):
             'answers_pending': None}
     author, voice = author_of(pr), cfg.get('voice') or 'disclose'
     if entry.get('followup') == 'cap':
+        if withheld(cfg, 'COMMENT'):  # gcs-b0b: the stopgap posts approvals only, so no line to the author either
+            finish(cfg, key, entry, entry.get('outcome') or 'done', {**done, 'model': False, 'followup_cap': 'withheld'})
+            return
         ok = dry or cfg.get('no_deliver') or post_comment(repo, n, pr_followup.cap_line(author, rounds.get(head, 0), voice, NAME))
         mine = {'our_posts': ((entry.get('our_posts') or []) + [ok])[-50:]} if type(ok) is int else {}
         finish(cfg, key, entry, entry.get('outcome') or 'done',
@@ -2142,6 +2163,7 @@ def selftest():
     checks.update(selftest_retention(tempfile.mkdtemp(), t))
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_withheld(cfg, tempfile.mkdtemp()))
     checks.update(selftest_state_key(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
@@ -2811,6 +2833,84 @@ def selftest_rerequest(cfg, tmp):
             runs['asked'] == ['post', 'edit 4'],
         'gcs-b3f: so does a re-review by hand on a PR that requests the reviewer': runs['by hand'] == ['post', 'edit 4'],
     }
+
+
+def selftest_withheld(cfg, tmp):
+    """gcs-b0b, deliver() and the follow-up cap line with GitHub and Slack stubbed: with PR_REVIEW_POST=approve a
+    questions review and a fallback post nothing (no GitHub review, no client line) and are finished with their
+    outcome and posted=withheld; our change request from an earlier head is dismissed, one on this head is not; the
+    cap line is withheld; an approval and an eval run are never withheld, nor anything with post=all."""
+    import contextlib
+    import io
+    g, calls = globals(), []
+    url, head = 'https://github.com/o/r/pull/2', 'c' * 40
+    fresh = {'number': 2, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'author': {'login': 'a'}, 'reviewRequests': {}}
+    saved = {k: g[k] for k in ('post_review', 'post_comment', 'dismiss_stale', 'repoint')}
+    mods = [(pr_rules, 'get_pr'), (pr_state, 'slack_token'), (pr_state, 'slack_call'), (pr_client_slack, 'deliver_entry')]
+    kept = [getattr(m, n) for m, n in mods]
+    g.update(post_review=lambda *a, **k: calls.append('post') or ('ok', f'{url}#pullrequestreview-9', 'COMMENTED', 9),
+             post_comment=lambda *a: calls.append('comment') or 5, repoint=lambda *a: (0, 0),
+             dismiss_stale=lambda *a: calls.append('dismiss') or (1, 0))
+    pr_rules.get_pr = lambda repo, n: fresh
+    pr_state.slack_token = pr_state.slack_call = lambda *a: {}
+    pr_client_slack.deliver_entry = lambda *a, **k: calls.append('client') or ('ok', {'ts': '1'})
+    dcfg = dict(cfg, state=tmp, city=tmp, beads=False, mode='live', slack_channel='', slack_env=[], client_slack='on',
+                client_slack_repos=set(), reviewer='rev', request_changes=False, post='approve')
+    rv = {'outcome': 'questions', 'approve': False, 'request_changes': False, 'decisions': [], 'blockers': [], 'gaps': [],
+          'cleared': [], 'items': [{'kind': 'question'}]}
+    entry = {'repo': 'o/r', 'number': 2, 'url': url, 'rig': 'r', 'review_heads': ['b' * 40]}
+    runs, states = {}, {}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name, e, r in (('questions', entry, rv), ('fallback', entry, dict(rv, fallback=True)),
+                               ('earlier block', dict(entry, rc_live=True, event='REQUEST_CHANGES'), rv),
+                               ('block on this head', dict(entry, review_heads=[head], rc_live=True, event='REQUEST_CHANGES'),
+                                rv)):
+                calls.clear()
+                deliver(dcfg, f'o/r#{name}', e, fresh, r, 'body', [], {'flagged': []}, {'ci': 'green'},
+                        rereview=name == 'block on this head')
+                runs[name] = list(calls)
+                with pr_state.locked(tmp) as st:
+                    states[name] = dict(st['prs'].get(f'o/r#{name}') or {})
+            calls.clear()
+            answer_review(dcfg, 'o/r#cap', dict(entry, review_heads=[head], followup='cap', outcome='questions'))
+            runs['cap'] = list(calls)
+            with pr_state.locked(tmp) as st:
+                states['cap'] = dict(st['prs'].get('o/r#cap') or {})
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    q, fb = states['questions'], states['fallback']
+    knob, was = {}, os.environ.get('PR_REVIEW_POST')
+    try:
+        for v in ('approve', 'all', 'anything', None):
+            if v is None:
+                os.environ.pop('PR_REVIEW_POST', None)
+            else:
+                os.environ['PR_REVIEW_POST'] = v
+            knob[v] = pr_state.config()['post']
+    finally:
+        if was is None:
+            os.environ.pop('PR_REVIEW_POST', None)
+        else:
+            os.environ['PR_REVIEW_POST'] = was
+    return {
+        'gcs-b0b: PR_REVIEW_POST=approve turns the stopgap on; any other value or none posts as before':
+            knob == {'approve': 'approve', 'all': 'all', 'anything': 'all', None: 'all'},
+        'gcs-b0b: with post=approve a questions review and a fallback post nothing to GitHub or the client channel, '
+        'and are finished with their outcome, withheld':
+            runs['questions'] == [] and runs['fallback'] == [] and q.get('outcome') == 'questions' and
+            q.get('posted') == 'withheld' and q.get('intended_event') == 'COMMENT' and not q.get('review_id') and
+            not q.get('delivered_at') and fb.get('fallback_withheld') is True and fb.get('posted') == 'withheld',
+        'gcs-b0b: our change request from an earlier head is dismissed when the new review is withheld; one on this '
+        'head stays': runs['earlier block'] == ['dismiss'] and states['earlier block'].get('rc_live') is False and
+            runs['block on this head'] == [],
+        'gcs-b0b: the follow-up cap line is withheld': runs['cap'] == [] and states['cap'].get('followup_cap') == 'withheld',
+        'gcs-b0b: only an approval posts; an eval run, and anything with post=all, is never withheld':
+            withheld({'post': 'approve'}, 'COMMENT') and withheld({'post': 'approve'}, 'REQUEST_CHANGES') and
+            not withheld({'post': 'approve'}, 'APPROVE') and not withheld({'post': 'approve', 'eval': True}, 'COMMENT')
+            and not withheld({'post': 'all'}, 'COMMENT') and not withheld({}, 'COMMENT')}
 
 
 def key_rebinds(paths):
