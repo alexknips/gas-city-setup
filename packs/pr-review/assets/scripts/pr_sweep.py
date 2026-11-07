@@ -347,10 +347,14 @@ def refresh_ended(cfg, beads, seen, open_keys, counts, dry, t0):
             if dry:
                 continue
             old, new = seen[key], {'state': s['state'], 'merged': s.get('mergedAt'), 'closed_at': s.get('closedAt')}
-            if old.get('bead') and not terminal(old):  # no bead is made for an old entry that never had one
-                try:
-                    beads.close(cfg['repos'][repo], old['bead'], old.get('outcome') or 'done')
-                    counts['bead_closed_ended'] += 1
+            if beads.enabled and old.get('bead') and not terminal(old):  # no bead is made for an entry without one
+                try:  # gcs-due: count the closes made, apart from the beads a review's delivery had closed already
+                    rig = cfg['repos'][repo]
+                    if beads.status(rig, old['bead']) == 'closed':
+                        counts['bead_already_closed'] += 1
+                    else:
+                        beads._run(rig, 'close', old['bead'], '--reason', old.get('outcome') or 'done')
+                        counts['bead_closed_ended'] += 1
                 except (RuntimeError, OSError, ValueError):
                     counts['bead_error'] += 1
                     continue  # the state stays OPEN, so the next sweep tries again
@@ -570,7 +574,7 @@ def selftest_refresh():
     import tempfile
     fails, g = [], globals()
     real_states = g['pr_states']
-    gh = {1: 'MERGED', 2: 'OPEN', 3: 'MERGED', 4: 'CLOSED', 6: 'MERGED', 7: None}
+    gh = {1: 'MERGED', 2: 'OPEN', 3: 'MERGED', 4: 'CLOSED', 6: 'MERGED', 7: None, 8: 'MERGED'}
     asked = []
 
     def fake_states(repo, numbers):
@@ -585,13 +589,13 @@ def selftest_refresh():
             return super()._run(rig, *args)
 
     def setup(d, b):
-        b.store = {f'fk-{n}': {'status': 'closed' if n == 6 else 'open', 'metadata': {}} for n in (1, 2, 3, 5, 6, 7)}
+        b.store = {f'fk-{n}': {'status': 'closed' if n in (6, 8) else 'open', 'metadata': {}} for n in (1, 2, 3, 5, 6, 7, 8)}
         done = {'status': 'done', 'outcome': 'low-risk', 'state': 'OPEN', 'head': 'h', 'rig': 'rig', 'repo': 'o/r'}
         with pr_state.locked(d) as st:
             st['prs'] = {'o/r#1': dict(done, bead='fk-1'), 'o/r#2': dict(done, bead='fk-2', outcome='approved'),
                          'o/r#3': dict(done, bead='fk-3', status='reviewing'), 'o/r#4': dict(done, outcome='questions'),
                          'o/r#5': dict(done, bead='fk-5'), 'o/r#6': dict(done, bead='fk-6', outcome='closed'),
-                         'o/r#7': dict(done, bead='fk-7')}
+                         'o/r#7': dict(done, bead='fk-7'), 'o/r#8': dict(done, bead='fk-8')}
             seen = {k: dict(v) for k, v in st['prs'].items()}
             st['prs']['o/r#1']['fb_written'] = 1  # another order wrote the entry after the sweep read it
         return seen
@@ -619,12 +623,13 @@ def selftest_refresh():
                     b.store['fk-1']['status'] == 'closed' and p1['outcome'] == 'low-risk'):
                 fails.append('gcs-pw4: a reviewed PR that merged gets MERGED, its bead closes, its outcome and '
                              "another order's fields stay")
-            if not (after['o/r#4']['state'] == 'CLOSED' and len(b.store) == 6 and after['o/r#6']['state'] == 'MERGED'
+            if not (after['o/r#4']['state'] == 'CLOSED' and len(b.store) == 7 and after['o/r#6']['state'] == 'MERGED'
                     and sum(1 for c in b.calls if c[0] == 'close') == 1):
                 fails.append('gcs-pw4: an entry with no bead gets no bead, a bead already closed is not closed again')
             if not (opened(b) == ['fk-2', 'fk-3', 'fk-5', 'fk-7'] and after['o/r#2']['state'] == 'OPEN' and
-                    after['o/r#3']['state'] == 'OPEN' and after['o/r#7']['state'] == 'OPEN' and sorted(asked) == [1, 2, 4, 6, 7]
-                    and counts['refresh_still_open'] == 1 and counts['refresh_missing'] == 1):
+                    after['o/r#3']['state'] == 'OPEN' and after['o/r#7']['state'] == 'OPEN' and sorted(asked) == [1, 2, 4, 6, 7, 8]
+                    and counts['refresh_still_open'] == 1 and counts['refresh_missing'] == 1 and counts['bead_closed_ended'] == 1
+                    and counts['bead_already_closed'] == 1):
                 fails.append('gcs-pw4: a PR GitHub still has open, a PR under review, an open PR and a PR GitHub '
                              'does not return are left be')
             b2 = BrokenBeads()
@@ -638,7 +643,7 @@ def selftest_refresh():
             seen = setup(d, b3)
             counts = collections.Counter()
             refresh_ended(cfg, b3, seen, {'o/r#5'}, counts, False, pr_state.now() - dt.timedelta(seconds=31))
-            if counts['refresh_left_for_next'] != 3:
+            if counts['refresh_left_for_next'] != 4:
                 fails.append('gcs-pw4: past half the budget the refresh leaves the rest for the next sweep')
         with tempfile.TemporaryDirectory() as d:
             cfg = {'state': d, 'repos': {'o/r': 'rig'}}

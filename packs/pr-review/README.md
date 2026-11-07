@@ -146,18 +146,22 @@ The entry, two lines per PR (the mayor, 2026-10-30 19:40Z and 19:41Z):
   takes the first that passes; else the PR title's first plain words. A plain word is letters (or an
   acronym, or a number of up to 4 digits), at most 19 characters, so no identifier, path, date, long
   number or secret fits. The words are kept host-local (`client-slack/words.json` in the work dir, mode
-  600, `PR_REVIEW_KEEP_DAYS`) for the queue, which makes none (zero tokens).
+  600, `PR_REVIEW_KEEP_DAYS`) for the queue, which makes none (zero tokens). A later line on the PR keeps
+  its first words and says what it is right after them (gcs-due): "follow-up after a push" on a new head
+  after an earlier line, "follow-up" on a head that has a line already (its status moved); the log keeps
+  `follow` (push or same-head).
 - **Confidence**, a fixed rule, never the model's say: high for a full review with CI green, nothing in
   a not-checked area, no open question (an item, decision or blocker asking), every flagged hunk in the
   review and no open gap in our method; medium for any other full review; low for a fallback (the note,
   its floor, the money review) or a held run on the head. Left out when nothing of ours is on the head.
 - **Status**: our review's word when the latest run delivered a full review on the PR's current head
-  ("Approved", "Changes requested", "Changes suggested", "Questions", "Low risk"); else "Waiting for
-  review".
-- **Readiness**, the first that holds: Conflict, CI failing, Needs changes, Needs answers, Draft (a draft
-  is never ready to merge, whatever our review said), Waiting for review (no full review of ours on the head,
-  or one without our approval), CI running (approved, checks pending), Ready to merge. A PR posted by hand
-  after it closed: Merged or Closed.
+  ("Approved", "Changes requested", "Changes suggested", "Questions", "Low risk"); a fallback that left our
+  change request on GitHub (its own blockers: a merge conflict or failing checks, R22/R35) says "Changes
+  requested", as GitHub shows it (gcs-due); else "Waiting for review".
+- **Readiness**, the first that holds: Conflict, CI failing, Needs changes (also for that fallback), Needs
+  answers, Draft (a draft is never ready to merge, whatever our review said), Waiting for review (no full
+  review of ours on the head, or one without our approval), CI running (approved, checks pending), Ready to
+  merge. A PR posted by hand after it closed: Merged or Closed.
 - **CI**: failing, pending, skipped or none; green with whether the PR's first push passed the required
   checks (the quality pack's first-pass rule: the branch's rulesets, else its protection; a re-run of a
   red check is not a first pass), "green first push" or "green after N pushes".
@@ -722,7 +726,10 @@ opened, his thumbs on the Slack link. Not review volume.
    markers 4 or useful 3 the review is held. The reader also names cleared entries that describe a
    possible risk without a reason (R31; still named after the second answer, they become questions for
    the author) and a behaviour change in the skip list (R37; still there after the second answer, the
-   review is not an approval). Right before delivery: the PR is still open and on the
+   review is not an approval). Since gcs-due the same turn runs after a repair: a repaired review the reader
+   holds only by those two goes out with the questions (its repaired entries kept, through R40's filter,
+   never approving) when the gate then passes, instead of the note (`r31_after_repair`,
+   `r31_after_repair_held` in the log; 9 and 5 of 60 benchmark reviews were held that way). Right before delivery: the PR is still open and on the
    reviewed head (R15), the approval bar if it is one (R27), and after posting: its own review URL, not
    pending (R0, R17), every inline comment anchored to a line (R21), one review of ours on the head
    (R24). On a gate or reader failure the model answers again with the reasons (and the reader's

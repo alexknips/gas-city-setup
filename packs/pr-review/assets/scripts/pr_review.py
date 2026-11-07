@@ -1455,6 +1455,33 @@ def r31_questions(cfg, rv, risky, risky_q, flagged, extra):
     return asked
 
 
+R37_IN_SKIP = 'R37: a change in product behaviour'
+
+
+def turn_r31(cfg, reasons, rv, risky, risky_q, flagged, extra, rebuild, gated, idx):
+    """gcs-due (decision-f22726f6; benchmark runs B and C: 9 and 5 of 60 reviews): after a repair, a review the reader
+    holds only by R31 (and its R37 behaviour change in "Safe to skip") gets the turn it gets before one: the risky
+    cleared entries become questions for the author (through R40's filter), never an approval, and the review goes
+    out when the gate then passes, after the script's format repair; no second model or reader run. The repaired
+    entries are kept: `rebuild(decisions, items, cleared)` assembles from them, the script's not-checked decision
+    made again. Returns (rv, body, comments, reasons), or None when other reasons hold it."""
+    in_skip = [r for r in reasons if r.startswith(R37_IN_SKIP)]
+    if not reasons or not all(r.startswith('R31') or r in in_skip for r in reasons):
+        return None
+    asked = r31_questions(cfg, rv, risky, risky_q, flagged, extra)
+    x = rebuild([d for d in rv.get('decisions') or [] if not d.get('auto')],
+                ((rv.get('items') or []) + asked)[:pr_format.MAX_ITEMS],
+                [c for j, c in enumerate(rv.get('cleared') or [], 1) if j not in risky])
+    if in_skip:
+        x['approve'] = False
+    body, comments, again = gated(x)
+    if pr_format.format_only(again):
+        x, _ = pr_format.repair(x, again, flagged, idx)
+        body, comments, again = gated(x)
+    extra.update(r31_after_repair=len(asked), r31_after_repair_held=sorted({r.split(':')[0] for r in again}))
+    return x, body, comments, again
+
+
 def catches(rv, flagged):
     """gcs-y48 (the red team's eval of 4b59f3a): the review's items that are catches: high severity in a big-gap area
     (security, patient data, can't be undone, migration order, compliance), or any item on a control's hunk."""
@@ -1853,7 +1880,20 @@ def model_review(cfg, key, entry, dry, rereview=False):
                 scores, _, jm = pr_judge.judge(cfg, body_r, comments_r, NAME, author)
                 extra['judge_cost_usd'] += jm.get('cost_usd') or 0
                 extra.update(judge=scores, repair_judged=True)
-                again = reader_reasons(scores, jm, [j for j in jm.get('risky_cleared') or [] if j <= len(rv_r['cleared'])])
+                risky_r = [j for j in jm.get('risky_cleared') or [] if j <= len(rv_r['cleared'])]
+                again = reader_reasons(scores, jm, risky_r)
+
+                def rebuild(ds, its, cl):
+                    x = assemble(cfg, repo, pr, ci, ds, its, cl, model, flagged, flags_cut, money, ruleset, author,
+                                 model=True, idx=idx, digest=digest, money_info=money_info, conflicts=conflicts)
+                    if since_block:
+                        x['since'] = pr_incremental.outcome(since_rows, model.get('earlier'), x['items'], prev,
+                                                            pr['headRefOid'])
+                    return x
+                turned = turn_r31(cfg, again, rv_r, risky_r, jm.get('risky_questions') or {}, flagged, extra, rebuild,
+                                  gated, idx)
+                if turned and not turned[3]:  # gcs-due: it goes out with the questions, not as the note
+                    rv_r, body_r, comments_r, again = turned
             extra['repair_held'] = sorted({r.split(':')[0] for r in again})
             if again:  # still held: the reasons that hold it now (the fallback split below)
                 keep_held(cfg, entry, pr, 'repaired', rv_r, body_r, again, flagged, diff, author)
@@ -2147,6 +2187,7 @@ def selftest():
     checks.update(selftest_product())
     checks.update(selftest_r39_catch())
     checks.update(selftest_keep_catch())
+    checks.update(selftest_turn_r31())
     checks.update(selftest_graceful(cfg, tempfile.mkdtemp()))
     checks.update(selftest_dry(tempfile.mkdtemp()))
     checks.update(selftest_renamed())
@@ -2725,6 +2766,63 @@ def selftest_keep_catch():
             'gcs-y48: the catch\'s own format fix is made (R13), nothing cut comes back':
             bool(marked) and seen == ['Who reads it', 'Who reads it?'] and marked[3]['catch_repaired'] == ['R13'] and
             marked[0]['cleared'] == [] and marked[3]['catch_left'] == []}
+
+
+def selftest_turn_r31():
+    """gcs-due, zero tokens: after a repair, a review held only by R31 goes out with the risky cleared entry asked as a
+    question (on a control's hunk, so R40 keeps it), the repaired entries kept, the script's own decision made again,
+    never approving; R26 among the reasons keeps it held; the reader's R37 alone means no approval; a format reason
+    the script fixes is fixed; a content reason after the turn keeps it held."""
+    flagged = [{'id': 'F1', 'rule': 'phi-access', 'path': 'a.ts', 'line': 5, 'control': 'who may read this'}]
+    risky_c = {'flag': 'F1', 'path': 'a.ts', 'line_start': 5, 'line_end': 5, 'change': 'Reads the chart', 'why': 'w'}
+    safe_c = {'flag': 'F2', 'path': 'b.ts', 'line_start': 1, 'line_end': 1, 'change': 'Renames a label', 'why': 'w'}
+    item = {'path': 'b.ts', 'line_start': 2, 'line_end': 2, 'kind': 'question', 'severity': 'medium', 'area': 'security',
+            'change': 'Repaired words', 'why': 'w', 'ask': 'Who signs off?'}
+    rv = {'decisions': [{'auto': True, 'question': 'script'}, {'actors': ['author'], 'question': 'model'}],
+          'items': [item], 'cleared': [risky_c, safe_c], 'approve': False}
+    built = []
+
+    def rebuild(ds, its, cl):
+        built.append((ds, its, cl))
+        return {'decisions': [{'auto': True, 'question': 'script'}] + ds, 'items': its, 'cleared': cl, 'approve': True,
+                'outcome': 'questions' if any(i['kind'] == 'question' for i in its) else 'low-risk'}
+    r31 = ['R31: cleared entries [1] describe a possible risk without saying why it is acceptable or intended']
+    skip = [R37_IN_SKIP + ' sits in "Safe to skip"; give it its own linked line']
+    ok = lambda x: ('body', [], [])  # noqa: E731
+    got = turn_r31({'_earlier': []}, r31, rv, [1], {1: 'Who may read the chart here?'}, flagged, extra := {}, rebuild, ok, None)
+    held = turn_r31({'_earlier': []}, r31 + ['R26: the reader test scored useful 2, at least 3 needed'], rv, [1], {},
+                    flagged, {}, rebuild, ok, None)
+    n_after_held = len(built)
+    in_skip = turn_r31({'_earlier': []}, skip, rv, [], {}, flagged, {}, rebuild, ok, None)
+    seen = []
+
+    def no_mark(x):
+        seen.append([i['ask'] for i in x['items']])
+        bad = [n for n, i in enumerate(x['items'], pr_format.first_item(x)) if not i['ask'].endswith('?')]
+        return 'b', [], [f'R13: item {n} is a question but its ask does not end with a question mark' for n in bad]
+    marked = turn_r31({'_earlier': []}, r31, dict(rv, decisions=[], items=[dict(item, ask='Who signs off')]), [1], {},
+                      flagged, {}, rebuild, no_mark, None)
+    content = turn_r31({'_earlier': []}, r31, rv, [1], {}, flagged, {}, rebuild,
+                       lambda x: ('b', [], ['R21: decision 1 has no option for the author']), None)
+    ds, its, cl = built[0]
+    return {
+        'gcs-due: after a repair, a review held only by R31 goes out with the risky entry as a question for the author, '
+        'the repaired entries kept, the script\'s decision made again, never approving':
+            bool(got) and got[3] == [] and [d['question'] for d in ds] == ['model'] and its[0] is item and
+            len(its) == 2 and its[1]['kind'] == 'question' and its[1]['ask'] == 'Who may read the chart here?' and
+            cl == [safe_c] and extra.get('r31_after_repair') == 1 and extra.get('r31_after_repair_held') == [] and
+            got[0]['outcome'] == 'questions',
+        'gcs-due: R26 among the reasons keeps it held, nothing is rebuilt': held is None and n_after_held == 1,
+        'gcs-due: the reader\'s R37 behaviour change alone: it goes out, never approving':
+            bool(in_skip) and in_skip[3] == [] and in_skip[0]['approve'] is False,
+        'gcs-due: a missing question mark after the turn is the script\'s fix (R13)':
+            bool(marked) and marked[3] == [] and seen[-1][0] == 'Who signs off?',
+        'gcs-due: a content reason after the turn keeps it held (the caller keeps the repaired candidate)':
+            bool(content) and ids_of(content[3]) == ['R21']}
+
+
+def ids_of(reasons):
+    return sorted({r.split(':')[0] for r in reasons})
 
 
 def regress_keep(d):
