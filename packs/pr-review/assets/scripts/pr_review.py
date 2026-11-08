@@ -1163,7 +1163,8 @@ def assemble(cfg, repo, pr, ci, decisions, items, cleared, skim, flagged, flags_
                                    'url': f"https://github.com/{repo}/pull/{pr['number']}/files",
                                    'detail': f'{len(flagged) + flags_cut} flagged changes are more than one review checks.'})
         rv['outcome'] = pr_format.decide(rv['decisions'], rv['items'], rv['blockers'])
-        rv['approve'] = rv['outcome'] == 'low-risk' and not pr_format.open_gaps(rv) and \
+        # gcs-72q: never approve over one of our own asks that still stands (graceful() dropped it as a repeat)
+        rv['approve'] = rv['outcome'] == 'low-risk' and not cfg.get('_repeat_dropped') and not pr_format.open_gaps(rv) and \
             not pr_format.gate_approve(rv, pr, pr['headRefOid'], flagged, idx)
     return rv
 
@@ -1471,6 +1472,8 @@ def r31_questions(cfg, rv, risky, risky_q, flagged, extra):
     unless on a control's hunk, after the author's answers only a big gap)."""
     asked = [question_from(c, risky_q.get(j)) for j, c in enumerate(rv['cleared'], 1) if j in risky]
     asked, dropped = graceful(asked, flagged, cfg.get('_earlier') or [], cfg.get('_after_answers'))
+    if dropped.get('repeat'):
+        cfg['_repeat_dropped'] = True  # gcs-72q: the ask still stands, so no approval
     if any(dropped.values()):
         extra['graceful_dropped_r31'] = {k: v for k, v in dropped.items() if v}
     return asked
@@ -1750,6 +1753,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
         idx = pr_format.diff_index(diff)
         cfg['_earlier'] = earlier_asks(cfg, repo, pr['number']) if entry.get('review_heads') and not cfg.get('bench') else []
         cfg['_after_answers'] = bool(entry.get('followup') and entry.get('review_heads'))
+        cfg['_repeat_dropped'] = False
         cfg['_requested'] = 'requested' in hits
         extra = {'model': True, 'cost_usd': 0, 'attempts': 0, 'judge_cost_usd': 0, 'money_cost_usd': 0,
                  'digest': dmeta.get('digest'), 'digest_rules': dmeta.get('rules', 0),
@@ -1772,6 +1776,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
             decisions = [d for d in model['decisions'] if d['confidence'] >= 8]
             items = [i for i in model['items'] if i['confidence'] >= 8][:pr_format.MAX_ITEMS]
             items, dropped = graceful(items, flagged, cfg.get('_earlier') or [], cfg.get('_after_answers'))
+            cfg['_repeat_dropped'] = bool(dropped.get('repeat'))  # gcs-72q: per attempt; assemble() reads it
             extra['graceful_dropped'] = {k: v for k, v in dropped.items() if v}
             if cfg.get('suggestions'):  # gc-sy1hm.2 b: a fix the gate would refuse is dropped, its item stays
                 items, extra['suggestions'], extra['suggestions_dropped'] = pr_format.keep_suggestions(items, idx)
@@ -2191,7 +2196,23 @@ def selftest_skip(cfg, idx, pr, ruleset):
                   'Author', model=True, idx=idx)
     plain = assemble(dict(cfg, request_changes=False, approve=False), 'o/r', pr, 'green', [], [], [], skim, [], 0, [], ruleset,
                      'Author', model=True, idx=idx)
-    return {'gcs-58j: a file with an item or a decision is not "Safe to skip"; an emptied group goes, the rest stay':
+    # gcs-72q: the real assemble(), the review's own bar checks (CI, gaps, flags) set to pass
+    kept = (pr_format.gate_approve, pr_format.open_gaps, pr_format.ci_strict)
+    pr_format.gate_approve, pr_format.open_gaps, pr_format.ci_strict = (lambda *a, **k: []), (lambda r: []), (lambda p: True)
+    try:
+        args = ('o/r', pr, 'green', [], [], [], skim, [], 0, [], ruleset, 'Author')
+        free = assemble(dict(cfg, request_changes=False, approve=True, _repeat_dropped=False), *args, model=True, idx=idx)
+        over = assemble(dict(cfg, request_changes=False, approve=True, _repeat_dropped=True), *args, model=True, idx=idx)
+        rcfg = {'_earlier': [('c.ts', 5, 5)]}
+        r31_questions(rcfg, {'cleared': [{'path': 'c.ts', 'line_start': 5, 'line_end': 5, 'why': 'w', 'change': 'Signs in'}]},
+                      {1}, {}, [], {})
+    finally:
+        pr_format.gate_approve, pr_format.open_gaps, pr_format.ci_strict = kept
+    return {'gcs-72q: a repeat of our own open ask that was dropped is never an approval; without one the bar decides':
+            free['approve'] is True and over['approve'] is False and over['outcome'] == 'low-risk',
+            'gcs-72q: a risky cleared entry dropped as a repeat of our open ask blocks the approval too':
+            rcfg.get('_repeat_dropped') is True,
+            'gcs-58j: a file with an item or a decision is not "Safe to skip"; an emptied group goes, the rest stay':
             rv['skip'] == [{'group': 'tests', 'paths': ['src/a1.ts', 'src/a3.ts']}] and
             [g['paths'] for g in plain['skip']] == [['src/a0.ts'], ['src/a1.ts', 'src/a2.ts', 'src/a3.ts']]}
 
