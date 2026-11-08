@@ -213,7 +213,7 @@ def sweep(cfg, dry):
             partial = True
             counts['left_for_next'] += 1
             continue
-        old = seen.get(key, {})
+        old = standing_sync(cfg, key, repo, pr, seen.get(key, {}), counts, dry)
         asked = pr_rules.requested_now(pr, cfg['reviewer'])
         if pr['isDraft'] and pr['state'] == 'OPEN':
             counts['draft'] += 1
@@ -371,6 +371,88 @@ def pr_states(repo, numbers, batch=50):
         r = pr_rules.graphql(q, o=owner, r=name)['repository']
         out.update({n: r.get(f'p{n}') for n in part})
     return out
+
+
+MARK = '<!-- pr-review'  # every review of ours carries it, the pipeline's and one posted outside a run
+STANDING_Q = ('query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) {'
+              ' reviews(last: 30) { nodes { databaseId url state submittedAt body author { login } commit { oid } } } } } }')
+
+
+def our_reviews(repo, number, reviewer):
+    """The PR's reviews by the reviewer's login that carry our marker, oldest first (a review the reviewer wrote
+    himself has none)."""
+    owner, name = repo.split('/')
+    nodes = pr_rules.graphql(STANDING_Q, o=owner, r=name, n=number)['repository']['pullRequest']['reviews']['nodes']
+    who = (reviewer or '').lower()
+    return [x for x in nodes if ((x.get('author') or {}).get('login') or '').lower() == who and MARK in (x.get('body') or '')]
+
+
+def standing_fields(old, rows):
+    """gcs-sil: the entry's fields that follow what stands on GitHub, or None. Our latest standing approval that the
+    entry does not name was posted outside a run: the entry takes it, so the card counts it (no run row names it). An
+    approval the entry records that no longer stands was withdrawn: not approved any more, nothing else changes, and
+    the same head is not reviewed again because of it."""
+    approvals = [x for x in rows if x.get('state') == 'APPROVED']
+    if approvals:
+        a = approvals[-1]
+        if a.get('databaseId') == old.get('review_id') and old.get('approved'):
+            return None
+        oid = (a.get('commit') or {}).get('oid')
+        heads = list(old.get('review_heads') or [])
+        return {'review_id': a['databaseId'], 'review_url': a.get('url'), 'event': 'APPROVE', 'approved': True,
+                'delivered_at': a.get('submittedAt'), 'outcome': 'low-risk', 'status': 'done', 'fallback': None,
+                'rc_live': False, 'head': oid or old.get('head'),
+                'review_heads': (heads + [oid] if oid and oid not in heads else heads)[-20:], 'outside_run': True}
+    return {'approved': False, 'approval_withdrawn': True} if old.get('approved') else None
+
+
+def apply_standing(cfg, key, new, counts, dry):
+    """The fields, merged under the lock so what other orders wrote stays."""
+    counts['standing_outside' if new.get('approved') else 'standing_withdrawn'] += 1
+    if dry:
+        return
+    with pr_state.locked(cfg['state']) as st:
+        if key in st['prs']:
+            st['prs'][key].update(new)
+
+
+def standing_sync(cfg, key, repo, pr, old, counts, dry):
+    """gcs-sil (the mayor, gc-wisp-vhy2rg, gc-wisp-2t3i04): when GitHub's standing verdict and the entry disagree on an
+    approval, the entry follows GitHub. One query, only on a disagreement and once per PR update. Returns the entry."""
+    if not old or pr_rules.approved_by(pr, cfg['reviewer']) == bool(old.get('approved')) or \
+            old.get('standing_seen') == pr.get('updatedAt'):
+        return old
+    try:
+        new = standing_fields(old, our_reviews(repo, pr['number'], cfg['reviewer']))
+    except pr_rules.GhError:
+        counts['standing_error'] += 1
+        return old
+    new = dict(new or {}, standing_seen=pr.get('updatedAt'))
+    if 'approved' in new:
+        apply_standing(cfg, key, new, counts, dry)
+    elif not dry:
+        with pr_state.locked(cfg['state']) as st:
+            if key in st['prs']:
+                st['prs'][key].update(new)
+    return dict(old, **new)
+
+
+def record_standing(cfg, keys, apply):
+    """A one-off for PRs a sweep no longer sees (merged or closed): the same record for the named repo#N keys. A dry
+    run by default; counts only."""
+    counts = collections.Counter()
+    with pr_state.peek(cfg['state']) as st:
+        entries = {k: dict(st['prs'][k]) for k in keys if k in st['prs']}
+    counts['no_entry'] = len(keys) - len(entries)
+    for k, e in entries.items():
+        repo, n = k.rsplit('#', 1)
+        new = standing_fields(e, our_reviews(repo, int(n), cfg['reviewer']))
+        if new is None:
+            counts['no_change'] += 1
+        else:
+            apply_standing(cfg, k, new, counts, not apply)
+    print(json.dumps({'record_standing': 'applied' if apply else 'dry run', 'counts': counts}))
+    return 0
 
 
 def answers(cfg, repo, pr, old, since):
@@ -557,10 +639,60 @@ def selftest():
             fails.append('the one-off closes the terminal bead and the second bead, and leaves a queued one open')
     fails += selftest_followups()
     fails += selftest_refresh()
+    fails += selftest_standing()
     for f in fails:
         print(f'pr_sweep selftest: FAIL: {f}')
-    print(f'pr_sweep selftest: {30 - len(fails)} of 30')
+    print(f'pr_sweep selftest: {36 - len(fails)} of 36')
     return 1 if fails else 0
+
+
+def selftest_standing():
+    """gcs-sil: an approval of ours the entry does not name is taken as posted outside a run; a withdrawn one is no
+    longer approved, nothing else moves; nothing to do when they agree; the sync asks GitHub only on a disagreement and
+    once per PR update, and writes only its own fields; a dry run writes nothing."""
+    import tempfile
+    fails, g = [], globals()
+    real_ours, real_appr = g['our_reviews'], pr_rules.approved_by
+    appr = {'databaseId': 9, 'url': 'u9', 'state': 'APPROVED', 'submittedAt': 't', 'commit': {'oid': 'h2'}}
+    old = {'review_id': 5, 'approved': False, 'outcome': 'not-reviewed', 'fallback': 'not-reviewed', 'head': 'h1',
+           'review_heads': ['h1'], 'status': 'done'}
+    got = standing_fields(old, [dict(appr, databaseId=4, state='DISMISSED'), appr])
+    if not (got and got['review_id'] == 9 and got['approved'] is True and got['event'] == 'APPROVE' and got['fallback'] is None
+            and got['outcome'] == 'low-risk' and got['review_heads'] == ['h1', 'h2'] and got['head'] == 'h2' and got['outside_run']):
+        fails.append('gcs-sil: an approval the entry does not name is taken, posted outside a run')
+    was = {'review_id': 9, 'approved': True, 'event': 'APPROVE'}
+    if standing_fields(was, [dict(appr, state='DISMISSED')]) != {'approved': False, 'approval_withdrawn': True}:
+        fails.append('gcs-sil: an approval that no longer stands is withdrawn, nothing else moves')
+    if standing_fields(was, [appr]) is not None or standing_fields({'approved': False}, []) is not None:
+        fails.append('gcs-sil: nothing changes when the entry and GitHub agree')
+    calls = []
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            cfg = {'state': d, 'reviewer': 'rev'}
+            g['our_reviews'] = lambda repo, n, who: calls.append(n) or [appr]
+            pr_rules.approved_by = lambda pr, who: True
+            with pr_state.locked(d) as st:
+                st['prs'] = {'o/r#1': dict(old, fb_x=1)}
+            c = collections.Counter()
+            pr = {'number': 1, 'updatedAt': 'u1'}
+            first = standing_sync(cfg, 'o/r#1', 'o/r', pr, dict(old), c, True)
+            with pr_state.locked(d) as st:
+                dry_e = dict(st['prs']['o/r#1'])
+            if dry_e.get('approved') or first.get('review_id') != 9 or c['standing_outside'] != 1:
+                fails.append('gcs-sil: a dry run writes nothing and counts the record')
+            standing_sync(cfg, 'o/r#1', 'o/r', pr, dict(old), c, False)
+            with pr_state.locked(d) as st:
+                e = dict(st['prs']['o/r#1'])
+            if not (e.get('review_id') == 9 and e.get('fb_x') == 1 and e.get('standing_seen') == 'u1'):
+                fails.append("gcs-sil: the record goes in under the lock, other orders' fields stay, the update is noted")
+            n = len(calls)
+            standing_sync(cfg, 'o/r#1', 'o/r', pr, dict(old, standing_seen='u1'), c, False)
+            standing_sync(cfg, 'o/r#1', 'o/r', pr, dict(old, approved=True), c, False)
+            if len(calls) != n:
+                fails.append('gcs-sil: GitHub is asked only on a disagreement and once per PR update')
+    finally:
+        g['our_reviews'], pr_rules.approved_by = real_ours, real_appr
+    return fails
 
 
 def selftest_refresh():
@@ -727,6 +859,8 @@ def selftest_followups():
         for (m, n), f in stubs.items():
             setattr(m, n, f)
         g['record'] = fake_record
+        real_ours = g['our_reviews']
+        g['our_reviews'] = lambda *a: []  # gcs-sil: no GitHub call from the selftest
         g['pr_states'] = lambda repo, numbers: {n: {'state': 'MERGED', 'mergedAt': now, 'closedAt': now} for n in numbers}
         with tempfile.TemporaryDirectory() as d:
             cfg = {'state': d, 'city': d, 'beads': False, 'reviewer': 'rev', 'repos': {'o/r': 'rig'}, 'rules': '',
@@ -771,6 +905,7 @@ def selftest_followups():
         for (m, n), f in kept.items():
             setattr(m, n, f)
         g['record'] = real_record
+        g['our_reviews'] = real_ours
         g['pr_states'] = real_states
     if first['o/r#20'].get('state') != 'MERGED' or first['o/r#20'].get('outcome') != 'questions' or \
             not counts or counts[0].get('refreshed_merged') != 1:
@@ -822,12 +957,15 @@ def main():
     ap.add_argument('--workers', type=int, default=6)
     ap.add_argument('--cache', metavar='DIR', help="backtest: keep GitHub's answers here and reuse them")
     ap.add_argument('--close-terminal', action='store_true')
+    ap.add_argument('--record-standing', nargs='+', metavar='REPO#N', help='one-off, with --apply: what stands on GitHub')
     ap.add_argument('--apply', action='store_true')
     ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
     if a.selftest:
         sys.exit(selftest())
     cfg = pr_state.config()
+    if a.record_standing:
+        sys.exit(record_standing(cfg, a.record_standing, a.apply))
     if a.close_terminal:
         sys.exit(close_terminal(cfg, a.apply))
     if not cfg['repos'] or not cfg['reviewer']:
