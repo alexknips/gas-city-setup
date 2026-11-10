@@ -118,6 +118,10 @@ def config():
         'judge': e('PR_REVIEW_JUDGE', 'on') == 'on',
         'judge_model': e('PR_REVIEW_JUDGE_MODEL', 'sonnet'),
         'judge_max_turns': int(e('PR_REVIEW_JUDGE_MAX_TURNS', '6')),
+        # gcs-z3j (decision-27473469): each point checked against the repository before it posts (pr_verify)
+        'verify': e('PR_REVIEW_VERIFY', 'off') == 'on',
+        'verify_model': e('PR_REVIEW_VERIFY_MODEL', 'claude-opus-5-5'),
+        'verify_max_turns': int(e('PR_REVIEW_VERIFY_MAX_TURNS', '40')),
         'digest_model': e('PR_REVIEW_DIGEST_MODEL', 'sonnet'),
         'digest_max_turns': int(e('PR_REVIEW_DIGEST_MAX_TURNS', '6')),
         'panel': e('PR_REVIEW_PANEL') or os.path.join(e('PR_REVIEW_STATE_DIR') or os.path.join(city, '.gc', 'runtime', 'pr-review'), 'panel.json'),

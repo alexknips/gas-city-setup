@@ -758,6 +758,14 @@ CASES = {
                     r'^- Billing, plans, credits or pricing: \[`limits\.ts` L2-L3\]\(https://github\.com/example/repo/blob/'
                     r'a{40}/src/billing/limits\.ts#L2-L3\)$'],
         'body_not_re': [r'/pull/1/files\)', r'(?i)outside this review', r'^CI red', r'Recommended:', r'^   [A-D]\. ']},
+    # gcs-ilx (the reviewer 2026-11-07 14:00Z: real issues only; a follow-up's minimal fallback left CHANGES_REQUESTED on a new
+    # head): a fallback never requests changes, even where the reviewer allows it and its own blocker is a change.
+    'case-ilx-fallback-never-requests-changes': {
+        'expect': 'pass', **ASKED_FX, 'request_changes': True,
+        'body_re': [r'^\*\*Changes suggested\*\* · for Author, nothing needed from me <!-- pr-review v[0-9.]+ -->$']},
+    'case-ilx-fallback-saying-changes-requested': {
+        'expect': 'fail', 'expect_reasons': ['R35'], 'outcome': 'changes', 'n_items': 1, 'fallback': True,
+        'request_changes': True, 'body': body(outcome='changes', items=[GOOD_ITEM], **SKIP, request_changes=True)},
     'case125-fallback-orphan-files-link': {
         'expect': 'fail', 'expect_reasons': ['R33'], 'only_reasons': ['R33'], **ASKED_FX,
         'body_edit': ['</details>', '</details>\n\n[2 other places](https://github.com/example/repo/pull/1/files) in the files view.']},

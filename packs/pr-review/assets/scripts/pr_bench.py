@@ -271,7 +271,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The settings (pr_state.config keys) and environment that change what a review says. The files are found,
 # not listed (the mayor, 2026-10-31: a hand list missed the checklist, rules.toml and pr_rules.py).
 SHAPING = ('prompt', 'model', 'effort', 'max_turns', 'context', 'suggestions', 'incremental', 'voice', 'approve',
-           'request_changes', 'judge', 'judge_model', 'judge_max_turns', 'digest_model', 'digest_max_turns', 'reviewer')
+           'request_changes', 'judge', 'judge_model', 'judge_max_turns', 'digest_model', 'digest_max_turns', 'reviewer',
+           'verify', 'verify_model', 'verify_max_turns')  # gcs-z3j: the verifier shapes what posts
 SHAPING_ENV = ('PR_REVIEW_REVIEWER_NAME', 'PR_REVIEW_NAMES')
 TOLERANCE = 3  # lines: an entry this close to a fixed line counts as pointing at it
 
