@@ -600,11 +600,35 @@ DISMISSAL_VOICE = 'Replaced by a newer review.'
 STALE = {'disclose': 'This automated review was of an earlier commit.', 'reviewer': 'This review was of an earlier commit.'}  # decision-ed7320b7
 
 
-def withheld(cfg, event):
+def withheld(cfg, event, rv=None):
     """gcs-b0b, the stopgap (PR_REVIEW_POST=approve): whether a review with this GitHub event stays unposted. Only an
     approval posts; questions, change requests, every fallback and the follow-up's lines do not. An eval run (the red
-    team's) is never withheld, so its scoring does not move with the knob."""
-    return cfg.get('post') == 'approve' and event != 'APPROVE' and not cfg.get('eval')
+    team's) is never withheld, so its scoring does not move with the knob. With PR_REVIEW_POST=danger the same holds,
+    except that a review cut to its dangerous findings (danger_rv) posts."""
+    if cfg.get('post') == 'danger' and (rv or {}).get('danger'):
+        return False
+    return cfg.get('post') in ('approve', 'danger') and event != 'APPROVE' and not cfg.get('eval')
+
+
+def danger_rv(cfg, rv):
+    """Alex 2026-11-17 (PR_REVIEW_POST=danger): "we only want to not approve PRs if they are actually dangerous and
+    approve all others". A review with a big catch (big_catches: high severity in security, patient data, compliance,
+    can't be undone, migration order) is cut to those findings alone, with no approval, and posts (REQUEST_CHANGES for
+    a change when the reviewer allows it, else COMMENT). Every other reviewed PR becomes a plain approval: no
+    questions, no suggestions, CI and the flag bar are Nils's own gate. A fallback or a not-reviewed note has no
+    review behind it, so it is neither: None, and the stopgap withholds it. None too without the knob, for an eval
+    run and for a review that already approves."""
+    if cfg.get('post') != 'danger' or cfg.get('eval') or rv.get('approve') or rv.get('fallback') or \
+            rv.get('outcome') == 'not-reviewed':
+        return None
+    big = big_catches(rv)[:pr_format.MAX_ITEMS]
+    if big:
+        out = dict(rv, items=big, cleared=[], decisions=[], blockers=[], skip=[], answers=None, approve=False,
+                   held_why='', danger=True, request_changes=cfg.get('request_changes', False))
+        out['outcome'] = pr_format.decide([], big, [])
+        return out
+    return dict(rv, items=[], decisions=[], blockers=[], skip=[], answers=None, approve=True, held_why='',
+                outcome='low-risk', danger_approve=True)
 
 
 def dismiss_stale(repo, number, keep_id, reviewer, voice='disclose', message=None):
@@ -661,6 +685,14 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     The client's channel gets the PR's entry once per head; `summary`: the model's summary of the PR, for
     the entry's 3-5 words."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
+    cut = danger_rv(cfg, rv)
+    if cut is not None:  # Alex 2026-11-17: approve unless actually dangerous; the cut review is rendered anew
+        author = author_of(pr)
+        extra.update(danger_mode='danger' if cut.get('danger') else 'approve', danger_from=rv.get('outcome'),
+                     danger_items_cut=len(rv.get('items') or []) - len(cut.get('items') or []))
+        rv = cut
+        body = pr_format.render(repo, pr, rv, NAME, author)
+        comments = pr_format.inline_comments(rv['items'], author, cfg.get('voice'), pr_format.first_item(rv))
     intended = pr_format.event_of(rv)
     # gcs-71c: GitHub refuses APPROVE and REQUEST_CHANGES on a PR whose author is the reviewer, and an eval
     # review is one COMMENT on the draft: there it goes out as COMMENT with line 1 as rendered, and the record
@@ -693,13 +725,13 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     if head in heads and not rereview:
         finish(cfg, key, dict(entry, head=head), entry.get('outcome') or rv['outcome'], {**extra, 'posted': 'skipped-same-head'})
         return
-    if intended == 'APPROVE':  # line 1 says so even when it goes out as COMMENT: the same bar
+    if intended == 'APPROVE' and not rv.get('danger_approve'):  # line 1 says so even when it goes out as COMMENT: the same bar
         why = pr_format.gate_approve(rv, fresh, head, flagged, idx)
         if why:  # CI or the PR changed between the review and now: review it again later
             finish(cfg, key, entry, 'requeued', {**extra, 'note': 'the approval bar failed at posting',
                                                  'gate': sorted({r.split(':')[0] for r in why})})
             return
-    if withheld(cfg, intended):
+    if withheld(cfg, intended, rv):
         # gcs-b0b, the stopgap (the mayor, decision-27473469: only approvals post until each item is verified): the
         # review is computed and logged with its outcome, and nothing goes to GitHub or Slack. Our change request
         # from an earlier head does not stay up on code that has since changed (the mayor, 2026-10-30).
@@ -2169,6 +2201,7 @@ def selftest():
     checks.update(selftest_client_once(cfg, tmp))
     checks.update(selftest_rerequest(cfg, tempfile.mkdtemp()))
     checks.update(selftest_withheld(cfg, tempfile.mkdtemp()))
+    checks.update(selftest_danger(cfg, tempfile.mkdtemp()))
     checks.update(selftest_state_key(cfg, tempfile.mkdtemp()))
     checks.update(selftest_approved(tempfile.mkdtemp()))
     checks.update(selftest_product())
@@ -2932,6 +2965,75 @@ def selftest_withheld(cfg, tmp):
             withheld({'post': 'approve'}, 'COMMENT') and withheld({'post': 'approve'}, 'REQUEST_CHANGES') and
             not withheld({'post': 'approve'}, 'APPROVE') and not withheld({'post': 'approve', 'eval': True}, 'COMMENT')
             and not withheld({'post': 'all'}, 'COMMENT') and not withheld({}, 'COMMENT')}
+
+
+def selftest_danger(cfg, tmp):
+    """Alex 2026-11-17, PR_REVIEW_POST=danger, deliver() with GitHub and Slack stubbed: a questions review (CI red, a
+    flag not cleared) posts a plain APPROVE with no inline comment; a review with a high security item and a low
+    question posts REQUEST_CHANGES with the security item alone; a fallback posts nothing; an eval run is untouched."""
+    import contextlib
+    import io
+    g, calls = globals(), []
+    url, head = 'https://github.com/o/r/pull/3', 'd' * 40
+    fresh = {'number': 3, 'url': url, 'headRefOid': head, 'state': 'OPEN', 'author': {'login': 'a'}, 'reviewRequests': {}}
+    saved = {k: g[k] for k in ('post_review', 'post_comment', 'dismiss_stale', 'repoint', 'anchored_lines', 'ours_on_head')}
+    mods = [(pr_rules, 'get_pr'), (pr_state, 'slack_token'), (pr_state, 'slack_call'), (pr_client_slack, 'deliver_entry'),
+            (pr_format, 'render'), (pr_format, 'inline_comments'), (pr_format, 'gate_delivery')]
+    kept = [getattr(m, n) for m, n in mods]
+    g.update(post_review=lambda repo, pr, body, comments, event: calls.append((event, len(comments))) or
+             ('ok', f'{url}#pullrequestreview-9', 'APPROVED' if event == 'APPROVE' else 'COMMENTED', 9),
+             post_comment=lambda *a: calls.append('comment') or 5, repoint=lambda *a: (0, 0),
+             dismiss_stale=lambda *a: (0, 0), anchored_lines=lambda *a: [1, 1, 1], ours_on_head=lambda *a: 1)
+    pr_rules.get_pr = lambda repo, n: fresh
+    pr_state.slack_token = pr_state.slack_call = lambda *a: {}
+    pr_client_slack.deliver_entry = lambda *a, **k: ('ok', {'ts': '1'})
+    pr_format.render = lambda repo, pr, rv, name, author: 'body'
+    pr_format.inline_comments = lambda items, *a: [{'body': 'c'} for _ in items]
+    pr_format.gate_delivery = lambda *a, **k: []
+    dcfg = dict(cfg, state=tmp, city=tmp, beads=False, mode='live', slack_channel='', slack_env=[], client_slack='off',
+                client_slack_repos=set(), reviewer='rev', request_changes=True, post='danger')
+    sec = {'kind': 'change', 'severity': 'high', 'area': 'security', 'path': 'a.ts', 'line_start': 1, 'line_end': 2}
+    q = {'kind': 'question', 'severity': 'low', 'area': 'other', 'path': 'b.ts', 'line_start': 3, 'line_end': 3}
+    rv = {'outcome': 'questions', 'approve': False, 'request_changes': False, 'decisions': [], 'blockers': [{'kind': 'question', 'cause': 'ci', 'short': 'CI red'}],
+          'gaps': [], 'cleared': [], 'items': [q], 'summary': 'x'}
+    entry = {'repo': 'o/r', 'number': 3, 'url': url, 'rig': 'r', 'review_heads': ['b' * 40]}
+    runs, states = {}, {}
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            for name, r in (('safe', rv), ('danger', dict(rv, outcome='changes', items=[sec, q])),
+                            ('fallback', dict(rv, fallback=True))):
+                calls.clear()
+                deliver(dcfg, f'o/r#{name}', entry, fresh, r, 'body', [{'body': 'c'}], {'flagged': []}, {'ci': 'red'},
+                        flagged=[{'id': 1, 'path': 'b.ts', 'line': 3}])
+                runs[name] = list(calls)
+                with pr_state.locked(tmp) as st:
+                    states[name] = dict(st['prs'].get(f'o/r#{name}') or {})
+    finally:
+        g.update(saved)
+        for (m, n), f in zip(mods, kept):
+            setattr(m, n, f)
+    knob, was = {}, os.environ.get('PR_REVIEW_POST')
+    try:
+        os.environ['PR_REVIEW_POST'] = 'danger'
+        knob = pr_state.config()['post']
+    finally:
+        if was is None:
+            os.environ.pop('PR_REVIEW_POST', None)
+        else:
+            os.environ['PR_REVIEW_POST'] = was
+    return {
+        'Alex 2026-11-17: PR_REVIEW_POST=danger is a knob value': knob == 'danger',
+        'danger mode: a review with only a low question (CI red, a flag not cleared) posts a plain APPROVE':
+            runs['safe'] == [('APPROVE', 0)] and states['safe'].get('approved') is True and
+            states['safe'].get('danger_mode') == 'approve',
+        'danger mode: a high security item posts as REQUEST_CHANGES with that item alone, never an approval':
+            runs['danger'] == [('REQUEST_CHANGES', 1)] and states['danger'].get('approved') is False and
+            states['danger'].get('danger_mode') == 'danger' and states['danger'].get('danger_items_cut') == 1,
+        'danger mode: a fallback (no review behind it) posts nothing':
+            runs['fallback'] == [] and states['fallback'].get('posted') == 'withheld',
+        'danger mode: an eval run and an approving review are left as they are':
+            danger_rv(dict(dcfg, eval=True), rv) is None and danger_rv(dcfg, dict(rv, approve=True)) is None and
+            danger_rv(dict(dcfg, post='approve'), rv) is None}
 
 
 def key_rebinds(paths):
