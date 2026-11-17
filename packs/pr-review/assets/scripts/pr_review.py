@@ -755,7 +755,11 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     # gcs-b3f: only a submitted review clears a request; an edit in place would leave it standing
     asked = entry.get('followup') == 'asked' or bool(cfg.get('reviewer') and fresh.get('reviewRequests')
                                                        and pr_rules.requested_now(fresh, cfg['reviewer']))
-    if old_id and event == old_event and not comments and not entry.get('inline', entry.get('items', 0)) and not asked:
+    # Alex 2026-11-18: danger mode's approval is always a NEW submitted review. Editing an earlier APPROVE in place
+    # left pulse #1693 and graft-md #463 unapproved: GitHub had dismissed that review after a push, and an edit
+    # never brings a dismissed approval back.
+    if old_id and event == old_event and not comments and not entry.get('inline', entry.get('items', 0)) and not asked \
+            and not rv.get('danger_approve'):
         posted, url, state, rid = update_review(repo, n, old_id, body)
     else:
         posted, url, state, rid = post_review(repo, pr, body, comments, event)
