@@ -610,17 +610,25 @@ def withheld(cfg, event, rv=None):
     return cfg.get('post') in ('approve', 'danger') and event != 'APPROVE' and not cfg.get('eval')
 
 
-def danger_rv(cfg, rv):
+def danger_rv(cfg, rv, extra=None):
     """Alex 2026-11-17 (PR_REVIEW_POST=danger): "we only want to not approve PRs if they are actually dangerous and
     approve all others". A review with a big catch (big_catches: high severity in security, patient data, compliance,
     can't be undone, migration order) is cut to those findings alone, with no approval, and posts (REQUEST_CHANGES for
     a change when the reviewer allows it, else COMMENT). Every other reviewed PR becomes a plain approval: no
     questions, no suggestions, CI and the flag bar are Nils's own gate. A fallback or a not-reviewed note has no
     review behind it, so it is neither: None, and the stopgap withholds it. None too without the knob, for an eval
-    run and for a review that already approves."""
-    if cfg.get('post') != 'danger' or cfg.get('eval') or rv.get('approve') or rv.get('fallback') or \
-            rv.get('outcome') == 'not-reviewed':
+    run and for a review that already approves.
+    Alex 2026-11-18 ("approve all others"): a fallback whose model review ran and was held only by the gate or the
+    reader test (held-gate), with no big catch in what the model found, is an approval too: the hold was about the
+    text, not the code. A secret-shaped hold, or a fallback with no model review behind it, stays withheld."""
+    extra = extra or {}
+    if cfg.get('post') != 'danger' or cfg.get('eval') or rv.get('approve'):
         return None
+    if rv.get('fallback') or rv.get('outcome') == 'not-reviewed':
+        if not (extra.get('held') == 'held-gate' and extra.get('model_big_catches') == 0 and extra.get('model') is not False):
+            return None
+        return dict(rv, items=[], decisions=[], blockers=[], skip=[], answers=None, approve=True, held_why='',
+                    outcome='low-risk', danger_approve=True, fallback=False, cleared=[])
     big = big_catches(rv)[:pr_format.MAX_ITEMS]
     if big:
         out = dict(rv, items=big, cleared=[], decisions=[], blockers=[], skip=[], answers=None, approve=False,
@@ -685,7 +693,7 @@ def deliver(cfg, key, entry, pr, rv, body, comments, result, extra, flagged=(), 
     The client's channel gets the PR's entry once per head; `summary`: the model's summary of the PR, for
     the entry's 3-5 words."""
     repo, n, head = entry['repo'], entry['number'], pr['headRefOid']
-    cut = danger_rv(cfg, rv)
+    cut = danger_rv(cfg, rv, extra)
     if cut is not None:  # Alex 2026-11-17: approve unless actually dangerous; the cut review is rendered anew
         author = author_of(pr)
         extra.update(danger_mode='danger' if cut.get('danger') else 'approve', danger_from=rv.get('outcome'),
@@ -1987,6 +1995,7 @@ def model_review(cfg, key, entry, dry, rereview=False):
                              product_calls_sent=bool(left))
                 reasons = []
         held = 'held-gate' if reasons else ('held-secret' if leaks([body] + [c['body'] for c in comments]) else None)
+        extra['model_big_catches'] = len(big_catches(rv))  # PR_REVIEW_POST=danger: a held review with none may approve
         # The mayor, 22:26Z: a review of a PR we reviewed before is never silent, and its fallback says what of
         # our earlier asks is still open (zero tokens: where their lines are now).
         reviewed = bool(entry.get('review_heads'))
@@ -3031,6 +3040,13 @@ def selftest_danger(cfg, tmp):
             states['danger'].get('danger_mode') == 'danger' and states['danger'].get('danger_items_cut') == 1,
         'danger mode: a fallback (no review behind it) posts nothing':
             runs['fallback'] == [] and states['fallback'].get('posted') == 'withheld',
+        'danger mode (2026-11-18): a fallback held by the gate with no big catch approves; with a catch, or held for a '
+        'secret, or with no model run, it does not':
+            (danger_rv(dcfg, dict(rv, fallback=True), {'held': 'held-gate', 'model_big_catches': 0}) or {}).get('approve')
+            is True and danger_rv(dcfg, dict(rv, fallback=True), {'held': 'held-gate', 'model_big_catches': 1}) is None
+            and danger_rv(dcfg, dict(rv, fallback=True), {'held': 'held-secret', 'model_big_catches': 0}) is None
+            and danger_rv(dcfg, dict(rv, fallback=True), {'held': 'held-gate', 'model_big_catches': 0, 'model': False}) is None
+            and danger_rv(dcfg, dict(rv, fallback=True)) is None,
         'danger mode: an eval run and an approving review are left as they are':
             danger_rv(dict(dcfg, eval=True), rv) is None and danger_rv(dcfg, dict(rv, approve=True)) is None and
             danger_rv(dict(dcfg, post='approve'), rv) is None}
